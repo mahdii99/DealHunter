@@ -67,6 +67,7 @@ _MODEL_CACHE: dict[str, tuple[float, list[str]]] = {}
 _COOLDOWN: dict[str, float] = {}  # model -> time until which we skip it (it was busy / timed out)
 _LAST_GOOD: list[str] = []        # the model that answered last time is tried first
 COOLDOWN_SECONDS = 180   # timed out (busy right now, or the prompt was big): try others for a few minutes
+GONE_SECONDS = 30 * 86400  # 410: the provider retired the model
 BUSY_SECONDS = 60        # 429 per-minute limit / 503 overloaded: usually fine again within a minute
 STATE_FILE = Path(__file__).resolve().parent.parent / "debug" / "llm_state.json"
 
@@ -106,8 +107,12 @@ def _rest(model: str, r: httpx.Response | None = None) -> None:
                                                          or "(rpd)" in body or "tokens per day" in body)
     busy = r is not None and r.status_code in (429, 503)
     refused = r is not None and r.status_code in (401, 403, 404)  # not available to us: skip it until tomorrow
-    _COOLDOWN[model] = (_daily_quota_reset() if daily or refused
-                        else time.time() + (BUSY_SECONDS if busy else COOLDOWN_SECONDS))
+    if r is not None and r.status_code == 410:  # the provider retired this model: don't try it again for a month
+        _COOLDOWN[model] = time.time() + GONE_SECONDS
+        log.warning("LLM %s was retired by its provider, using other models", model)
+    else:
+        _COOLDOWN[model] = (_daily_quota_reset() if daily or refused
+                            else time.time() + (BUSY_SECONDS if busy else COOLDOWN_SECONDS))
     if daily:
         log.warning("LLM %s: daily free quota used up, skipping it until it resets", model)
     _save_state()
@@ -156,7 +161,8 @@ def _big_model(model: str) -> bool:
     return _size(name) >= 24 or any(x in name for x in ("gpt-oss", "deepseek", "llama-4", "kimi", "glm-4", "qwen3-235"))
 
 
-def _pick(available: list[str], preferred: tuple[str, ...], custom: str | None, provider: str) -> list[str]:
+def _pick(available: list[str], preferred: tuple[str, ...], custom: str | None, provider: str,
+          limit: int = 4) -> list[str]:
     order = ([custom] if custom else []) + list(preferred)
     if not available:  # listing failed: just try our guesses
         return list(dict.fromkeys(order))
@@ -164,7 +170,9 @@ def _pick(available: list[str], preferred: tuple[str, ...], custom: str | None, 
     if provider == "gemini":  # newest flash models first, skip special-purpose ones
         extra = sorted((m for m in available if "flash" in m and not any(
             x in m for x in ("image", "tts", "audio", "live", "embedding", "thinking", "exp", "preview"))), reverse=True)
-    elif provider in ("mistral", "nvidia", "cloudflare", "cerebras"):  # big catalogs: only our known-good picks
+    elif provider == "nvidia":  # models get retired often (410): fall back to the other big models it lists
+        extra = sorted((m for m in available if _big_model(m)), key=_size, reverse=True)
+    elif provider in ("mistral", "cloudflare", "cerebras"):  # big catalogs: only our known-good picks
         extra = []
         if not picked:
             picked = list(order)
@@ -175,7 +183,12 @@ def _pick(available: list[str], preferred: tuple[str, ...], custom: str | None, 
     else:
         extra = [m for m in available if not any(x in m for x in ("whisper", "guard", "tts", "prompt", "compound", "orpheus",
                                                                   "allam", "gemma", "distil", "safeguard"))]
-    return list(dict.fromkeys(picked + extra))[:4]
+    return [m for m in dict.fromkeys(picked + extra) if not _gone(m)][:limit]
+
+
+def _gone(model: str) -> bool:
+    """Retired by its provider (410): skipped when choosing models, so live ones take its place."""
+    return _COOLDOWN.get(model, 0) > time.time() + 2 * 86400
 
 
 async def _gemini(client: httpx.AsyncClient, model: str, prompt: str) -> httpx.Response:
@@ -294,6 +307,6 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
                 return data
             errors.append(f"{model}: {r.status_code}")
             log.warning("LLM %s said: %s", model, r.text[:200].replace("\n", " "))
-            if r.status_code in RETRY_STATUS or r.status_code in (401, 403, 404):  # busy / quota / not allowed / gone
+            if r.status_code in RETRY_STATUS or r.status_code in (401, 403, 404, 410):  # busy/quota/not allowed/gone
                 _rest(model, r)
     raise LLMError("مفيش موديل رد في الوقت: " + ", ".join(errors[-4:] or ["timeout"]))

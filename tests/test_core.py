@@ -2,6 +2,7 @@ import asyncio
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -87,7 +88,6 @@ def test_agent_with_fake_llm(monkeypatch):
 
 
 def test_llm_skips_busy_model_and_remembers(monkeypatch):
-    import httpx
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
@@ -114,7 +114,6 @@ def test_llm_skips_busy_model_and_remembers(monkeypatch):
 
 
 def test_llm_falls_back_to_groq_with_listed_model(monkeypatch):
-    import httpx
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     monkeypatch.setenv("GROQ_API_KEY", "g")
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
@@ -402,7 +401,6 @@ def test_chat_without_llm_appends_follow_up(monkeypatch):
 
 
 def test_reader_fallback_respects_robots_and_reads_blocked_pages(monkeypatch):
-    import httpx
     from app import fetchers
     fetchers._ROBOTS.clear()
     monkeypatch.setenv("TAVILY_API_KEY", "t")
@@ -462,7 +460,6 @@ def test_cents_price_fixed_from_other_copy_of_same_product():
 
 
 def test_daily_quota_rests_model_until_reset_and_survives_restart(monkeypatch):
-    import httpx
     from app import llm
     llm._COOLDOWN.clear(); llm._LAST_GOOD.clear()
     r = httpx.Response(429, text='{"error": {"message": "Quota exceeded for metric: generate_content_free_tier_requests, '
@@ -505,7 +502,6 @@ def test_market_switch_changes_currency_and_local_domains(monkeypatch):
 
 
 def test_page_reads_spread_over_groq_models(monkeypatch):
-    import httpx
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     monkeypatch.setenv("GROQ_API_KEY", "g")
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
@@ -551,7 +547,6 @@ def test_slow_pages_dont_hold_up_the_search():
 
 
 def test_more_free_providers_and_fenced_json(monkeypatch):
-    import httpx
     for k in ("GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "CEREBRAS_MODEL"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("CEREBRAS_API_KEY", "c")
@@ -572,7 +567,6 @@ def test_more_free_providers_and_fenced_json(monkeypatch):
 
 
 def test_search_shares_free_quotas_and_falls_back(monkeypatch):
-    import httpx
     from app import websearch
     for k in websearch.KEYS.values():
         monkeypatch.delenv(k, raising=False)
@@ -600,7 +594,6 @@ def test_search_shares_free_quotas_and_falls_back(monkeypatch):
 
 
 def test_openrouter_picks_big_free_models_and_rests_refused_ones():
-    import httpx
     av = ["thinkingmachines/inkling-2-small:free", "liquid/lfm-3-1.7b:free", "openai/gpt-oss-120b:free",
           "meta-llama/llama-3.3-70b-instruct:free", "qwen/qwen3-coder-480b:free"]
     picks = llm._pick(av, llm.COMPAT["openrouter"][2], None, "openrouter")
@@ -642,7 +635,6 @@ def test_chat_stream_sends_progress_then_the_answer(monkeypatch):
 
 
 def test_reader_returns_what_it_has_when_time_is_up(monkeypatch):
-    import httpx
     from app import fetchers
     fetchers._ROBOTS.clear()
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
@@ -693,3 +685,18 @@ def test_price_far_below_the_others_is_flagged():
     agent._flag_price_outliers(picks)
     assert picks[0].unconfirmed and not picks[0].best_deal and "أقل بكتير" in picks[0].note
     assert not any(p.unconfirmed for p in picks[1:])
+
+
+def test_retired_model_is_replaced_by_another_listed_one(monkeypatch):
+    """NVIDIA answers 410 for retired models it still lists: the next pick must skip it."""
+    llm._COOLDOWN.clear()
+    listed = ["openai/gpt-oss-120b", "meta/llama-3.3-70b-instruct", "meta/llama-3.1-405b-instruct",
+              "nvidia/nemotron-nano-9b-v2"]
+    picks = llm._pick(listed, llm.COMPAT["nvidia"][2], None, "nvidia")
+    assert picks[0] == "openai/gpt-oss-120b" and "nvidia/nemotron-nano-9b-v2" not in picks
+    llm._rest("openai/gpt-oss-120b", httpx.Response(410, text="end of life"))
+    llm._rest("meta/llama-3.3-70b-instruct", httpx.Response(503, text="busy"))
+    picks = llm._pick(listed, llm.COMPAT["nvidia"][2], None, "nvidia")
+    assert "openai/gpt-oss-120b" not in picks  # retired: gone from the choices
+    assert "meta/llama-3.3-70b-instruct" in picks and "meta/llama-3.1-405b-instruct" in picks  # busy is only rested
+    llm._COOLDOWN.clear()
