@@ -66,7 +66,7 @@ def _configured(provider: str) -> bool:
 _MODEL_CACHE: dict[str, tuple[float, list[str]]] = {}
 _COOLDOWN: dict[str, float] = {}  # model -> time until which we skip it (it was busy / timed out)
 _LAST_GOOD: list[str] = []        # the model that answered last time is tried first
-COOLDOWN_SECONDS = 600   # timed out: a slow model costs every search 10s, so rest it longer
+COOLDOWN_SECONDS = 180   # timed out (busy right now, or the prompt was big): try others for a few minutes
 BUSY_SECONDS = 60        # 429 per-minute limit / 503 overloaded: usually fine again within a minute
 STATE_FILE = Path(__file__).resolve().parent.parent / "debug" / "llm_state.json"
 
@@ -150,7 +150,8 @@ def _size(model: str) -> float:
 
 def _big_model(model: str) -> bool:
     name = model.lower()
-    if any(x in name for x in ("vision", "-vl", "coder", "embed", "guard", "audio", "image")):
+    if any(x in name for x in ("vision", "-vl", "coder", "embed", "guard", "audio", "image", "reasoning", "thinking",
+                               "omni", "nano")):  # slow "thinking" models time out on our 10-20 s budget
         return False
     return _size(name) >= 24 or any(x in name for x in ("gpt-oss", "deepseek", "llama-4", "kimi", "glm-4", "qwen3-235"))
 
@@ -234,7 +235,8 @@ def _text(provider: str, r: httpx.Response) -> str:
     return data["choices"][0]["message"]["content"]
 
 
-async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, spread: int = 0) -> dict:
+async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, spread: int = 0,
+                   budget: float | None = None) -> dict:
     """prefer="bulk": try the non-Gemini providers first (bulk work like reading pages, so Gemini's small daily
     quota is kept for understanding the request and judging the results); prefer="groq" etc.: that provider.
     spread=n: start from the n-th model of that provider, so calls running at the same time go to different
@@ -265,7 +267,7 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
                 ready = mine[k:] + mine[:k] + [a for a in ready if not preferred(a)]
 
         for provider, model, call in ready:
-            left = TOTAL_BUDGET - (time.monotonic() - start)
+            left = (budget or TOTAL_BUDGET) - (time.monotonic() - start)
             if left < 2:
                 break
             t = time.monotonic()
