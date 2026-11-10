@@ -44,8 +44,6 @@ The chat is a conversation. A new message usually CHANGES THE CURRENT REQUEST in
 that still applies and apply the change. Start fresh only if the shopper clearly asks for a different product.
 Never change the product type the shopper named: if you don't recognize a model name (e.g. "anker r50i nc"),
 search the shopper's own words as they are instead of guessing a category.
-Egyptian shopping words: "بكرة/بكره" on an appliance means a knob (mechanical dial control, "ميكانيكي"), not a remote
-and not "tomorrow"; "ديجيتال" means a digital display. Put the right variant in both queries.
 Ask a question ONLY if no sensible search is possible (e.g. "عايز هدية"); otherwise search and state assumptions.
 If the newest message is a QUESTION about results already shown or about buying advice ("أول نتيجة دي أصلية؟",
 "الفرق بين الاتنين إيه؟", "أنهي أحسن؟", "عليها ضمان؟") and does not ask for different products, use "answer":
@@ -94,7 +92,8 @@ def _chat_block(messages: list[dict], current: str) -> str:
 async def plan_turn(messages: list[dict], current: str = "") -> dict:
     """One LLM call: understand the newest message in the context of the chat, merge it into the request,
     and plan the searches. Raises llm.LLMError when no model answers."""
-    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current)), timeout=12)
+    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current)), timeout=12,
+                                prefer="groq")  # gpt-oss-120b on Groq: strong and answers in ~1 s
     last = next((m.get("text", "") for m in reversed(messages) if m.get("role") == "user"), "")
     if not isinstance(plan.get("request"), str) or not plan["request"].strip():
         plan["request"] = last
@@ -104,6 +103,69 @@ async def plan_turn(messages: list[dict], current: str = "") -> dict:
         plan["action"] = "search"
     log.info("agent: plan %s -> %r", plan["action"], plan.get("question") or plan.get("answer") or plan["request"])
     return plan
+
+
+CHECK_PROMPT = """You plan searches for a price-comparison agent for shoppers in Egypt.
+Shopper's request: {request}
+Our first reading: {understood}
+Planned web searches: {queries}
+Model numbers: {codes}
+Requirements: {req}
+
+Web search results for the shopper's own words (title | snippet):
+{hits}
+
+Use these results to check what the shopper really wants before we spend searches on it: the exact product, its
+product type, the variant they mean, and its official model numbers. Shoppers write slang, misspellings and mixed
+Arabic/English, and the same word can mean different things for different products: read every word in the context
+of this product, the way stores selling it use it. If the results clearly show the product, trust them over the first
+reading; if they are unrelated or unclear, keep the first reading. Never change the product type the shopper named.
+Reply JSON:
+{{"understood": "one short Egyptian Arabic sentence saying what you'll look for",
+  "web_queries": ["exactly 2: (1) Arabic, how Egyptian shoppers and stores write it; (2) precise English with the
+                   official model number if known"],
+  "model_codes": ["official model / part numbers of this exact variant, else []"],
+  "requirements": ["hard requirements a matching product must meet, in English"],
+  "changed": true if the first reading was wrong about the product or the variant}}"""
+CHECK_HITS = 8
+
+
+async def _check_plan(plan: dict, request: str) -> tuple[dict, list[dict]]:
+    """One web search of the shopper's own words, then one LLM call that fixes the plan with what the web says the
+    product is, so the main searches look for the right thing. The search hits are reused as store pages."""
+    t = time.monotonic()
+    try:
+        async with httpx.AsyncClient() as client:
+            hits = await websearch.search(client, request, max_results=CHECK_HITS)
+    except (websearch.SearchError, httpx.HTTPError) as e:
+        log.info("agent: check search failed: %s", e)
+        return plan, []
+    if not hits:
+        return plan, []
+    _progress("بتأكد من المنتج قبل ما أدور...")
+    prompt = CHECK_PROMPT.format(
+        request=request, understood=plan.get("understood") or request,
+        queries=json.dumps(plan.get("web_queries", []), ensure_ascii=False),
+        codes=json.dumps(plan.get("model_codes", []), ensure_ascii=False),
+        req=json.dumps(plan.get("requirements", []), ensure_ascii=False),
+        hits="\n".join(f"- {h.get('title', '')[:120]} | {h.get('snippet', '')[:200]}" for h in hits))
+    try:
+        fix = await llm.ask_json(prompt, timeout=10, budget=15, prefer="groq")
+    except llm.LLMError as e:
+        log.info("agent: plan check skipped: %s", e)
+        return plan, hits
+    queries = [q for q in fix.get("web_queries", []) if isinstance(q, str) and q.strip()][:2]
+    if queries:
+        plan = {**plan, "web_queries": queries}
+        for k in ("model_codes", "requirements"):
+            if isinstance(fix.get(k), list):
+                plan[k] = [x for x in fix[k] if isinstance(x, str) and x.strip()]
+        if isinstance(fix.get("understood"), str) and fix["understood"].strip():
+            plan["understood"] = fix["understood"]
+    TIMES["check"] = round(time.monotonic() - t, 1)
+    log.info("agent: plan checked in %.1fs (changed=%s): %s", time.monotonic() - t, fix.get("changed"),
+             plan.get("web_queries"))
+    return plan, hits
 
 
 JUDGE_PROMPT = """You are the judge of a price-comparison agent for Egypt. Shopper request: {raw}
@@ -263,7 +325,7 @@ def _cheapest_variant(products: list[Product]) -> list[Product]:
     return out
 
 
-async def _web_find(web_queries: list[str]) -> tuple[list[Product], dict[str, str]]:
+async def _web_find(web_queries: list[str], seed: list[dict] | None = None) -> tuple[list[Product], dict[str, str]]:
     t = time.monotonic()
     errors: dict[str, str] = {}
     async with httpx.AsyncClient() as client:
@@ -274,6 +336,7 @@ async def _web_find(web_queries: list[str]) -> tuple[list[Product], dict[str, st
         found = await asyncio.gather(*(j for _, j in jobs), return_exceptions=True)
         TIMES["search"] = round(time.monotonic() - t, 1)
         picked: dict[str, list[str]] = {"famous": [], "other": []}
+        jobs, found = [("check", None)] + jobs, [seed or []] + list(found)  # the plan-check search's hits count too
         for (group, _), res in zip(jobs, found):
             if isinstance(res, Exception):
                 errors[f"web search ({group})"] = str(res)[:200]
@@ -450,6 +513,9 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             plan = await plan_turn([{"role": "user", "text": raw}])
         except llm.LLMError as e:
             return await run_rules(raw, note=f"الـ LLM مردش ({e})، فاستخدمنا الفهم البسيط.")
+    seed: list[dict] = []
+    if websearch.available() and llm.available():
+        plan, seed = await _check_plan(plan, plan.get("request") or raw)
     queries = [q for q in plan.get("queries", []) if isinstance(q, str) and q.strip()][:2] or [raw]
     web_queries = [q for q in plan.get("web_queries", []) if isinstance(q, str) and q.strip()][:2] or queries
     codes = [c for c in plan.get("model_codes", []) if isinstance(c, str) and c.strip()]
@@ -457,7 +523,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     TIMES["understand"] = round(time.monotonic() - t0, 1)
     if websearch.available():
         source = "web"
-        products, errors = await _web_find(web_queries)
+        products, errors = await _web_find(web_queries, seed)
         products = _dedupe(products)
     else:
         source = "stores"

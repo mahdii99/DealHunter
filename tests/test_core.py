@@ -160,7 +160,7 @@ def test_agent_web_mode_finds_stores_itself(monkeypatch):
     searched = []
 
     async def fake_search(client, query, max_results=8, exclude_domains=None, include_domains=None):
-        searched.append("famous" if include_domains else "other")
+        searched.append("famous" if include_domains else "other" if exclude_domains else "check: " + query)
         return [{"url": "https://btech.com/en/s?q=power+bank", "title": "", "snippet": ""},
                 {"url": "https://www.youtube.com/watch?v=x", "title": "", "snippet": ""},
                 {"url": "https://unknown-shop.com/p/1", "title": "", "snippet": ""}]
@@ -180,6 +180,10 @@ def test_agent_web_mode_finds_stores_itself(monkeypatch):
     ])
 
     async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+        if "Use these results to check" in prompt:  # the plan check sees the web results for the shopper's words
+            assert "power bank 10000mah price egypt" in prompt
+            return {"understood": "باور بانك", "web_queries": ["سعر باور بانك 10000", "power bank 10000mAh egypt"],
+                    "model_codes": [], "requirements": ["10000 mAh"], "changed": True}
         return next(replies)
 
     monkeypatch.setattr(websearch, "available", lambda: True)
@@ -196,7 +200,9 @@ def test_agent_web_mode_finds_stores_itself(monkeypatch):
     assert out["source"] == "web"
     assert out["results"][0]["store"] == "B.TECH" and out["results"][0]["trusted"] is True
     assert "unknown-shop.com" in out["store_errors"] and "youtube.com" not in out["store_errors"]
-    assert sorted(searched) == ["famous", "other"]  # each query runs on famous stores and on the other shops
+    # one check search of the shopper's own words, then each checked query on famous stores and on the other shops
+    assert searched[0] == "check: باور بانك" and sorted(searched[1:]) == ["famous", "famous", "other", "other"]
+    assert out["queries"] == ["سعر باور بانك 10000", "power bank 10000mAh egypt"]
 
 
 def test_trust_helpers():
