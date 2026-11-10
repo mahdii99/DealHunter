@@ -717,3 +717,21 @@ def test_dedupe_short_and_long_title_of_same_listing():
     other_shop = Product("N", "Soundcore by Anker R50i NC Wireless Bluetooth Earphones", 1130, "https://www.noon.com/egypt-ar/x")
     out = agent._dedupe([short, long, other_price, other_shop])
     assert len(out) == 3 and all(any(p is q for q in out) for p in (long, other_price, other_shop))
+
+
+def test_well_known_stores_come_from_the_plan_for_any_category():
+    from app import trust
+    plan = {"stores": ["https://www.defacto.com.eg/", "namshi.com", "not a domain", "zara.com/eg", "amazon.sa"]}
+    sites = agent._famous_sites(plan)
+    assert sites[:3] == agent.MARKETPLACES and "defacto.com.eg" in sites and "namshi.com" in sites
+    assert "zara.com" in sites and "amazon.sa" not in sites and "not a domain" not in sites
+    assert agent._famous_sites({}) == trust.FAMOUS_SITES  # nothing named: our own list
+
+
+def test_planner_suggestions_never_carry_guessed_prices(monkeypatch):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+        return {"action": "search", "request": "تيشرت", "suggested_products": [
+            "Zara Men Black Crew Neck T-Shirt 100% Cotton – 199 EGP", "Samsung Galaxy A16 (5000 mAh)"]}
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    plan = asyncio.run(agent.plan_turn([{"role": "user", "text": "تيشرت ماركة"}]))
+    assert plan["suggested_products"] == ["Zara Men Black Crew Neck T-Shirt 100% Cotton", "Samsung Galaxy A16 (5000 mAh)"]

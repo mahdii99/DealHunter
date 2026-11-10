@@ -44,6 +44,9 @@ The chat is a conversation. A new message usually CHANGES THE CURRENT REQUEST in
 that still applies and apply the change. Start fresh only if the shopper clearly asks for a different product.
 Never change the product type the shopper named: if you don't recognize a model name (e.g. "anker r50i nc"),
 search the shopper's own words as they are instead of guessing a category.
+Quality words are real requirements, never drop them: "ماركة نضيفة / معروفة / أصلي / كويس" means well-known
+quality brands, so name those brands in suggested_products and the queries, and add a requirement like
+"well-known brand (e.g. ...)", so no-name products don't count as a match.
 Ask a question ONLY if no sensible search is possible (e.g. "عايز هدية"); otherwise search and state assumptions.
 If the newest message is a QUESTION about results already shown or about buying advice ("أول نتيجة دي أصلية؟",
 "الفرق بين الاتنين إيه؟", "أنهي أحسن؟", "عليها ضمان؟") and does not ask for different products, use "answer":
@@ -62,8 +65,13 @@ Reply JSON:
   "understood": "one short Egyptian Arabic sentence saying what you'll look for (mention the change if a follow-up)",
   "need_based": true if the shopper described a need/use rather than naming a specific product,
   "suggested_products": ["if need_based: 3-6 specific products sold in Egypt now that fit the need, with the
-     spec that makes them fit, e.g. 'Samsung Galaxy A16 (5000 mAh)', 'Xiaomi Redmi 14C (5160 mAh)'; else []"],
-  "web_queries": ["exactly 2 web search queries (each runs once on famous stores and once on smaller shops):
+     spec that makes them fit, e.g. 'Samsung Galaxy A16 (5000 mAh)', 'Xiaomi Redmi 14C (5160 mAh)'. Names and
+     specs only, NEVER prices (you don't know today's prices); else []"],
+  "stores": ["4-8 domains of the biggest well-known online stores in Egypt for THIS kind of product: big
+     marketplaces plus the category's own leaders and the brands' official Egypt stores (electronics, fashion,
+     beauty, furniture, groceries... each has different leaders). Only real domains you are sure of"],
+  "web_queries": ["2 web search queries, or 3 when the shopper names or needs several brands/products (one query
+     per brand family); each runs once on the well-known stores and once on smaller shops:
      (1) how Egyptian shoppers search in Arabic, e.g. 'سعر سخان اوليمبيك هيرو 50 لتر ميكانيكي' or for a need
          'تيشرت قطن سادة اسود رقبة دائرية رجالي';
      (2) precise English: the official model/part number if you know it, e.g. 'Olympic Electric Hero 50L
@@ -80,6 +88,8 @@ Reply JSON:
   "min_price": number or null
 }"""
 MAX_HISTORY = 8  # chat messages the planner sees
+_PRICE_TAIL = re.compile(r"\s*[-–—:,(]*\s*(?:EGP|LE|ج\.?م|جنيه)?\s*\d[\d,.]*\s*(?:EGP|LE|ج\.?م|جنيه)\)?\s*$"
+                         r"|\s*[-–—:,(]+\s*(?:EGP|LE)\s*\d[\d,.]*\)?\s*$", re.I)
 
 
 def _chat_block(messages: list[dict], current: str) -> str:
@@ -95,6 +105,9 @@ async def plan_turn(messages: list[dict], current: str = "") -> dict:
     plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current)), timeout=12,
                                 prefer="groq")  # gpt-oss-120b on Groq: strong and answers in ~1 s
     last = next((m.get("text", "") for m in reversed(messages) if m.get("role") == "user"), "")
+    # names only: a price the LLM guessed would mislead the shopper and the judge
+    plan["suggested_products"] = [_PRICE_TAIL.sub("", x).strip() for x in plan.get("suggested_products") or []
+                                  if isinstance(x, str) and x.strip()]
     if not isinstance(plan.get("request"), str) or not plan["request"].strip():
         plan["request"] = last
     if plan.get("action") == "answer" and isinstance(plan.get("answer"), str) and plan["answer"].strip():
@@ -109,6 +122,7 @@ CHECK_PROMPT = """You plan searches for a price-comparison agent for shoppers in
 Shopper's request: {request}
 Our first reading: {understood}
 Planned web searches: {queries}
+Planned well-known stores: {stores}
 Model numbers: {codes}
 Requirements: {req}
 
@@ -122,12 +136,28 @@ of this product, the way stores selling it use it. If the results clearly show t
 reading; if they are unrelated or unclear, keep the first reading. Never change the product type the shopper named.
 Reply JSON:
 {{"understood": "one short Egyptian Arabic sentence saying what you'll look for",
-  "web_queries": ["exactly 2: (1) Arabic, how Egyptian shoppers and stores write it; (2) precise English with the
-                   official model number if known"],
+  "web_queries": ["2, or 3 when several brands/products are wanted: Arabic as Egyptian shoppers and stores write
+                   it, and precise English with the official model number if known"],
+  "stores": ["4-8 domains of the biggest well-known Egyptian online stores for this product (from the results
+              and your knowledge)"],
   "model_codes": ["official model / part numbers of this exact variant, else []"],
   "requirements": ["hard requirements a matching product must meet, in English"],
   "changed": true if the first reading was wrong about the product or the variant}}"""
 CHECK_HITS = 8
+MAX_WEB_QUERIES = 3  # each one = 2 searches (well-known stores + other shops)
+MARKETPLACES = ["amazon.eg", "noon.com", "jumia.com.eg"]  # sell almost everything: always in the well-known group
+_DOMAIN = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$")
+
+
+def _famous_sites(plan: dict) -> list[str]:
+    """Well-known stores for this product: the big marketplaces + the ones the LLM named for this category.
+    Falls back to our own list when the LLM named none."""
+    named = []
+    for d in plan.get("stores") or []:
+        d = str(d).lower().strip().removeprefix("https://").removeprefix("http://").removeprefix("www.").split("/")[0]
+        if _DOMAIN.match(d) and trust.is_shop_candidate("https://" + d):
+            named.append(d)
+    return list(dict.fromkeys(MARKETPLACES + named[:8])) if named else trust.FAMOUS_SITES
 
 
 async def _check_plan(plan: dict, request: str) -> tuple[dict, list[dict]]:
@@ -146,6 +176,7 @@ async def _check_plan(plan: dict, request: str) -> tuple[dict, list[dict]]:
     prompt = CHECK_PROMPT.format(
         request=request, understood=plan.get("understood") or request,
         queries=json.dumps(plan.get("web_queries", []), ensure_ascii=False),
+        stores=json.dumps(plan.get("stores", []), ensure_ascii=False),
         codes=json.dumps(plan.get("model_codes", []), ensure_ascii=False),
         req=json.dumps(plan.get("requirements", []), ensure_ascii=False),
         hits="\n".join(f"- {h.get('title', '')[:120]} | {h.get('snippet', '')[:200]}" for h in hits))
@@ -154,10 +185,10 @@ async def _check_plan(plan: dict, request: str) -> tuple[dict, list[dict]]:
     except llm.LLMError as e:
         log.info("agent: plan check skipped: %s", e)
         return plan, hits
-    queries = [q for q in fix.get("web_queries", []) if isinstance(q, str) and q.strip()][:2]
+    queries = [q for q in fix.get("web_queries", []) if isinstance(q, str) and q.strip()][:MAX_WEB_QUERIES]
     if queries:
         plan = {**plan, "web_queries": queries}
-        for k in ("model_codes", "requirements"):
+        for k in ("model_codes", "requirements", "stores"):
             if isinstance(fix.get(k), list):
                 plan[k] = [x for x in fix[k] if isinstance(x, str) and x.strip()]
         if isinstance(fix.get("understood"), str) and fix["understood"].strip():
@@ -189,7 +220,9 @@ say in the note what to check. Set "sure": true only when the title/model/link c
 (2) come from a legitimate retailer selling new items in Egypt. Smaller, lesser-known shops are WELCOME and often
 cheaper: keep them when their trust is 35+ (real Egyptian phone, cash on delivery, return policy, warranty...).
 Drop shops with trust below 30, copies/replicas, classifieds/used listings, blogs, price-list sites, and prices
-suspiciously far below the others for the same item. Check every price against what that product really costs in
+suspiciously far below the others for the same item. A branded item sold by a shop that isn't the brand or a big
+retailer, far below what that brand charges in Egypt (common with clothes, shoes, perfume, bags), is likely a copy:
+drop it, or keep it with "sure": false and a note saying it may not be original. Check every price against what that product really costs in
 Egypt today (your market knowledge + the other candidates): a price far below it (e.g. an 18 ft fridge for 2,000 EGP)
 is a wrong currency, a monthly installment, a deposit or an accessory, so drop it. Drop used / refurbished / open-box items unless the shopper
 asked for them. Real discounts are a plus. Reply JSON:
@@ -325,13 +358,15 @@ def _cheapest_variant(products: list[Product]) -> list[Product]:
     return out
 
 
-async def _web_find(web_queries: list[str], seed: list[dict] | None = None) -> tuple[list[Product], dict[str, str]]:
+async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
+                    famous: list[str] | None = None) -> tuple[list[Product], dict[str, str]]:
     t = time.monotonic()
     errors: dict[str, str] = {}
     async with httpx.AsyncClient() as client:
         # Two groups searched side by side: famous stores, and every other shop. The judge compares them all.
-        groups = {"famous": dict(include_domains=trust.FAMOUS_SITES),
-                  "other": dict(exclude_domains=trust.FAMOUS_SITES + trust.CLASSIFIEDS)}
+        famous = famous or trust.FAMOUS_SITES
+        groups = {"famous": dict(include_domains=famous),
+                  "other": dict(exclude_domains=famous + trust.CLASSIFIEDS)}
         jobs = [(g, websearch.search(client, q, max_results=8, **kw)) for q in web_queries for g, kw in groups.items()]
         found = await asyncio.gather(*(j for _, j in jobs), return_exceptions=True)
         TIMES["search"] = round(time.monotonic() - t, 1)
@@ -344,7 +379,8 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None) -> t
             for hit in res:
                 u = hit["url"]
                 if trust.is_shop_candidate(u) and all(u not in lst for lst in picked.values()):
-                    picked["famous" if trust.is_known(u) else "other"].append(u)
+                    big = trust.is_known(u) or any(trust._match(trust.domain(u), d) for d in famous)
+                    picked["famous" if big else "other"].append(u)
         # Same page budget for each group, alternating, so neither side crowds the other out.
         known, small = picked["famous"], picked["other"]
         urls = [u for pair in zip(known, small) for u in pair] + known[len(small):] + small[len(known):]
@@ -517,13 +553,13 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     if websearch.available() and llm.available():
         plan, seed = await _check_plan(plan, plan.get("request") or raw)
     queries = [q for q in plan.get("queries", []) if isinstance(q, str) and q.strip()][:2] or [raw]
-    web_queries = [q for q in plan.get("web_queries", []) if isinstance(q, str) and q.strip()][:2] or queries
+    web_queries = [q for q in plan.get("web_queries", []) if isinstance(q, str) and q.strip()][:MAX_WEB_QUERIES] or queries
     codes = [c for c in plan.get("model_codes", []) if isinstance(c, str) and c.strip()]
 
     TIMES["understand"] = round(time.monotonic() - t0, 1)
     if websearch.available():
         source = "web"
-        products, errors = await _web_find(web_queries, seed)
+        products, errors = await _web_find(web_queries, seed, _famous_sites(plan))
         products = _dedupe(products)
     else:
         source = "stores"
