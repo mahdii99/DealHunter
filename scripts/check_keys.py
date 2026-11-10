@@ -42,15 +42,15 @@ async def check_llm(client: httpx.AsyncClient) -> None:
     for p in providers:
         models = await llm._list_models(client, p)
         if p == "gemini":
-            picks = llm._pick(models, llm.GEMINI_PREFERRED, os.getenv("GEMINI_MODEL"), p)
+            picks = llm._pick(models, llm.GEMINI_PREFERRED, os.getenv("GEMINI_MODEL"), p, limit=3)
             call = llm._gemini
         else:
-            picks = llm._pick(models, llm.COMPAT[p][2], os.getenv(f"{p.upper()}_MODEL"), p)
+            picks = llm._pick(models, llm.COMPAT[p][2], os.getenv(f"{p.upper()}_MODEL"), p, limit=8)
             call = llm._caller(p)
         if not picks:
             show(False, p, "no usable model found")
             continue
-        for model in picks[:3]:
+        for model in picks:  # retired models (410) are remembered, so the app skips them too
             t = time.monotonic()
             try:
                 r = await asyncio.wait_for(call(client, model, 'Reply with this JSON: {"ok": true}'), 20)
@@ -59,6 +59,7 @@ async def check_llm(client: httpx.AsyncClient) -> None:
                     show(True, p, f"{model} answered in {time.monotonic() - t:.1f}s")
                     break
                 show(False, p, f"{model} -> {r.status_code}: {r.text[:120]}")
+                llm._rest(model, r)
             except Exception as e:  # report and try the next model
                 show(False, p, f"{model} -> {type(e).__name__}")
 
