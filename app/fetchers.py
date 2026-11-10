@@ -26,7 +26,7 @@ MIN_TEXT = 300  # less than this is an empty shell / error page
 async def _robots_via_reader(client: httpx.AsyncClient, robots_url: str) -> RobotFileParser | None:
     """The store didn't answer us (timeout/blocked): read its robots.txt through the reader service instead."""
     try:
-        r = await client.get("https://r.jina.ai/" + robots_url, timeout=15,
+        r = await client.get("https://r.jina.ai/" + robots_url, timeout=6,
                              headers={"Accept": "text/plain", "X-Return-Format": "text"})
     except httpx.HTTPError:
         return None
@@ -46,7 +46,7 @@ async def robots_allows(client: httpx.AsyncClient, url: str) -> bool:
     if not hit or time.time() - hit[0] > ROBOTS_TTL:
         rp: RobotFileParser | None
         try:
-            r = await client.get(host + "/robots.txt", timeout=8, follow_redirects=True,
+            r = await client.get(host + "/robots.txt", timeout=4, follow_redirects=True,
                                  headers={"User-Agent": "Mozilla/5.0 (compatible; price-agent)"})
             if r.status_code >= 500:
                 rp = None
@@ -83,25 +83,49 @@ async def _jina(client: httpx.AsyncClient, url: str) -> str:
     return r.text if r.status_code == 200 else ""
 
 
-async def read_pages(client: httpx.AsyncClient, urls: list[str]) -> tuple[dict[str, str], dict[str, str]]:
-    """Returns ({url: page text}, {url: why it couldn't be read})."""
-    allowed, why = [], {}
-    checks = await asyncio.gather(*(robots_allows(client, u) for u in urls))
-    for u, ok in zip(urls, checks):
-        (allowed.append(u) if ok else why.__setitem__(u, "robots.txt disallows"))
+async def read_pages(client: httpx.AsyncClient, urls: list[str], deadline: float = 12) -> tuple[dict[str, str], dict[str, str]]:
+    """Returns ({url: page text}, {url: why it couldn't be read}) within `deadline` seconds.
+    Both readers work on every page at the same time and the first good text wins, so one slow reader or one
+    slow page doesn't cost the others; whatever is ready when time is up is used."""
+    t0 = time.monotonic()
+    why: dict[str, str] = {}
+
+    async def check(u):
+        try:
+            return await asyncio.wait_for(robots_allows(client, u), timeout=max(2.0, deadline / 2))
+        except asyncio.TimeoutError:
+            return False
+
+    allowed = []
+    for u, ok in zip(urls, await asyncio.gather(*(check(u) for u in urls))):
+        (allowed.append(u) if ok else why.__setitem__(u, "robots.txt disallows (or unreachable)"))
+    if not allowed:
+        return {}, why
+    tavily = asyncio.ensure_future(_tavily_extract(client, allowed))
+    jina = {u: asyncio.ensure_future(_jina(client, u)) for u in allowed}
+    pending = {tavily, *jina.values()}
     texts: dict[str, str] = {}
-    try:
-        got = await _tavily_extract(client, allowed)
-        texts.update({u: t for u, t in got.items() if len(t) >= MIN_TEXT})
-    except (httpx.HTTPError, ValueError) as e:
-        log.warning("tavily extract failed: %s", type(e).__name__)
-    rest = [u for u in allowed if u not in texts]
-    if rest:
-        jina = await asyncio.gather(*(_jina(client, u) for u in rest), return_exceptions=True)
-        for u, t in zip(rest, jina):
-            if isinstance(t, str) and len(t) >= MIN_TEXT:
-                texts[u] = t
+    while pending and len(texts) < len(allowed):
+        left = deadline - (time.monotonic() - t0)
+        if left <= 0:
+            break
+        done, pending = await asyncio.wait(pending, timeout=left, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            if task.cancelled() or task.exception() is not None:
+                if task is tavily:
+                    log.warning("tavily extract failed: %s", type(task.exception()).__name__)
+                continue
+            if task is tavily:
+                texts.update({u: x for u, x in task.result().items() if u in jina and len(x) >= MIN_TEXT and u not in texts})
             else:
-                why[u] = "reader couldn't open it"
-    log.info("reader: opened %d of %d pages %s", len(texts), len(urls), list(map(lambda u: urlparse(u).netloc, texts)))
+                u = next(k for k, v in jina.items() if v is task)
+                if len(task.result()) >= MIN_TEXT and u not in texts:
+                    texts[u] = task.result()
+    for task in pending:
+        task.cancel()
+    for u in allowed:
+        if u not in texts:
+            why[u] = "reader couldn't open it" if time.monotonic() - t0 < deadline else "reader too slow"
+    log.info("reader: opened %d of %d pages in %.1fs %s", len(texts), len(urls), time.monotonic() - t0,
+             [urlparse(u).netloc for u in texts])
     return texts, why

@@ -152,6 +152,10 @@ async def _chat_turn(turn: ChatTurn) -> dict:
         return {"action": "ask", "question": plan["question"],
                 "options": [o for o in plan.get("options") or [] if isinstance(o, str)][:4],
                 "request": turn.request, "understood": plan.get("understood", ""), "results": [], "demo": DEMO}
+    if plan and plan["action"] == "answer":  # a question about the shown results: answer it, no new search
+        log.info("=" * 70 + "\n")
+        return {"action": "answer", "answer": plan["answer"], "request": turn.request or plan["request"],
+                "results": [], "demo": DEMO}
     if plan and plan.get("understood"):
         agent._progress(plan["understood"])
     request = plan["request"] if plan else " ".join(filter(None, [turn.request, newest]))  # no LLM: just append

@@ -43,11 +43,16 @@ The chat is a conversation. A new message usually CHANGES THE CURRENT REQUEST in
 "سامسونج بس" / "عايزه أرخص" / "بلاش الأحمر" / "مقاس XL" / "تحت 5000" -> keep everything from the current request
 that still applies and apply the change. Start fresh only if the shopper clearly asks for a different product.
 Ask a question ONLY if no sensible search is possible (e.g. "عايز هدية"); otherwise search and state assumptions.
+If the newest message is a QUESTION about results already shown or about buying advice ("أول نتيجة دي أصلية؟",
+"الفرق بين الاتنين إيه؟", "أنهي أحسن؟", "عليها ضمان؟") and does not ask for different products, use "answer":
+reply from the conversation and your knowledge, without a new search. Be honest: if a price looks too low for that
+product, say it may be a mistake, a different variant or a used/refurbished listing and how to check on the store page.
 
 {chat}
 Reply JSON:
 {
-  "action": "search" or "ask",
+  "action": "search" or "ask" or "answer",
+  "answer": "if answer: 1-4 short Egyptian Arabic sentences answering the shopper's question, else null",
   "question": "if ask: one short Egyptian Arabic question, else null",
   "options": ["if ask: 2-4 short quick answers the shopper can tap, else []"],
   "request": "the full standalone request in Egyptian Arabic built from the whole conversation, e.g.
@@ -89,9 +94,11 @@ async def plan_turn(messages: list[dict], current: str = "") -> dict:
     last = next((m.get("text", "") for m in reversed(messages) if m.get("role") == "user"), "")
     if not isinstance(plan.get("request"), str) or not plan["request"].strip():
         plan["request"] = last
-    if plan.get("action") != "ask" or not plan.get("question"):
+    if plan.get("action") == "answer" and isinstance(plan.get("answer"), str) and plan["answer"].strip():
+        plan["request"] = current or plan["request"]  # a question about the results keeps the current request
+    elif plan.get("action") != "ask" or not plan.get("question"):
         plan["action"] = "search"
-    log.info("agent: plan %s -> %r", plan["action"], plan.get("question") or plan["request"])
+    log.info("agent: plan %s -> %r", plan["action"], plan.get("question") or plan.get("answer") or plan["request"])
     return plan
 
 
@@ -124,7 +131,8 @@ asked for them. Real discounts are a plus. Reply JSON:
   "alternatives": [{{"id": <id>, "note": "..."}}],  // ONLY if matches is empty: closest good options from legit stores,
                                                   // e.g. used/refurbished from a real shop, or a close spec
   "best_deal_id": <id of the best value-for-money pick: low price + real discount + trustworthy shop, or null>,
-  "summary": "1-2 Egyptian Arabic sentences: the best cheap option from a trusted store and any useful advice"}}"""
+  "summary": "1-2 Egyptian Arabic sentences: the best cheap option from a trusted store and any useful advice
+              (name stores and prices, never the candidate ids)"}}"""
 
 
 PAGE_READ_PROMPT = """This is the text of an Egyptian online store page (links shown as [link: url] or markdown [text](url)).
@@ -141,8 +149,8 @@ MAX_LLM_PAGES = 6  # pages with no structured data that the LLM reads itself (fr
 LLM_READ_PARALLEL = 3  # pages read at once; each goes to a different model first, so per-minute limits hold
 PAGE_TIMEOUT = 7         # one store page: slower than this = a slow site, the reader service tries it instead
 PAGES_DEADLINE = 9       # all store pages: stop waiting for stragglers after this
-READING_DEADLINE = 15    # LLM reading of pages without product data (incl. the reader service)
-READER_DEADLINE = 9      # the reader service (Tavily Extract / Jina) for pages we couldn't open
+READING_DEADLINE = 20    # LLM reading of pages without product data (incl. the reader service)
+READER_DEADLINE = 12     # the reader service (Tavily Extract / Jina) for pages we couldn't open
 
 
 async def _within(seconds: float, coros: list) -> list:
@@ -327,11 +335,8 @@ async def _web_find(web_queries: list[str]) -> tuple[list[Product], dict[str, st
         first_tasks = [asyncio.ensure_future(read_one(u, h)) for u, h in first]
         later: list[tuple[str, str]] = []
         if failed and llm.available():
-            try:  # the reader service gets part of the reading time; the LLM needs the rest
-                texts, why = await asyncio.wait_for(fetchers.read_pages(client, failed[:MAX_READER_PAGES]), READER_DEADLINE)
-            except asyncio.TimeoutError:
-                log.info("web: reader service too slow, skipped")
-                texts, why = {}, {u: "reader too slow" for u in failed[:MAX_READER_PAGES]}
+            # the reader service gets part of the reading time and returns what it has by then; the LLM needs the rest
+            texts, why = await fetchers.read_pages(client, failed[:MAX_READER_PAGES], deadline=READER_DEADLINE)
             for u, text in texts.items():
                 errors.pop(trust.domain(u), None)
                 later.append((u, text))
@@ -500,6 +505,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             picks = rank(pool, parse_query(raw))
             summary = f"الحكم بالـ LLM فشل ({e})، فرتبنا بالقواعد البسيطة."
     picks = list({id(p): p for p in picks}.values())
+    _flag_price_outliers(picks)
     picks.sort(key=_paid)
     return {
         "mode": "llm", "source": source, "timings": dict(TIMES),
@@ -514,6 +520,26 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "results": [p.to_dict() for p in picks],
         "store_errors": errors,
     }
+
+
+OUTLIER_RATIO = 0.6  # a match under 60% of the typical (median) price of the other matches looks wrong
+
+
+def _flag_price_outliers(picks: list[Product]) -> None:
+    """Safety net after the judge: an offer far below what every other store asks for the same product is usually
+    a listing mistake, another variant or a used item. Keep it, but say so and never call it the best deal."""
+    if len(picks) < 3 or any(p.alternative for p in picks):
+        return
+    prices = sorted(_paid(p) for p in picks)
+    for p in picks:
+        others = [x for x in prices if x != _paid(p)] or prices
+        median = others[len(others) // 2]
+        if _paid(p) < OUTLIER_RATIO * median:
+            p.unconfirmed = True
+            p.best_deal = False
+            p.note = (f"السعر أقل بكتير من باقي المتاجر (حوالي {median:,.0f} ج.م)، ممكن يكون غلط في الإعلان أو موديل/حالة "
+                      "مختلفة. اتأكد من صفحة المنتج قبل الشراء.")
+            log.info("agent: price outlier %s %s (median %s)", p.store, _paid(p), median)
 
 
 async def run_rules(raw: str, note: str) -> dict:
