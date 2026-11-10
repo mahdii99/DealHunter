@@ -100,6 +100,7 @@ function add(cls, html) {
   el.scrollIntoView({behavior: 'smooth', block: 'start'}); return el;
 }
 function render(d) {  // one assistant turn
+  if (d.action === 'answer') return `<div class="sum">${esc(d.answer)}</div>`;
   if (d.action === 'ask') {
     return `<div class="und">${esc(d.question)}</div>` +
       `<div class="chips">${(d.options || []).map(o => `<button class="chip" type="button">${esc(o)}</button>`).join('')}</div>`;
@@ -118,6 +119,7 @@ function render(d) {  // one assistant turn
 }
 function remember(d) {  // what the assistant "said", so the next message is understood in context
   if (d.action === 'ask') return d.question;
+  if (d.action === 'answer') return d.answer;
   const top = d.results.slice(0, 5).map((p, i) => `${i + 1}) ${p.title} - ${p.price} EGP (${p.store})`).join('; ');
   return [d.understood, d.summary, top && 'Shown: ' + top].filter(Boolean).join(' ');
 }
@@ -152,7 +154,7 @@ async function send(text) {
       }
     }
     if (!d) throw new Error('no answer');
-    if (d.action !== 'ask') currentRequest = d.request || currentRequest;
+    if (d.action === 'search') currentRequest = d.request || currentRequest;
     history.push({role: 'assistant', text: remember(d).slice(0, 1500)});
     a.innerHTML = render(d);
   } catch (err) {

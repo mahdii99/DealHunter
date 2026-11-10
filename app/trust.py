@@ -55,12 +55,31 @@ _GENERIC_TLDS = {"com", "net", "org", "store", "shop", "co", "online", "app", "i
 _FOREIGN_SUBDOMAINS = ("us.", "uk.", "ae.", "sa.", "ksa.", "kw.", "qa.", "en-us.", "en-ae.", "en-sa.")
 
 
+# Shops named after another country on a generic domain (pointiraq.com, bahraingoods.com, dubaiphone.net):
+# they sell there, not here. The current market's own words are allowed (dubai.. is fine when MARKET=AE).
+_COUNTRY_WORDS = {
+    "EG": ("egypt", "masr", "misr", "cairo"),
+    "SA": ("saudi", "ksa", "riyadh", "jeddah"),
+    "AE": ("uae", "dubai", "emirates", "abudhabi", "sharjah"),
+    "OTHER": ("iraq", "bahrain", "kuwait", "qatar", "jordan", "lebanon", "morocco", "algeria", "tunisia",
+              "libya", "syria", "yemen", "pakistan", "india", "turkey"),
+}
+
+
+def _named_for_other_country(host: str) -> bool:
+    name = host.rsplit(".", 1)[0].replace("-", "")
+    mine = market.current().code
+    return any(w in name for code, words in _COUNTRY_WORDS.items() if code != mine for w in words)
+
+
 def is_local_market(url: str) -> bool:
     """A shop in the country we're searching (MARKET in .env): local domain (.com.eg) or a generic one (.com)."""
     host = domain(url)
     tld = host.rsplit(".", 1)[-1]
     if tld == market.current().tld:
         return True
+    if _named_for_other_country(host):
+        return False
     if host.startswith(_FOREIGN_SUBDOMAINS):
         return False
     return tld in _GENERIC_TLDS

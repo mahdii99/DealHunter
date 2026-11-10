@@ -432,10 +432,10 @@ def test_reader_fallback_respects_robots_and_reads_blocked_pages(monkeypatch):
                                                       "https://shop-c.com/p/heater", "https://shop-d.com/p/heater"])
 
     texts, why = asyncio.run(go())
-    assert "3,629" in texts["https://shop-a.com/p/heater"]          # via Tavily Extract
+    assert "EGP" in texts["https://shop-a.com/p/heater"]             # via Tavily Extract or Jina, whichever is first
     assert "3,999" in texts["https://shop-c.com/p/heater"]          # robots.txt missing -> allowed, via Jina
     assert "3,999" in texts["https://shop-d.com/p/heater"]          # robots.txt read through the reader
-    assert why == {"https://shop-b.com/p/heater": "robots.txt disallows"}
+    assert why == {"https://shop-b.com/p/heater": "robots.txt disallows (or unreachable)"}
 
 
 def test_foreign_store_pages_and_domains_are_skipped():
@@ -639,3 +639,57 @@ def test_chat_stream_sends_progress_then_the_answer(monkeypatch):
     statuses = [e["text"] for e in events if e["type"] == "status"]
     assert statuses[0] == "هدورلك على باور بانك 10000" and any("بقارن" in t for t in statuses)
     assert events[-1]["type"] == "done" and events[-1]["data"]["action"] == "search" and events[-1]["data"]["results"]
+
+
+def test_reader_returns_what_it_has_when_time_is_up(monkeypatch):
+    import httpx
+    from app import fetchers
+    fetchers._ROBOTS.clear()
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    async def handler(request: httpx.Request):
+        u = str(request.url)
+        if u.endswith("/robots.txt"):
+            return httpx.Response(404)
+        if "slow-shop" in u:
+            await asyncio.sleep(5)
+        return httpx.Response(200, text="Anker R50i NC EGP 1,599 " * 30)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetchers.read_pages(client, ["https://fast-shop.com/p", "https://slow-shop.com/p"], deadline=0.5)
+
+    t = time.monotonic()
+    texts, why = asyncio.run(go())
+    assert time.monotonic() - t < 2
+    assert list(texts) == ["https://fast-shop.com/p"] and why == {"https://slow-shop.com/p": "reader too slow"}
+
+
+def test_question_about_results_is_answered_without_a_new_search(monkeypatch):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0):
+        return {"action": "answer", "answer": "بي تك وكيل رسمي، بس السعر ده أقل بكتير من السوق فاتأكد من الموديل.",
+                "request": "اول نتيجه دي اصليه؟"}
+
+    async def no_search(*a, **k):
+        raise AssertionError("a question about the results must not start a new search")
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(agent, "run", no_search)
+    from app import main
+    r = TestClient(main.app).post("/api/chat", json={
+        "request": "سماعة انكر R50i NC",
+        "messages": [{"role": "user", "text": "anker r50i nc"},
+                     {"role": "assistant", "text": "Shown: 1) R50i NC - 649 EGP (B.TECH)"},
+                     {"role": "user", "text": "اول نتيجه دي مضمون انها اصليه؟"}]})
+    d = r.json()
+    assert d["action"] == "answer" and "بي تك" in d["answer"] and d["request"] == "سماعة انكر R50i NC"
+
+
+def test_price_far_below_the_others_is_flagged():
+    from app.models import Product
+    picks = [Product(store="B.TECH", title="R50i NC", price=649, url="u1", best_deal=True)] + [
+        Product(store=s, title="R50i NC", price=p, url=s) for s, p in [("Amazon", 1120), ("Raya", 1619), ("x", 1599)]]
+    agent._flag_price_outliers(picks)
+    assert picks[0].unconfirmed and not picks[0].best_deal and "أقل بكتير" in picks[0].note
+    assert not any(p.unconfirmed for p in picks[1:])
