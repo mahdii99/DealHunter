@@ -735,3 +735,43 @@ def test_planner_suggestions_never_carry_guessed_prices(monkeypatch):
     monkeypatch.setattr(llm, "ask_json", fake_ask)
     plan = asyncio.run(agent.plan_turn([{"role": "user", "text": "تيشرت ماركة"}]))
     assert plan["suggested_products"] == ["Zara Men Black Crew Neck T-Shirt 100% Cotton", "Samsung Galaxy A16 (5000 mAh)"]
+
+
+def test_page_reading_goes_to_fast_groq_models_first(monkeypatch):
+    for k in ("GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.setenv(k, "k")
+    for k in ("MISTRAL_API_KEY", "NVIDIA_API_KEY", "CLOUDFLARE_API_KEY", "CEREBRAS_API_KEY", "GROQ_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    llm._MODEL_CACHE.clear()
+    llm._COOLDOWN.clear()
+    llm._LAST_GOOD[:] = ["openrouter/free"]  # even when another model answered last time
+    used = []
+
+    async def fake_list(client, provider):
+        return {"gemini": ["gemini-flash-lite-latest"], "groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+                "openrouter": ["openrouter/free"]}[provider]
+
+    async def answer(client, model, prompt):
+        used.append(model)
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}]})
+
+    monkeypatch.setattr(llm, "_list_models", fake_list)
+    monkeypatch.setattr(llm, "_groq", answer)
+    monkeypatch.setattr(llm, "_caller", lambda p: answer)
+    asyncio.run(llm.ask_json("x", prefer="bulk", spread=1))
+    asyncio.run(llm.ask_json("x", prefer="bulk", spread=2))
+    assert used and all(m.startswith("openai/") for m in used)  # Groq first, not the slow free models
+    llm._LAST_GOOD.clear()
+
+
+def test_sites_that_never_open_are_skipped_after_two_searches():
+    from app import db
+    from app.models import Product
+    agent._remember_sites(["https://zara.com/eg/a", "https://btech.com/p/1"], [Product("B", "t", 10, "https://btech.com/p/1")],
+                          {"zara.com": "403 / reader too slow"})
+    assert db.blocked_sites() == set()  # one bad moment isn't enough
+    agent._remember_sites(["https://zara.com/eg/b", "https://busy.com/x"], [], {"zara.com": "403", "busy.com": "LLM read failed: TimeoutError"})
+    assert db.blocked_sites() == {"zara.com"}  # our busy LLM doesn't count against busy.com
+    agent._remember_sites(["https://us-shop.com/x"], [], {"us-shop.com": "prices in USD"})
+    assert db.blocked_sites() == {"zara.com", "us-shop.com"}
+    assert db.unblock("zara.com") and db.blocked_sites() == {"us-shop.com"}

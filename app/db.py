@@ -33,7 +33,15 @@ CREATE TABLE IF NOT EXISTS prices (
     seen_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS prices_url ON prices (url, seen_at);
+CREATE TABLE IF NOT EXISTS blocked_sites (
+    domain TEXT PRIMARY KEY,        -- a site whose pages we can't open (bot protection, JS-only, robots.txt...)
+    fails INTEGER NOT NULL,         -- searches in a row where none of its pages opened
+    reason TEXT NOT NULL,           -- the last error
+    last_failed REAL NOT NULL,
+    blocked INTEGER NOT NULL        -- 1 = skipped in new searches until unblocked (scripts/blocked_sites.py)
+);
 """
+BLOCK_AFTER = 2  # failed searches in a row before a site is skipped (one failure can be a slow moment)
 _conn: sqlite3.Connection | None = None
 _conn_path: Path | None = None
 
@@ -111,3 +119,36 @@ def add_price_context(results: list[dict]) -> None:
                               (r["url"],)).fetchone()
             r["lowest_seen"] = low if n else None
             r["previous_price"] = prev[0] if prev and prev[0] != r.get("price") else None
+
+
+def blocked_sites() -> set[str]:
+    with _LOCK:
+        return {r[0] for r in _db().execute("SELECT domain FROM blocked_sites WHERE blocked = 1")}
+
+
+def site_failed(domain: str, reason: str, now_blocked: bool = False) -> None:
+    """None of this site's pages opened in a search. After BLOCK_AFTER searches in a row (or right away when
+    `now_blocked`, e.g. a store in another currency), new searches skip it."""
+    with _LOCK, _db() as c:
+        row = c.execute("SELECT fails FROM blocked_sites WHERE domain = ?", (domain,)).fetchone()
+        fails = (row[0] if row else 0) + 1
+        c.execute("INSERT OR REPLACE INTO blocked_sites (domain, fails, reason, last_failed, blocked) VALUES (?, ?, ?, ?, ?)",
+                  (domain, fails, reason[:300], time.time(), int(now_blocked or fails >= BLOCK_AFTER)))
+
+
+def site_opened(domain: str) -> None:
+    """A page of this site worked: its failures so far were a bad moment."""
+    with _LOCK, _db() as c:
+        c.execute("DELETE FROM blocked_sites WHERE domain = ? AND blocked = 0", (domain,))
+
+
+def list_blocked() -> list[dict]:
+    with _LOCK:
+        rows = _db().execute("SELECT domain, fails, reason, last_failed, blocked FROM blocked_sites "
+                             "ORDER BY blocked DESC, last_failed DESC").fetchall()
+    return [{"domain": d, "fails": f, "reason": r, "last_failed": t, "blocked": bool(b)} for d, f, r, t, b in rows]
+
+
+def unblock(domain: str) -> bool:
+    with _LOCK, _db() as c:
+        return c.execute("DELETE FROM blocked_sites WHERE domain = ?", (domain,)).rowcount > 0
