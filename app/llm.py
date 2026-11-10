@@ -40,6 +40,7 @@ GEMINI_PREFERRED = ("gemini-flash-lite-latest", "gemini-flash-latest")
 GROQ_PREFERRED = ("openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "qwen/qwen3-32b",
                   "meta-llama/llama-4-maverick-17b-128e-instruct", "meta-llama/llama-4-scout-17b-16e-instruct",
                   "llama-3.1-8b-instant")
+FAST_BULK = ("groq", "cerebras")  # answer in ~1 s: page reading goes here first, spread over their models
 # Other free tiers with the same (OpenAI-style) API. Each one added = more requests per minute/day for free.
 # provider -> (base url, key in .env, preferred models; the rest are discovered from the provider's list)
 COMPAT = {
@@ -269,9 +270,15 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
                 attempts += [(provider, m, _caller(provider)) for m in models[:4]]
         # last model that worked goes first; models that just failed go last (or are skipped)
         now = time.time()
+        # bulk work (reading pages) goes to the fast providers first: free models elsewhere often take 10 s+
+        fast = prefer == "bulk" and any(a[0] in FAST_BULK and _COOLDOWN.get(a[1], 0) <= now for a in attempts)
+
         def preferred(a) -> bool:
-            return bool(prefer) and (a[0] != "gemini" if prefer == "bulk" else a[0] == prefer)
-        attempts.sort(key=lambda a: (_COOLDOWN.get(a[1], 0) > now, not preferred(a), a[1] not in _LAST_GOOD))
+            if prefer == "bulk":
+                return a[0] in FAST_BULK if fast else a[0] != "gemini"
+            return bool(prefer) and a[0] == prefer
+        attempts.sort(key=lambda a: (_COOLDOWN.get(a[1], 0) > now, not preferred(a),
+                                     prefer == "bulk" and a[0] == "gemini", a[1] not in _LAST_GOOD))
         ready = [a for a in attempts if _COOLDOWN.get(a[1], 0) <= now] or attempts
         if spread and prefer:
             mine = [a for a in ready if preferred(a)]

@@ -48,7 +48,7 @@ request ──► understand (LLM) ──► web search ──► open store pag
 | Judge | `app/agent.py` `JUDGE_PROMPT` | Keeps exact matches from legit stores, picks the best value deal, offers close alternatives if nothing matches |
 | Trust | `app/trust.py` | Known retailers + a page-signal score for everyone else; drops foreign stores and price-comparison sites |
 | LLM client | `app/llm.py` | Gemini, Groq, Mistral, NVIDIA, Cloudflare and OpenRouter free tiers; picks live models, rests busy ones, remembers daily quotas across restarts |
-| Price DB | `app/db.py` | SQLite: request cache and price history (`GET /api/history?url=`) |
+| Price DB | `app/db.py` | SQLite: request cache, price history (`GET /api/history?url=`), and sites whose pages never open, which later searches skip (`python -m scripts.blocked_sites`) |
 | Country config | `app/market.py` | Currency, local domains and stores per market (`MARKET=EG`, Saudi Arabia and UAE prepared) |
 
 ## Tech stack

@@ -14,13 +14,15 @@ import contextvars
 import json
 import logging
 import re
+import sqlite3
 import time
 from html import unescape
 from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
-from . import fetchers, llm, trust, websearch
+from . import db, fetchers, llm, trust, websearch
+from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
 from .query import parse_query
@@ -245,6 +247,8 @@ PAGE:
 {text}"""
 MAX_READER_PAGES = 8  # failed pages retried through a reader service per search
 MAX_LLM_PAGES = 6  # pages with no structured data that the LLM reads itself (free-tier friendly)
+MAX_LLM_READS = 10  # all LLM page reads per search, incl. pages the reader service opened
+PER_STORE_READS = 3  # LLM reads per store, so more stores get read
 LLM_READ_PARALLEL = 3  # pages read at once; each goes to a different model first, so per-minute limits hold
 PAGE_TIMEOUT = 7         # one store page: slower than this = a slow site, the reader service tries it instead
 PAGES_DEADLINE = 9       # all store pages: stop waiting for stragglers after this
@@ -364,9 +368,10 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
     errors: dict[str, str] = {}
     async with httpx.AsyncClient() as client:
         # Two groups searched side by side: famous stores, and every other shop. The judge compares them all.
-        famous = famous or trust.FAMOUS_SITES
+        blocked = db.blocked_sites()  # sites we couldn't open in earlier searches: don't spend searches on them
+        famous = [d for d in famous or trust.FAMOUS_SITES if d not in blocked]
         groups = {"famous": dict(include_domains=famous),
-                  "other": dict(exclude_domains=famous + trust.CLASSIFIEDS)}
+                  "other": dict(exclude_domains=famous + trust.CLASSIFIEDS + sorted(blocked)[:100])}
         jobs = [(g, websearch.search(client, q, max_results=8, **kw)) for q in web_queries for g, kw in groups.items()]
         found = await asyncio.gather(*(j for _, j in jobs), return_exceptions=True)
         TIMES["search"] = round(time.monotonic() - t, 1)
@@ -378,7 +383,8 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                 continue
             for hit in res:
                 u = hit["url"]
-                if trust.is_shop_candidate(u) and all(u not in lst for lst in picked.values()):
+                if (trust.is_shop_candidate(u) and trust.domain(u) not in blocked
+                        and all(u not in lst for lst in picked.values())):
                     big = trust.is_known(u) or any(trust._match(trust.domain(u), d) for d in famous)
                     picked["famous" if big else "other"].append(u)
         # Same page budget for each group, alternating, so neither side crowds the other out.
@@ -398,6 +404,9 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                 failed.append(url)
                 continue
             page_products, html = res
+            if not page_products and (cur := extract_mod.foreign_currency(html)):
+                errors[trust.domain(url)] = f"prices in {cur}"  # another country's store: not worth an LLM read
+                continue
             if not page_products:
                 # Little visible text = a JavaScript-only page; a reader service renders it better.
                 if len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", html, flags=re.S))) < 1500:
@@ -432,20 +441,33 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
 
         # Pages without product data in them (e.g. Amazon): the LLM reads the page text itself. This starts
         # right away, while the pages we couldn't open are fetched through a reader service at the same time.
-        first = unread[:MAX_LLM_PAGES] if llm.available() else []
+        def worth_reading(pages: list, limit: int) -> list:
+            """Well-known stores for this product first, and at most PER_STORE_READS pages per store, so the
+            LLM's limited reads cover more stores."""
+            pages = sorted(pages, key=lambda x: not any(trust._match(trust.domain(x[0]), d) for d in famous))
+            out, per = [], {}
+            for u, h in pages:
+                d = trust.domain(u)
+                if per.get(d, 0) < PER_STORE_READS and len(out) < limit:
+                    per[d] = per.get(d, 0) + 1
+                    out.append((u, h))
+            return out
+
+        first = worth_reading(unread, MAX_LLM_PAGES) if llm.available() else []
         if first:
             log.info("web: LLM reading %s", [trust.domain(u) for u, _ in first])
         first_tasks = [asyncio.ensure_future(read_one(u, h)) for u, h in first]
         later: list[tuple[str, str]] = []
         if failed and llm.available():
             # the reader service gets part of the reading time and returns what it has by then; the LLM needs the rest
-            texts, why = await fetchers.read_pages(client, failed[:MAX_READER_PAGES], deadline=READER_DEADLINE)
+            failed = [u for u, _ in worth_reading([(u, "") for u in failed], MAX_READER_PAGES)]
+            texts, why = await fetchers.read_pages(client, failed, deadline=READER_DEADLINE)
             for u, text in texts.items():
                 errors.pop(trust.domain(u), None)
                 later.append((u, text))
             for u, reason in why.items():
                 errors[trust.domain(u)] = f"{errors.get(trust.domain(u), '')} / {reason}".strip(" /")
-        later = later[:max(0, MAX_LLM_PAGES + 2 - len(first))]
+        later = worth_reading(later, max(0, MAX_LLM_READS - len(first)))
         if later:
             log.info("web: LLM reading (via reader) %s", [trust.domain(u) for u, _ in later])
         left = READING_DEADLINE - (time.monotonic() - t - TIMES["search"] - TIMES["pages"])
@@ -455,9 +477,25 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         collect(first, await _results(max(left, 1), first_tasks))
         collect(later, later_res)
         TIMES["reading"] = round(time.monotonic() - t - TIMES["search"] - TIMES["pages"], 1)
+    _remember_sites(urls, products, errors)
     log.info("web: %d products from %d pages in %.1fs, failed=%s",
              len(products), len(urls) - len(errors), time.monotonic() - t, list(errors))
     return products, errors
+
+
+def _remember_sites(urls: list[str], products: list[Product], errors: dict[str, str]) -> None:
+    """Sites whose pages never open get skipped in later searches (db.blocked_sites); sites that worked are cleared.
+    A failed LLM read is our model being busy, not the site, so it doesn't count."""
+    worked = {trust.domain(p.url) for p in products}
+    try:
+        for d in {trust.domain(u) for u in urls}:
+            why = errors.get(d)
+            if d in worked:
+                db.site_opened(d)
+            elif why and not why.startswith("LLM read failed"):
+                db.site_failed(d, why, now_blocked=why.startswith("prices in "))
+    except (sqlite3.Error, OSError) as e:  # never let bookkeeping break a search
+        log.warning("could not save blocked sites: %s", e)
 
 
 async def _search_all(queries: list[str]) -> tuple[list[Product], dict[str, str]]:
