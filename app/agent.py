@@ -42,6 +42,8 @@ into concrete specs and searches that find it in Egyptian online stores.
 The chat is a conversation. A new message usually CHANGES THE CURRENT REQUEST instead of starting over:
 "سامسونج بس" / "عايزه أرخص" / "بلاش الأحمر" / "مقاس XL" / "تحت 5000" -> keep everything from the current request
 that still applies and apply the change. Start fresh only if the shopper clearly asks for a different product.
+Never change the product type the shopper named: if you don't recognize a model name (e.g. "anker r50i nc"),
+search the shopper's own words as they are instead of guessing a category.
 Ask a question ONLY if no sensible search is possible (e.g. "عايز هدية"); otherwise search and state assumptions.
 If the newest message is a QUESTION about results already shown or about buying advice ("أول نتيجة دي أصلية؟",
 "الفرق بين الاتنين إيه؟", "أنهي أحسن؟", "عليها ضمان؟") and does not ask for different products, use "answer":
@@ -90,7 +92,7 @@ def _chat_block(messages: list[dict], current: str) -> str:
 async def plan_turn(messages: list[dict], current: str = "") -> dict:
     """One LLM call: understand the newest message in the context of the chat, merge it into the request,
     and plan the searches. Raises llm.LLMError when no model answers."""
-    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current)))
+    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current)), timeout=12)
     last = next((m.get("text", "") for m in reversed(messages) if m.get("role") == "user"), "")
     if not isinstance(plan.get("request"), str) or not plan["request"].strip():
         plan["request"] = last
@@ -483,7 +485,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
                 avoid=json.dumps(plan.get("avoid", []), ensure_ascii=False), minp=minp, maxp=maxp, items=items,
                 codes=json.dumps(codes, ensure_ascii=False),
                 suggested=json.dumps(plan.get("suggested_products") or [], ensure_ascii=False))
-            verdict = await llm.ask_json(prompt)
+            verdict = await llm.ask_json(prompt, timeout=20, budget=40)  # the big call: give it time, it decides quality
             TIMES["judge"] = round(time.monotonic() - tj, 1)
             _save_debug("last_judge.json", {"request": raw, "plan": plan, "prompt": prompt, "verdict": verdict})
             log.info("agent: judge kept %d of %d (model %s)", len(verdict.get("matches") or []), len(pool),
@@ -503,7 +505,9 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
                     picks.append(p)
         except llm.LLMError as e:
             picks = rank(pool, parse_query(raw))
-            summary = f"الحكم بالـ LLM فشل ({e})، فرتبنا بالقواعد البسيطة."
+            log.warning("agent: judge failed: %s", e)
+            summary = ("الموديلات المجانية مشغولة دلوقتي فمقدرتش أراجع النتايج بدقة، فدي مرتبة بالسعر بس "
+                       "واتأكد من الموديل في كل واحدة. جرب تاني كمان دقيقة لنتيجة أدق.")
     picks = list({id(p): p for p in picks}.values())
     _flag_price_outliers(picks)
     picks.sort(key=_paid)

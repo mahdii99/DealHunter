@@ -73,7 +73,7 @@ def test_agent_with_fake_llm(monkeypatch):
         {"matches": [{"id": 1, "note": "تلات منافذ"}, {"id": 0, "note": "أرخص واحد"}], "summary": "خد الـ Wiwu"},
     ])
 
-    async def fake_ask(prompt, timeout=30, prefer=None, spread=0):
+    async def fake_ask(prompt, timeout=30, prefer=None, spread=0, budget=None):
         return next(replies)
 
     monkeypatch.setattr(store, "search", fake_search)
@@ -180,7 +180,7 @@ def test_agent_web_mode_finds_stores_itself(monkeypatch):
         {"matches": [{"id": 0, "note": "ok"}], "summary": "s"},
     ])
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
         return next(replies)
 
     monkeypatch.setattr(websearch, "available", lambda: True)
@@ -236,7 +236,7 @@ def test_variants_collapse_and_cents_outlier():
 def test_llm_reads_page_without_structured_data(monkeypatch):
     html = '<html><body><div><a href="/dp/B01">HP ZBook Firefly 14 G10</a> EGP 52,999</div></body></html>'
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
         assert "HP ZBook Firefly 14 G10 [link: /dp/B01]" in prompt and "52,999" in prompt
         return {"products": [{"title": "HP ZBook Firefly 14 G10", "price": 52999, "url": "/dp/B01", "condition": "new"},
                              {"title": "junk", "price": "n/a"}]}
@@ -258,7 +258,7 @@ def test_guessed_budget_is_ignored(monkeypatch):
         {"matches": [{"id": 0, "note": "n"}], "summary": "s"},
     ])
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
         return next(replies)
 
     monkeypatch.setattr(store, "search", fake_search)
@@ -349,7 +349,7 @@ def test_chat_follow_up_refines_previous_request(monkeypatch):
         {"matches": [{"id": 0, "note": "ok"}], "summary": "s"},
     ])
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
         prompts.append(prompt)
         return next(replies)
 
@@ -375,7 +375,7 @@ def test_chat_follow_up_refines_previous_request(monkeypatch):
 
 
 def test_chat_asks_when_too_vague(monkeypatch):
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
         return {"action": "ask", "question": "الهدية لمين؟", "options": ["لراجل", "لست", 3]}
 
     monkeypatch.setattr(llm, "available", lambda: True)
@@ -624,7 +624,7 @@ def test_chat_stream_sends_progress_then_the_answer(monkeypatch):
         {"matches": [{"id": 0, "note": "ok"}], "summary": "s"},
     ])
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
         return next(replies)
 
     monkeypatch.setattr(store, "search", fake_search)
@@ -666,7 +666,7 @@ def test_reader_returns_what_it_has_when_time_is_up(monkeypatch):
 
 
 def test_question_about_results_is_answered_without_a_new_search(monkeypatch):
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
         return {"action": "answer", "answer": "بي تك وكيل رسمي، بس السعر ده أقل بكتير من السوق فاتأكد من الموديل.",
                 "request": "اول نتيجه دي اصليه؟"}
 
