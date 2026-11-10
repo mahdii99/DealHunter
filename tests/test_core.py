@@ -594,7 +594,7 @@ def test_search_shares_free_quotas_and_falls_back(monkeypatch):
             return [await websearch.search(c, "hero 50l", include_domains=["btech.com"]) for _ in range(3)]
 
     res = asyncio.run(go())
-    assert all(r == [{"url": "https://btech.com/p/1", "title": "Hero 50L", "snippet": ""}] for r in res)
+    assert all(r == [{"url": "https://btech.com/p/1", "title": "Hero 50L", "snippet": "", "content": ""}] for r in res)
     assert hits.count("api.tavily.com") == 1        # out of quota once -> rested, Exa takes over
     assert websearch._REST["tavily"] - time.time() > 3600
 
@@ -775,3 +775,54 @@ def test_sites_that_never_open_are_skipped_after_two_searches():
     agent._remember_sites(["https://us-shop.com/x"], [], {"us-shop.com": "prices in USD"})
     assert db.blocked_sites() == {"zara.com", "us-shop.com"}
     assert db.unblock("zara.com") and db.blocked_sites() == {"us-shop.com"}
+
+
+def test_page_we_cant_open_is_read_from_the_search_services_copy(monkeypatch):
+    from app import fetchers, websearch
+    copy = "DeFacto Basic Crew Neck T-Shirt 399 EGP [link: /p/basic-tee] " + "x " * 500
+
+    async def fake_search(client, query, max_results=8, exclude_domains=None, include_domains=None):
+        return [{"url": "https://www.defacto.com.eg/basic-tees", "title": "", "snippet": "", "content": copy}]
+
+    async def blocked(client, sem, url):
+        raise RuntimeError("403")
+
+    async def reader_must_not_run(*a, **k):
+        raise AssertionError("the search service's copy is enough")
+
+    read = []
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+        read.append(prompt)
+        return {"products": [{"title": "DeFacto Basic Crew Neck T-Shirt", "price": 399, "url": "/p/basic-tee"}]}
+
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(agent, "_fetch_page", blocked)
+    monkeypatch.setattr(fetchers, "read_pages", reader_must_not_run)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    products, errors = asyncio.run(agent._web_find(["basic t-shirt"]))
+    assert [p.price for p in products] == [399] and "DeFacto Basic Crew Neck" in read[0] and not errors
+
+
+def test_low_trust_shops_never_reach_the_judge(monkeypatch):
+    from app import websearch
+    from app.models import Product
+    shady = Product("2segypt.com", "basic tee", 319, "https://2segypt.com/p/1", trust_score=25)
+    ok = Product("defacto.com.eg", "basic tee", 399, "https://defacto.com.eg/p/1", trust_score=65)
+
+    async def fake_find(queries, seed=None, famous=None):
+        return [shady, ok], {}
+
+    judged = []
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+        judged.append(prompt)
+        return {"matches": [{"id": 0, "sure": True, "note": "ok"}], "summary": "s"}
+
+    monkeypatch.setattr(websearch, "available", lambda: False)
+    monkeypatch.setattr(agent, "_search_all", lambda q: fake_find(q))
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    out = asyncio.run(agent.run("تيشرت", plan={"action": "search", "request": "تيشرت", "queries": ["tee"]}))
+    assert "2segypt" not in judged[0] and [r["store"] for r in out["results"]] == ["defacto.com.eg"]
