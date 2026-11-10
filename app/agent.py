@@ -403,7 +403,16 @@ def _dedupe(products: list[Product]) -> list[Product]:
         key = (trust.domain(p.url), re.sub(r"\W+", " ", p.title.lower()).strip(), round(_paid(p)))
         if key not in seen or (seen[key].url.count("/") < p.url.count("/")):
             seen[key] = p
-    return list(seen.values())
+    # the same product under a short and a long title in one store (e.g. Amazon's search card vs. its page):
+    # same shop, same price, and every word of the short title is in the long one -> keep the long one
+    words = {id(p): set(re.findall(r"\w+", p.title.lower())) for p in seen.values()}
+    items = list(seen.values())
+
+    def covered(p: Product, q: Product) -> bool:  # p is a shorter title of q
+        return (q is not p and trust.domain(q.url) == trust.domain(p.url) and round(_paid(q)) == round(_paid(p))
+                and len(words[id(p)]) >= 3 and words[id(p)] <= words[id(q)]
+                and (words[id(p)] != words[id(q)] or items.index(q) < items.index(p)))
+    return [p for p in items if not any(covered(p, q) for q in items)]
 
 
 def _save_debug(name: str, data: dict):

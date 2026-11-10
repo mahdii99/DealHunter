@@ -700,3 +700,14 @@ def test_retired_model_is_replaced_by_another_listed_one(monkeypatch):
     assert "openai/gpt-oss-120b" not in picks  # retired: gone from the choices
     assert "meta/llama-3.3-70b-instruct" in picks and "meta/llama-3.1-405b-instruct" in picks  # busy is only rested
     llm._COOLDOWN.clear()
+
+
+def test_dedupe_short_and_long_title_of_same_listing():
+    from app.models import Product
+    long = Product("A", "Soundcore by Anker R50i NC Wireless Bluetooth Earphones, Noise Cancelling, Black", 1130,
+                   "https://www.amazon.eg/dp/B0D1")
+    short = Product("A", "Soundcore by Anker R50i NC Wireless Bluetooth Earphones", 1130, "https://www.amazon.eg/s?k=r50i")
+    other_price = Product("A", "Soundcore by Anker R50i NC Wireless Bluetooth Earphones", 1179, "https://www.amazon.eg/dp/B0D2")
+    other_shop = Product("N", "Soundcore by Anker R50i NC Wireless Bluetooth Earphones", 1130, "https://www.noon.com/egypt-ar/x")
+    out = agent._dedupe([short, long, other_price, other_shop])
+    assert len(out) == 3 and all(any(p is q for q in out) for p in (long, other_price, other_shop))
