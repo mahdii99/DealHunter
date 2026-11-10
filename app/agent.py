@@ -47,8 +47,9 @@ that still applies and apply the change. Start fresh only if the shopper clearly
 Never change the product type the shopper named: if you don't recognize a model name (e.g. "anker r50i nc"),
 search the shopper's own words as they are instead of guessing a category.
 Quality words are real requirements, never drop them: "ماركة نضيفة / معروفة / أصلي / كويس" means well-known
-quality brands, so name those brands in suggested_products and the queries, and add a requirement like
-"well-known brand (e.g. ...)", so no-name products don't count as a match.
+quality brands, so name those brands in suggested_products and add a requirement like "well-known brand (e.g. ...)",
+so no-name products don't count as a match. The web queries must then NAME the brands (e.g. 'تيشيرت بيزك ديفاكتو',
+'LC Waikiki basic t-shirt'), never generic words like "ماركة مشهورة" or "brand": those find no-name shops.
 Ask a question ONLY if no sensible search is possible (e.g. "عايز هدية"); otherwise search and state assumptions.
 If the newest message is a QUESTION about results already shown or about buying advice ("أول نتيجة دي أصلية؟",
 "الفرق بين الاتنين إيه؟", "أنهي أحسن؟", "عليها ضمان؟") and does not ask for different products, use "answer":
@@ -136,6 +137,8 @@ product type, the variant they mean, and its official model numbers. Shoppers wr
 Arabic/English, and the same word can mean different things for different products: read every word in the context
 of this product, the way stores selling it use it. If the results clearly show the product, trust them over the first
 reading; if they are unrelated or unclear, keep the first reading. Never change the product type the shopper named.
+Keep every requirement of the first reading. If the shopper wants well-known brands, the queries must name brands
+(never generic words like "ماركة مشهورة" / "brand", which find no-name shops).
 Reply JSON:
 {{"understood": "one short Egyptian Arabic sentence saying what you'll look for",
   "web_queries": ["2, or 3 when several brands/products are wanted: Arabic as Egyptian shoppers and stores write
@@ -247,6 +250,8 @@ PAGE:
 {text}"""
 MAX_READER_PAGES = 8  # failed pages retried through a reader service per search
 MAX_LLM_PAGES = 6  # pages with no structured data that the LLM reads itself (free-tier friendly)
+MIN_CRAWLED_TEXT = 800  # shorter "page text" from the search service is just a snippet
+MIN_TRUST = 30  # unknown shops below this (few real-shop signals on their site) are never shown
 MAX_LLM_READS = 10  # all LLM page reads per search, incl. pages the reader service opened
 PER_STORE_READS = 3  # LLM reads per store, so more stores get read
 LLM_READ_PARALLEL = 3  # pages read at once; each goes to a different model first, so per-minute limits hold
@@ -376,6 +381,7 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         found = await asyncio.gather(*(j for _, j in jobs), return_exceptions=True)
         TIMES["search"] = round(time.monotonic() - t, 1)
         picked: dict[str, list[str]] = {"famous": [], "other": []}
+        crawled: dict[str, str] = {}  # page text the search service already has: used when we can't open the page
         jobs, found = [("check", None)] + jobs, [seed or []] + list(found)  # the plan-check search's hits count too
         for (group, _), res in zip(jobs, found):
             if isinstance(res, Exception):
@@ -383,6 +389,8 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                 continue
             for hit in res:
                 u = hit["url"]
+                if len(hit.get("content") or "") >= MIN_CRAWLED_TEXT:
+                    crawled.setdefault(u, hit["content"])
                 if (trust.is_shop_candidate(u) and trust.domain(u) not in blocked
                         and all(u not in lst for lst in picked.values())):
                     big = trust.is_known(u) or any(trust._match(trust.domain(u), d) for d in famous)
@@ -458,6 +466,14 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
             log.info("web: LLM reading %s", [trust.domain(u) for u, _ in first])
         first_tasks = [asyncio.ensure_future(read_one(u, h)) for u, h in first]
         later: list[tuple[str, str]] = []
+        # pages we couldn't open but the search service already crawled: read its copy, no reader service needed
+        have = [u for u in failed if u in crawled]
+        for u in have:
+            errors.pop(trust.domain(u), None)
+            later.append((u, crawled[u]))
+        failed = [u for u in failed if u not in crawled]
+        if have:
+            log.info("web: using the search service's copy of %s", [trust.domain(u) for u in have])
         if failed and llm.available():
             # the reader service gets part of the reading time and returns what it has by then; the LLM needs the rest
             failed = [u for u, _ in worth_reading([(u, "") for u in failed], MAX_READER_PAGES)]
@@ -612,6 +628,10 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     if sold_out:
         log.info("agent: dropped %d sold-out items: %s", len(sold_out), [p.store for p in sold_out][:10])
     pool = [p for p in pool if p.in_stock is not False]
+    shady = [p for p in pool if not p.trusted and p.trust_score is not None and p.trust_score < MIN_TRUST]
+    if shady:
+        log.info("agent: dropped %d items from low-trust shops: %s", len(shady), sorted({p.store for p in shady}))
+        pool = [p for p in pool if not any(p is q for q in shady)]
     for p in pool:
         p.discount_pct = _discount(p)
     pool.sort(key=_paid)

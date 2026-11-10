@@ -20,6 +20,7 @@ PROVIDERS = ("tavily", "exa", "firecrawl", "brave")
 KEYS = {"tavily": "TAVILY_API_KEY", "exa": "EXA_API_KEY", "firecrawl": "FIRECRAWL_API_KEY", "brave": "BRAVE_API_KEY"}
 QUOTA_REST = 6 * 3600   # out of quota / bad key: skip it for a while
 BUSY_REST = 60          # rate limited / server error
+CONTENT_CHARS = 12000   # page text the search service already crawled: read it when we can't open the page
 _REST: dict[str, float] = {}
 _turn = [0]
 
@@ -47,20 +48,22 @@ def _site_query(query: str, include: list[str] | None, exclude: list[str] | None
 async def _tavily(client, key, query, n, include, exclude):
     r = await client.post("https://api.tavily.com/search", timeout=15, headers={"Authorization": f"Bearer {key}"},
                           json={"query": query, "max_results": n, "search_depth": "basic", "topic": "general",
+                                "include_raw_content": "markdown",  # page text from Tavily's own crawl, same cost
                                 "country": market.current().country_en.lower(),
                                 **({"exclude_domains": exclude} if exclude else {}),
                                 **({"include_domains": include} if include else {})})
-    return r, lambda d: [{"url": x["url"], "title": x.get("title", ""), "snippet": x.get("content", "")}
-                         for x in d.get("results", [])]
+    return r, lambda d: [{"url": x["url"], "title": x.get("title", ""), "snippet": x.get("content", ""),
+                          "content": x.get("raw_content") or ""} for x in d.get("results", [])]
 
 
 async def _exa(client, key, query, n, include, exclude):
     r = await client.post("https://api.exa.ai/search", timeout=15, headers={"x-api-key": key},
                           json={"query": query, "numResults": n, "type": "auto", "userLocation": market.current().code,
+                                "contents": {"text": {"maxCharacters": CONTENT_CHARS}},  # page text from Exa's crawl
                                 **({"excludeDomains": exclude} if exclude else {}),
                                 **({"includeDomains": include} if include else {})})
-    return r, lambda d: [{"url": x["url"], "title": x.get("title") or "", "snippet": x.get("text") or x.get("summary") or ""}
-                         for x in d.get("results", [])]
+    return r, lambda d: [{"url": x["url"], "title": x.get("title") or "", "snippet": x.get("summary") or x.get("text") or "",
+                          "content": x.get("text") or ""} for x in d.get("results", [])]
 
 
 async def _firecrawl(client, key, query, n, include, exclude):
@@ -106,7 +109,8 @@ async def search(client: httpx.AsyncClient, query: str, max_results: int = 8,
             continue
         if r.status_code == 200:
             try:
-                return [{**x, "snippet": (x.get("snippet") or "")[:300]} for x in parse(r.json()) if x.get("url")]
+                return [{**x, "snippet": (x.get("snippet") or "")[:300], "content": (x.get("content") or "")[:CONTENT_CHARS]}
+                        for x in parse(r.json()) if x.get("url")]
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 errors.append(f"{p}: bad reply {type(e).__name__}")
                 continue
