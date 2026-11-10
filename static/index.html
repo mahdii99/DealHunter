@@ -105,7 +105,8 @@ function render(d) {  // one assistant turn
     return `<div class="und">${esc(d.question)}</div>` +
       `<div class="chips">${(d.options || []).map(o => `<button class="chip" type="button">${esc(o)}</button>`).join('')}</div>`;
   }
-  const errs = Object.keys(d.store_errors || {});
+  // pages we couldn't open: only shown with ?debug=1 in the address (kept out of the normal page)
+  const errs = new URLSearchParams(location.search).has('debug') ? Object.keys(d.store_errors || {}) : [];
   const alt = d.results.length && d.results[0].alternative;
   return (d.demo ? '<div class="err">وضع تجريبي: نتايج من صفحات عينة مش أسعار حقيقية</div>' : '') +
     (d.understood ? `<div class="und">${esc(d.understood)}</div>` : '') +
