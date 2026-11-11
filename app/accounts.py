@@ -34,7 +34,22 @@ PREFS = {
 }
 
 # The tables (users, watches, notifications) live in the same database as the prices: see app/db.py.
-_db = db._db
+
+
+class Unavailable(Exception):
+    """DATABASE_URL is set but Postgres can't be reached right now, so db.py is on its temporary local file.
+    That's fine for prices, but accounts written there would be lost: account requests fail until it's back."""
+
+
+class _Accounts:
+    def run(self, sql: str, args: tuple = ()) -> list[tuple]:
+        rows = db._db.run(sql, args)
+        if os.getenv("DATABASE_URL") and not db._db.pg:
+            raise Unavailable()
+        return rows
+
+
+_db = _Accounts()
 
 
 def close() -> None:
