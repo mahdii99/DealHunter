@@ -51,6 +51,12 @@
   .coupon { font-size:13px; color:#ea580c; margin-top:2px; }
   .note { font-size:13px; color:var(--muted); margin-top:4px; }
   .err { color:#b45309; font-size:13px; }
+  .report { margin-top:6px; font-size:12px; padding:2px 8px; border-radius:20px;
+            background:transparent; color:var(--muted); border:1px solid var(--border); cursor:pointer; }
+  .reasons { display:flex; flex-wrap:wrap; gap:6px; padding:8px 12px 0; }
+  .reasons button { font-size:12px; padding:4px 10px; border-radius:20px; background:var(--card); color:var(--text);
+                    border:1px solid var(--border); cursor:pointer; }
+  .thanks { font-size:12px; color:var(--accent); padding:6px 12px 0; }
 </style>
 </head>
 <body>
@@ -82,8 +88,12 @@ function imgFail(img) {  // store blocks hotlinking? load it through our server,
 }
 const fmt = n => new Intl.NumberFormat('ar-EG').format(n) + ' ج.م';
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const shown = [];  // every turn's answer, so a report knows which result and which request it is about
+const REASONS = {wrong_product: 'منتج تاني مش اللي طلبته', wrong_price: 'السعر غلط', bad_store: 'المتجر مش موثوق',
+                 sold_out: 'خلصان', other: 'حاجة تانية'};
 function card(p, i) {
   return `
+    <div class="wrap" data-t="${shown.length - 1}" data-i="${i}">
       <a class="item ${i === 0 ? 'best' : ''}" href="${esc(p.url)}" target="_blank" rel="noopener nofollow">
         ${p.image ? `<img src="${esc(p.image)}" data-proxy="/img?u=${encodeURIComponent(p.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="imgFail(this)">` : ''}
         <div>
@@ -93,7 +103,9 @@ function card(p, i) {
           ${p.coupon_price ? `<div class="coupon">${fmt(p.coupon_price)} بعد كوبون ${fmt(p.price - p.coupon_price)} عند الدفع</div>` : ''}
           <span class="badge">${esc(p.store)}</span> ${p.condition ? `<span class="badge warn">${({used:'مستعمل',refurbished:'مجدد','open box':'أوبن بوكس'})[p.condition] || esc(p.condition)}</span> ` : ''}${trustBadge(p)}${p.discount_pct ? ` <span class="badge deal">خصم ${p.discount_pct}%</span>` : ''}${p.best_deal ? ' <span class="badge deal">أحسن عرض</span>' : ''}${p.unconfirmed ? ' <span class="badge warn" title="العنوان مش موضح النوع بالظبط، اتأكد من صفحة المنتج">اتأكد من الموديل</span>' : ''} ${i === 0 ? '<span class="badge">الأرخص</span>' : ''}
         </div>
-      </a>`;
+      </a>
+      <button class="report" type="button" title="لو النتيجة دي غلط قولّنا عشان نصلحها">النتيجة دي غلط؟</button>
+    </div>`;
 }
 function add(cls, html) {
   const el = document.createElement('div'); el.className = cls; el.innerHTML = html; chat.appendChild(el);
@@ -105,6 +117,7 @@ function render(d) {  // one assistant turn
     return `<div class="und">${esc(d.question)}</div>` +
       `<div class="chips">${(d.options || []).map(o => `<button class="chip" type="button">${esc(o)}</button>`).join('')}</div>`;
   }
+  shown.push(d);
   // pages we couldn't open: only shown with ?debug=1 in the address (kept out of the normal page)
   const errs = new URLSearchParams(location.search).has('debug') ? Object.keys(d.store_errors || {}) : [];
   const alt = d.results.length && d.results[0].alternative;
@@ -166,6 +179,21 @@ async function send(text) {
 f.addEventListener('submit', e => { e.preventDefault(); send(q.value); });
 document.addEventListener('click', e => {  // quick answers of a question
   if (e.target.classList.contains('chip')) send(e.target.textContent);
+});
+document.addEventListener('click', e => {  // "this result is wrong": pick why, then it's saved for review
+  const w = e.target.closest('.wrap');
+  if (!w) return;
+  if (e.target.classList.contains('report')) {
+    e.target.remove();
+    w.insertAdjacentHTML('beforeend', '<div class="reasons">' +
+      Object.entries(REASONS).map(([k, v]) => `<button type="button" data-r="${k}">${v}</button>`).join('') + '</div>');
+  } else if (e.target.dataset.r) {
+    const d = shown[+w.dataset.t], p = d.results[+w.dataset.i];
+    fetch('/api/report', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reason: e.target.dataset.r, request: d.request || d.query || '', url: p.url,
+                            store: p.store, title: p.title, price: p.price})}).catch(() => {});
+    w.querySelector('.reasons').outerHTML = '<div class="thanks">شكرًا، هنراجعها ونصلحها.</div>';
+  }
 });
 reset.addEventListener('click', () => {
   history = []; currentRequest = ''; chat.innerHTML = ''; reset.hidden = true; q.focus();

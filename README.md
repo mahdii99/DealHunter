@@ -86,6 +86,14 @@ average request from 55 s to 40 s while the average number of matching results w
 | `POST` | `/api/chat/stream` | Same, as NDJSON: progress lines, then the answer |
 | `GET` | `/api/search?q=` | One-shot search |
 | `GET` | `/api/history?url=` | Saved price history of a product page |
+| `POST` | `/api/report` | "This result is wrong" from a visitor: `{reason, request, url, store, title, price}`; review with `python -m scripts.reports` |
+
+## Free hosting
+
+`python -m scripts.deploy_hf` puts the site on Hugging Face Spaces (free, no card): it creates a Docker Space,
+copies the API keys from `.env` into the Space's hidden secrets, and uploads the code (never `.env` or data).
+Online, `DAILY_LIMIT` (default 5) caps new searches per visitor per day so the free quotas last; cached repeats
+don't count, and visitors are only stored as a salted hash of their IP.
 
 ## Respecting stores
 
@@ -96,7 +104,7 @@ added through their official affiliate programs.
 ## Roadmap
 
 1. ~~Faster, more accurate results: price DB, request cache, live progress, benchmark~~ (done)
-2. Free deployment and first users, with a "this result is wrong" button
+2. Free deployment and first users, with a "this result is wrong" button (button and daily limit done)
 3. Follow a product or a whole category and get notified when the price drops (Telegram bot), price-history chart
 4. Affiliate links, then Saudi Arabia and the UAE
 
