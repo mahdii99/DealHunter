@@ -192,3 +192,11 @@ def test_accounts_refuse_the_temporary_fallback_database(monkeypatch):
 def test_privacy_page():
     r = TestClient(main.app).get("/privacy")
     assert r.status_code == 200 and "سياسة الخصوصية" in r.text and "delete my account" in r.text
+
+
+def test_logo_files():
+    c = TestClient(main.app)
+    assert c.get("/logo.svg").headers["content-type"].startswith("image/svg")
+    for path in ("/logo-120.png", "/logo-512.png", "/favicon.ico"):
+        r = c.get(path)
+        assert r.status_code == 200 and r.content[:4] == b"\x89PNG"

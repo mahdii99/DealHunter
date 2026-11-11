@@ -94,6 +94,15 @@ def index():
     return FileResponse(ROOT / "static" / "index.html", headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/logo.svg")
+@app.get("/logo-512.png")
+@app.get("/logo-120.png")
+@app.get("/favicon.ico")
+def logo(request: Request):
+    name = {"/favicon.ico": "logo-120.png"}.get(request.url.path, request.url.path.lstrip("/"))
+    return FileResponse(ROOT / "static" / name, headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/privacy")
 def privacy():
     """Privacy policy: Google requires its link before sign-in can be opened to everyone."""
