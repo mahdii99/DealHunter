@@ -27,6 +27,8 @@ The project runs entirely on free tiers: no paid API is needed.
 - **Trust score for unknown shops** (0-100) from signals on their own site: local phone number, cash on delivery, return policy, warranty, address. Replica wording is a red flag.
 - **Real discounts only.** Discount % comes from the store's own old price or checkout coupon, and every price is sanity-checked against the market (a 2,000 EGP fridge is a wrong currency or an installment, not a deal).
 - **Price history.** Every price shown is saved, so results show the lowest price seen before and when a price dropped. This is the base for price-drop alerts.
+- **Accounts with Google sign-in.** Shoppers pick their region at sign-up (Egypt, Saudi Arabia, UAE), save preferences (e.g. trusted shops only) and get a higher daily limit.
+- **Price-drop alerts.** "Follow price" on any result; when the product gets cheaper (seen in any search, or in a scheduled re-check every 6 hours) the shopper gets a notification on the site, and optionally an email.
 - **Live progress.** The page streams what the agent is doing ("found 16 pages in 11 stores", "comparing 30 offers...").
 
 ## How it works
@@ -53,7 +55,7 @@ request ──► understand (LLM) ──► web search ──► open store pag
 
 ## Tech stack
 
-Python 3.12 · FastAPI · httpx (async) · selectolax · SQLite · vanilla JS (no build step) · pytest · Docker
+Python 3.12 · FastAPI · httpx (async) · selectolax · SQLite / Postgres (Supabase) · Google Identity Services · vanilla JS (no build step) · pytest · Docker
 
 ## Run it locally
 
@@ -86,6 +88,12 @@ average request from 55 s to 40 s while the average number of matching results w
 | `POST` | `/api/chat/stream` | Same, as NDJSON: progress lines, then the answer |
 | `GET` | `/api/search?q=` | One-shot search |
 | `GET` | `/api/history?url=` | Saved price history of a product page |
+| `GET` | `/api/config` | Is Google sign-in on, regions a shopper can pick |
+| `POST` | `/api/auth/google` | `{credential}` from the Google button → signed session cookie |
+| `GET` / `PATCH` / `DELETE` | `/api/me` | The signed-in shopper; save `{market, email_alerts, prefs}`; delete the account and all its data |
+| `GET` / `POST` / `DELETE` | `/api/watches` | Followed products (`POST {url, title, store, price}`) |
+| `GET` | `/api/notifications` | The shopper's notifications (`POST /api/notifications/seen` marks them read) |
+| `POST` | `/api/cron/check-watches` | Re-check followed prices (header `X-Cron-Secret`), run by `.github/workflows/check-watches.yml` |
 | `POST` | `/api/report` | "This result is wrong" from a visitor: `{reason, request, url, store, title, price}`; review with `python -m scripts.reports` |
 
 ## Free hosting
@@ -97,6 +105,19 @@ needs a PRO account for Docker.)
 Online, `DAILY_LIMIT` (default 5) caps new searches per visitor per day so the free quotas last; cached repeats
 don't count, and visitors are only stored as a salted hash of their IP.
 
+### Accounts (optional, all free)
+
+1. **Google sign-in:** in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) create an OAuth
+   client ID (Web application), add your site (and `http://localhost:8000`) to *Authorized JavaScript origins*, and
+   set `GOOGLE_CLIENT_ID`. Without it the site works as before, without accounts.
+2. **Database that survives restarts:** create a free [Supabase](https://supabase.com) project and set
+   `DATABASE_URL` to its *Session pooler* connection string (the tables are created on first use). Without it
+   accounts live in `data/accounts.db`, which Render's free plan wipes on restart.
+3. **Scheduled price checks:** set the same random `CRON_SECRET` on the server and as a GitHub repository secret,
+   plus a `SITE_URL` secret; the workflow wakes the server every 6 hours.
+4. **Emails (optional):** a free [Brevo](https://www.brevo.com) key (`BREVO_API_KEY`, `MAIL_FROM`). Render's free
+   plan blocks SMTP ports, so an HTTP email API is used.
+
 ## Respecting stores
 
 The agent only reads public product pages, honours robots.txt for anything fetched through a reader service, and
@@ -107,7 +128,7 @@ added through their official affiliate programs.
 
 1. ~~Faster, more accurate results: price DB, request cache, live progress, benchmark~~ (done)
 2. Free deployment and first users, with a "this result is wrong" button (button and daily limit done)
-3. Follow a product or a whole category and get notified when the price drops (Telegram bot), price-history chart
+3. Follow a product and get notified when the price drops (done: Google accounts, in-site notifications, email), then a whole category, a Telegram bot, a price-history chart
 4. Affiliate links, then Saudi Arabia and the UAE
 
 ## Author

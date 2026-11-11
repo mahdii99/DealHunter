@@ -10,6 +10,20 @@ services:
         value: "5"
       - key: CLIENT_SALT
         generateValue: true
+      - key: USER_DAILY_LIMIT
+        value: "15"
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: GROQ_API_KEY
