@@ -77,6 +77,8 @@ Reply JSON:
   "stores": ["4-8 domains of the biggest well-known online stores in Egypt for THIS kind of product: big
      marketplaces plus the category's own leaders and the brands' official Egypt stores (electronics, fashion,
      beauty, furniture, groceries... each has different leaders). Only real domains you are sure of"],
+  "shopper_stores": ["domains of the stores the shopper names anywhere in the chat (e.g. 'جوميا' -> 'jumia.com.eg',
+     'من نون' -> 'noon.com'), so those stores are searched on their own too; else []"],
   "web_queries": ["2 web search queries, or 3 when the shopper names or needs several brands/products (one query
      per brand family); each runs once on the well-known stores and once on smaller shops:
      (1) how Egyptian shoppers search in Arabic, e.g. 'سعر سخان اوليمبيك هيرو 50 لتر ميكانيكي' or for a need
@@ -162,14 +164,19 @@ MARKETPLACES = ["amazon.eg", "noon.com", "jumia.com.eg"]  # sell almost everythi
 _DOMAIN = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$")
 
 
+def _domains(names) -> list[str]:
+    out = []
+    for d in names or []:
+        d = str(d).lower().strip().removeprefix("https://").removeprefix("http://").removeprefix("www.").split("/")[0]
+        if _DOMAIN.match(d) and trust.is_shop_candidate("https://" + d):
+            out.append(d)
+    return list(dict.fromkeys(out))
+
+
 def _famous_sites(plan: dict) -> list[str]:
     """Well-known stores for this product: the big marketplaces + the ones the LLM named for this category.
     Falls back to our own list when the LLM named none."""
-    named = []
-    for d in plan.get("stores") or []:
-        d = str(d).lower().strip().removeprefix("https://").removeprefix("http://").removeprefix("www.").split("/")[0]
-        if _DOMAIN.match(d) and trust.is_shop_candidate("https://" + d):
-            named.append(d)
+    named = _domains(plan.get("stores"))
     return list(dict.fromkeys(MARKETPLACES + named[:8])) if named else trust.FAMOUS_SITES
 
 
@@ -443,14 +450,18 @@ def _cheapest_variant(products: list[Product]) -> list[Product]:
                 p.price /= 100  # stored in piasters while siblings are in pounds
         group = [p for p in group if p.price >= 5]
         if group:
-            out.append(min(group, key=lambda p: p.coupon_price or p.price))
+            # an in-stock variant before a cheaper one that's sold out
+            out.append(min(group, key=lambda p: (p.in_stock is False, p.coupon_price or p.price)))
     return out
 
 
 async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
-                    famous: list[str] | None = None, want: str = "") -> tuple[list[Product], dict[str, str]]:
+                    famous: list[str] | None = None, want: str = "",
+                    named: list[str] | None = None) -> tuple[list[Product], dict[str, str]]:
     """`want`: what the shopper asked for, used when the LLM reads a page. Not just the first search query: with
-    several brands each query names one, and a page found by another query would look like it has nothing."""
+    several brands each query names one, and a page found by another query would look like it has nothing.
+    `named`: stores the shopper named ("جوميا أرخص"): each query is also searched on them alone and their pages
+    are opened first, so a store the shopper points at isn't crowded out by the others."""
     want = want or web_queries[0]
     focus = " ".join(web_queries)
     t = time.monotonic()
@@ -459,15 +470,18 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         # Two groups searched side by side: famous stores, and every other shop. The judge compares them all.
         blocked = await _blocked_sites()  # sites we couldn't open in earlier searches: don't spend searches on them
         famous = [d for d in famous or trust.FAMOUS_SITES if d not in blocked]
+        named = [d for d in named or [] if d not in blocked][:3]
         groups = {"famous": dict(include_domains=famous),
                   "other": dict(exclude_domains=famous + trust.CLASSIFIEDS + sorted(blocked)[:100])}
+        if named:
+            groups["named"] = dict(include_domains=named)
         # the well-known group shares one search between many big stores: more results (same cost), so each of
         # them shows up instead of the biggest one taking every slot
-        size = {"famous": FAMOUS_RESULTS, "other": 8}
+        size = {"famous": FAMOUS_RESULTS, "other": 8, "named": 8}
         jobs = [(g, websearch.search(client, q, max_results=size[g], **kw)) for q in web_queries for g, kw in groups.items()]
         found = await asyncio.gather(*(j for _, j in jobs), return_exceptions=True)
         TIMES["search"] = round(time.monotonic() - t, 1)
-        picked: dict[str, list[str]] = {"famous": [], "other": []}
+        picked: dict[str, list[str]] = {"named": [], "famous": [], "other": []}
         crawled: dict[str, str] = {}  # page text the search service already has: used when we can't open the page
         jobs, found = [("check", None)] + jobs, [seed or []] + list(found)  # the plan-check search's hits count too
         for (group, _), res in zip(jobs, found):
@@ -481,11 +495,13 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                 if (trust.is_shop_candidate(u) and trust.domain(u) not in blocked
                         and all(u not in lst for lst in picked.values())):
                     big = trust.is_known(u) or any(trust._match(trust.domain(u), d) for d in famous)
-                    picked["famous" if big else "other"].append(u)
-        # Same page budget for each group, alternating, so neither side crowds the other out.
+                    mine = any(trust._match(trust.domain(u), d) for d in named)
+                    picked["named" if mine else "famous" if big else "other"].append(u)
+        # Same page budget for each group, alternating, so neither side crowds the other out; the stores the
+        # shopper named come first (at most half the pages).
         known, small = _take_turns(picked["famous"]), _take_turns(picked["other"])
         urls = [u for pair in zip(known, small) for u in pair] + known[len(small):] + small[len(known):]
-        urls = urls[:MAX_PAGES]
+        urls = (_take_turns(picked["named"])[:MAX_PAGES // 2] + urls)[:MAX_PAGES]
         log.info("web: %d store pages to open: %s", len(urls), [trust.domain(u) for u in urls])
         _progress(f"لقيت {len(urls)} صفحة في {len({trust.domain(u) for u in urls})} متجر، بفتحها وبجمع الأسعار...")
         sem = asyncio.Semaphore(5)
@@ -766,7 +782,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         want = plan.get("request") or raw
         if reqs := [r for r in plan.get("requirements") or [] if isinstance(r, str)]:
             want += " (" + "; ".join(reqs[:6]) + ")"
-        products, errors = await _web_find(web_queries, seed, _famous_sites(plan), want=want)
+        products, errors = await _web_find(web_queries, seed, _famous_sites(plan), want=want,
+                                           named=_domains(plan.get("shopper_stores")))
         products = _dedupe(products)
     else:
         source = "stores"
@@ -839,6 +856,15 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             summary = ("الموديلات المجانية مشغولة دلوقتي فمقدرتش أراجع النتايج بدقة، فدي مرتبة بالسعر بس "
                        "واتأكد من الموديل في كل واحدة. جرب تاني كمان دقيقة لنتيجة أدق.")
     picks = list({id(p): p for p in picks}.values())
+    gone = 0
+    if picks and VERIFY_PICKS:
+        _progress(f"بفتح صفحة كل نتيجة ({len(picks)}) وبتأكد إنها متوفرة وإن سعرها لسه زي ما هو...")
+        tv = time.monotonic()
+        picks, gone = await _verify_stock(picks)
+        TIMES["verify"] = round(time.monotonic() - tv, 1)
+        if gone:
+            summary = (summary + " " if summary else "") + (
+                f"(شلت {gone} عرض لقيته خلصان لما فتحت صفحته." + ("" if picks else " ومفيش عرض تاني متوفر دلوقتي.") + ")")
     _flag_price_outliers(picks, typical)
     picks.sort(key=_paid)
     return {
@@ -852,9 +878,71 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "max_price": maxp, "min_price": minp,
         "summary": summary,
         "candidates_checked": len(pool),
+        "sold_out_dropped": gone,
         "results": [p.to_dict() for p in picks],
         "store_errors": errors,
     }
+
+
+VERIFY_PICKS = True    # open each result's own page before showing it (tests turn it off unless they check it)
+VERIFY_MAX = 12        # results checked per search (the cheapest first)
+VERIFY_DEADLINE = 7    # opening the result pages ourselves
+VERIFY_READER_DEADLINE = 6  # pages we couldn't open, through the reader service
+
+
+async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
+    """Before results are shown, open each one's own product page: drop it when the store now says sold out,
+    take the page's current price when it changed, and mark it `verified` when the page confirmed it.
+    A listing page often shows stale stock/prices, and a sold-out item is a wasted click for the shopper.
+    Returns (picks still for sale, how many were dropped as sold out). Results whose page can't be checked stay,
+    unverified, so the page can ask the shopper to check them."""
+    for p in picks:
+        p.verified = False
+    todo = sorted((p for p in picks if _page_id(p.url)), key=_paid)[:VERIFY_MAX]
+    if not todo:
+        return picks, 0
+    sold: set[int] = set()
+    async with httpx.AsyncClient() as client:
+        sem = asyncio.Semaphore(6)
+        pages = await _within(VERIFY_DEADLINE, [_fetch_page(client, sem, p.url) for p in todo])
+        retry = []
+        for p, res in zip(todo, pages):
+            if isinstance(res, Exception):
+                retry.append(p)
+                continue
+            products, html = res
+            pid = _page_id(p.url)
+            same = [q for q in products if _page_id(q.url) == pid] or (products if len(products) == 1 else [])
+            if same:
+                q = min(same, key=_paid)
+                if q.in_stock is False:
+                    sold.add(id(p))
+                    continue
+                if abs(q.price - p.price) >= 1 and p.price / 2 <= q.price <= p.price * 2:
+                    log.info("agent: %s price now %g (was %g)", p.store, q.price, p.price)
+                    p.price, p.old_price, p.coupon_price = q.price, q.old_price, q.coupon_price
+                    p.discount_pct = _discount(p)
+                p.in_stock = True if q.in_stock is None else q.in_stock
+                p.verified = True
+                continue
+            said = extract_mod._page_says_sold_out(html, extract_mod._visible_text(html), p.title)
+            if said:
+                sold.add(id(p))
+            elif said is False:  # the title is on the page and no sold-out words next to it
+                p.verified = True
+        if retry:
+            texts, _ = await fetchers.read_pages(client, [p.url for p in retry], deadline=VERIFY_READER_DEADLINE)
+            for p in retry:
+                if (text := texts.get(p.url)) is not None:
+                    said = extract_mod._page_says_sold_out(text, text, p.title)
+                    if said:
+                        sold.add(id(p))
+                    elif said is False:
+                        p.verified = True
+    if sold:
+        log.info("agent: %d results sold out on their own page: %s", len(sold),
+                 [p.store for p in picks if id(p) in sold])
+    return [p for p in picks if id(p) not in sold], len(sold)
 
 
 _SEARCH_NOISE = {"price", "prices", "egypt", "سعر", "اسعار", "أسعار", "مصر", "في", "من", "the", "and", "for", "with",

@@ -604,6 +604,8 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
             ${p.best_deal ? `<span class="badge deal">${L('أحسن عرض', 'Best deal')}</span>` : ''}
             ${p.condition ? `<span class="badge warn">${esc((COND[p.condition] || [p.condition, p.condition])[lang === 'ar' ? 0 : 1])}</span>` : ''}
             ${trustBadge(p)}
+            ${p.verified ? `<span class="badge ok" title="${L('فتحنا صفحة المنتج دلوقتي: متوفر بالسعر ده', 'We just opened its page: in stock at this price')}">${L('متوفر، اتأكدنا', 'In stock, checked')}</span>`
+              : p.verified === false ? `<span class="badge warn" title="${L('مقدرناش نفتح صفحة المنتج نفسها، اتأكد إنه متوفر قبل ما تطلب', 'We couldn’t open its own page, check it’s in stock before ordering')}">${L('اتأكد إنه متوفر', 'Check stock')}</span>` : ''}
             ${p.unconfirmed ? `<span class="badge warn" title="${L('العنوان مش موضح النوع بالظبط، اتأكد من صفحة المنتج', 'The title doesn’t state the exact model, check the product page')}">${L('اتأكد من الموديل', 'Check the model')}</span>` : ''}
           </span>
         </span>
