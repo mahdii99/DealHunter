@@ -141,6 +141,7 @@ async def _chat_turn(turn: ChatTurn) -> dict:
     log.info("=" * 70)
     log.info("CHAT: %s (current request: %s)", newest, turn.request or "-")
     plan, failed = None, None
+    agent.llm.reset_usage()
     if agent.llm.available():
         try:
             plan = await agent.plan_turn(messages, turn.request)
@@ -156,6 +157,11 @@ async def _chat_turn(turn: ChatTurn) -> dict:
         log.info("=" * 70 + "\n")
         return {"action": "answer", "answer": plan["answer"], "request": turn.request or plan["request"],
                 "results": [], "demo": DEMO}
+    if failed and turn.request and newest.rstrip().endswith(("?", "؟")):
+        # a question about the results needs the LLM; gluing it onto the old request would search for nonsense
+        log.info("=" * 70 + "\n")
+        return {"action": "answer", "request": turn.request, "results": [], "demo": DEMO,
+                "answer": "معلش، الموديلات المجانية مشغولة دلوقتي فمقدرتش أرد على سؤالك. ابعته تاني كمان دقيقة."}
     if plan and plan.get("understood"):
         agent._progress(plan["understood"])
     request = plan["request"] if plan else " ".join(filter(None, [turn.request, newest]))  # no LLM: just append

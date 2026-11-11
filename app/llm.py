@@ -27,6 +27,26 @@ class LLMError(Exception):
     pass
 
 
+USAGE = {"calls": 0, "tokens": 0, "by_step": {}}  # LLM use since the last reset (the agent resets it per search)
+
+
+def reset_usage() -> None:
+    USAGE.update(calls=0, tokens=0, by_step={})
+
+
+def _count(provider: str, r: httpx.Response, step: str) -> None:
+    try:
+        data = r.json()
+        u = data.get("usageMetadata", {}).get("totalTokenCount") if provider == "gemini" else             (data.get("usage") or {}).get("total_tokens")
+    except ValueError:
+        u = None
+    USAGE["calls"] += 1
+    USAGE["tokens"] += int(u or 0)
+    s = USAGE["by_step"].setdefault(step, {"calls": 0, "tokens": 0})
+    s["calls"] += 1
+    s["tokens"] += int(u or 0)
+
+
 def last_model() -> str:
     return _LAST_GOOD[0] if _LAST_GOOD else "?"
 
@@ -40,18 +60,18 @@ GEMINI_PREFERRED = ("gemini-flash-lite-latest", "gemini-flash-latest")
 GROQ_PREFERRED = ("openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "qwen/qwen3-32b",
                   "meta-llama/llama-4-maverick-17b-128e-instruct", "meta-llama/llama-4-scout-17b-16e-instruct",
                   "llama-3.1-8b-instant")
-FAST_BULK = ("groq", "cerebras")  # answer in ~1 s: page reading goes here first, spread over their models
+FAST_BULK = ("groq", "cerebras", "cloudflare")  # answer in ~1-3 s: page reading goes here first, spread over their models
 # Other free tiers with the same (OpenAI-style) API. Each one added = more requests per minute/day for free.
 # provider -> (base url, key in .env, preferred models; the rest are discovered from the provider's list)
 COMPAT = {
     "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY", GROQ_PREFERRED),
     "mistral": ("https://api.mistral.ai/v1", "MISTRAL_API_KEY",
                 ("mistral-small-latest", "mistral-medium-latest", "mistral-large-latest")),
+    "cloudflare": ("https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1", "CLOUDFLARE_API_KEY",
+                   ("@cf/openai/gpt-oss-120b", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/qwen/qwen3-30b-a3b-fp8")),
     "nvidia": ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY",
                ("openai/gpt-oss-120b", "meta/llama-3.3-70b-instruct", "qwen/qwen3-next-80b-a3b-instruct",
                 "deepseek-ai/deepseek-v3.1")),
-    "cloudflare": ("https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1", "CLOUDFLARE_API_KEY",
-                   ("@cf/openai/gpt-oss-120b", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/qwen/qwen3-30b-a3b-fp8")),
     # only free models (50/day); "openrouter/free" lets OpenRouter route to whichever free model is up
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", ("openrouter/free",)),
     "cerebras": ("https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", ("gpt-oss-120b", "llama-3.3-70b", "qwen-3-32b")),
@@ -101,18 +121,38 @@ def _daily_quota_reset() -> float:
     return (reset if reset > now else reset + timedelta(days=1)).timestamp()
 
 
+def retry_hint(r: httpx.Response) -> float | None:
+    """Seconds the provider says to wait before the next request (per-minute limits often free up in a few
+    seconds): Retry-After header, Groq/OpenAI 'try again in 1m2.5s / 450ms', Gemini 'retryDelay'."""
+    try:
+        if (h := r.headers.get("retry-after")) and float(h) >= 0:
+            return float(h)
+    except ValueError:
+        pass
+    text = r.text
+    if m := re.search(r"try again in (?:(\d+)m)?(\d+(?:\.\d+)?)(ms|s)\b", text):
+        secs = float(m.group(2)) / (1000 if m.group(3) == "ms" else 1)
+        return secs + 60 * float(m.group(1) or 0)
+    if m := re.search(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"', text):
+        return float(m.group(1))
+    return None
+
+
 def _rest(model: str, r: httpx.Response | None = None) -> None:
-    """Skip a model for a while: until tomorrow if its daily quota is gone, else a few minutes."""
+    """Skip a model for a while: until tomorrow if its daily quota is gone, else a few minutes (or as long as the
+    provider says, when it says)."""
     body = r.text.lower() if r is not None else ""
-    daily = r is not None and r.status_code == 429 and ("perday" in body or "per day" in body or "requests per day" in body
+    daily = r is not None and r.status_code == 429 and ("perday" in body or "per day" in body or "per-day" in body or "requests per day" in body
                                                          or "(rpd)" in body or "tokens per day" in body)
     busy = r is not None and r.status_code in (429, 503)
+    hint = retry_hint(r) if busy and not daily else None
     refused = r is not None and r.status_code in (401, 403, 404)  # not available to us: skip it until tomorrow
     if r is not None and r.status_code == 410:  # the provider retired this model: don't try it again for a month
         _COOLDOWN[model] = time.time() + GONE_SECONDS
         log.warning("LLM %s was retired by its provider, using other models", model)
     else:
         _COOLDOWN[model] = (_daily_quota_reset() if daily or refused
+                            else time.time() + min(BUSY_SECONDS, hint + 0.5) if hint is not None
                             else time.time() + (BUSY_SECONDS if busy else COOLDOWN_SECONDS))
     if daily:
         log.warning("LLM %s: daily free quota used up, skipping it until it resets", model)
@@ -211,6 +251,8 @@ async def _compat(provider: str, client: httpx.AsyncClient, model: str, prompt: 
             "messages": [{"role": "user", "content": prompt + "\nReply with JSON only."}]}
     if provider != "openrouter":  # not every free OpenRouter model accepts it; the prompt asks for JSON anyway
         body["response_format"] = {"type": "json_object"}
+    if provider == "cloudflare":  # its default is 256 tokens: a reasoning model (gpt-oss) uses them up thinking and
+        body["max_tokens"] = 4096  # returns no answer at all
     r = await client.post(url, headers=headers, json=body)
     if r.status_code in (400, 422) and "response_format" in body:  # model without JSON mode: ask in the prompt only
         body.pop("response_format")
@@ -250,7 +292,7 @@ def _text(provider: str, r: httpx.Response) -> str:
 
 
 async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, spread: int = 0,
-                   budget: float | None = None) -> dict:
+                   budget: float | None = None, step: str = "other") -> dict:
     """prefer="bulk": try the non-Gemini providers first (bulk work like reading pages, so Gemini's small daily
     quota is kept for understanding the request and judging the results); prefer="groq" etc.: that provider.
     spread=n: start from the n-th model of that provider, so calls running at the same time go to different
@@ -286,10 +328,28 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
                 k = spread % len(mine)
                 ready = mine[k:] + mine[:k] + [a for a in ready if not preferred(a)]
 
-        for provider, model, call in ready:
+        queue, tries, busy = list(ready), {}, set()
+        while True:
             left = (budget or TOTAL_BUDGET) - (time.monotonic() - start)
             if left < 2:
                 break
+            if queue:
+                provider, model, call = queue.pop(0)
+            else:
+                # Every model is resting. Per-minute limits free up within seconds, so wait for the one that is
+                # free soonest (if it is within our time) instead of giving up while there's time left.
+                now = time.time()
+                soon = [a for a in attempts if (a[1] not in tries or (a[1] in busy and tries[a[1]] < 2))
+                        and _COOLDOWN.get(a[1], 0) - now < left - 3]
+                if not soon:
+                    break
+                provider, model, call = min(soon, key=lambda a: (_COOLDOWN.get(a[1], 0), not preferred(a)))
+                wait = _COOLDOWN.get(model, 0) - now
+                if wait > 0:
+                    log.info("LLM: all models busy, waiting %.1fs for %s", wait, model)
+                    await asyncio.sleep(wait)
+                left = (budget or TOTAL_BUDGET) - (time.monotonic() - start)
+            tries[model] = tries.get(model, 0) + 1
             t = time.monotonic()
             try:
                 r = await asyncio.wait_for(call(client, model, prompt), timeout=min(timeout, left))
@@ -301,9 +361,10 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
                 continue
             log.info("LLM %s -> %s in %.1fs", model, r.status_code, time.monotonic() - t)
             if r.status_code == 200:
+                _count(provider, r, step)
                 try:
                     data = _json(_text(provider, r))
-                except (KeyError, IndexError, ValueError):
+                except (KeyError, IndexError, ValueError, TypeError):  # TypeError: no text in the reply (cut off)
                     errors.append(f"{model}: bad reply")
                     continue
                 if not isinstance(data, dict):  # e.g. a bare list: callers expect an object
@@ -316,4 +377,6 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
             log.warning("LLM %s said: %s", model, r.text[:200].replace("\n", " "))
             if r.status_code in RETRY_STATUS or r.status_code in (401, 403, 404, 410):  # busy/quota/not allowed/gone
                 _rest(model, r)
+                if r.status_code in (429, 503):
+                    busy.add(model)
     raise LLMError("مفيش موديل رد في الوقت: " + ", ".join(errors[-4:] or ["timeout"]))

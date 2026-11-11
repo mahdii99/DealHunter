@@ -68,7 +68,7 @@ async def _exa(client, key, query, n, include, exclude):
 
 async def _firecrawl(client, key, query, n, include, exclude):
     r = await client.post("https://api.firecrawl.dev/v2/search", timeout=20, headers={"Authorization": f"Bearer {key}"},
-                          json={"query": _site_query(query, include, exclude), "limit": n,
+                          json={"query": _site_query(query, include, exclude), "limit": min(n, 10),  # 2 credits per 10
                                 "country": market.current().code})
 
     def parse(d):

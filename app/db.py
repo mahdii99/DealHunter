@@ -121,9 +121,13 @@ def add_price_context(results: list[dict]) -> None:
             r["previous_price"] = prev[0] if prev and prev[0] != r.get("price") else None
 
 
+BLOCK_DAYS = 7  # a skipped site is tried again after this (sites change, and a block may have been a bad week)
+
+
 def blocked_sites() -> set[str]:
     with _LOCK:
-        return {r[0] for r in _db().execute("SELECT domain FROM blocked_sites WHERE blocked = 1")}
+        return {r[0] for r in _db().execute("SELECT domain FROM blocked_sites WHERE blocked = 1 AND last_failed > ?",
+                                            (time.time() - BLOCK_DAYS * 86400,))}
 
 
 def site_failed(domain: str, reason: str, now_blocked: bool = False) -> None:
@@ -139,7 +143,7 @@ def site_failed(domain: str, reason: str, now_blocked: bool = False) -> None:
 def site_opened(domain: str) -> None:
     """A page of this site worked: its failures so far were a bad moment."""
     with _LOCK, _db() as c:
-        c.execute("DELETE FROM blocked_sites WHERE domain = ? AND blocked = 0", (domain,))
+        c.execute("DELETE FROM blocked_sites WHERE domain = ?", (domain,))
 
 
 def list_blocked() -> list[dict]:
