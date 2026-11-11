@@ -187,3 +187,8 @@ def test_accounts_refuse_the_temporary_fallback_database(monkeypatch):
     r = c.patch("/api/me", json={"market": "EG"})
     assert r.status_code == 503 and "الحسابات" in r.json()["detail"]
     assert c.get("/api/me").json()["user"] is None
+
+
+def test_privacy_page():
+    r = TestClient(main.app).get("/privacy")
+    assert r.status_code == 200 and "سياسة الخصوصية" in r.text and "delete my account" in r.text
