@@ -1,7 +1,8 @@
 """Price database: every price the agent shows is saved with the date, so we can:
   - answer the same request again from the cache without spending the free quotas,
   - show a product's price history and the lowest price we've seen,
-  - skip sites whose pages never open, count each visitor's searches, keep "this result is wrong" reports.
+  - skip sites whose pages never open, count each visitor's searches, keep "this result is wrong" reports,
+  - keep shopper accounts: Google sign-in, region, preferences, followed products, notifications (app/accounts.py).
 
 Where it's stored:
   - DATABASE_URL set (a free Supabase Postgres): survives restarts and deploys. Needed on Render, whose free disk
@@ -61,7 +62,46 @@ CREATE TABLE IF NOT EXISTS reports (
     title TEXT NOT NULL,
     price {FLOAT},
     client TEXT NOT NULL
-)
+);
+-- shopper accounts (app/accounts.py)
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,                -- 'g:' + the Google account id (never changes, unlike the email)
+    email TEXT NOT NULL,
+    name TEXT NOT NULL,
+    picture TEXT NOT NULL,
+    market TEXT,                        -- EG / SA / AE, chosen at sign-up (NULL until chosen)
+    email_alerts INTEGER NOT NULL DEFAULT 1,
+    prefs TEXT NOT NULL DEFAULT '{{}}', -- JSON, see PREFS
+    created_at {FLOAT} NOT NULL,
+    last_login {FLOAT} NOT NULL
+);
+CREATE TABLE IF NOT EXISTS watches (
+    id {ID},
+    user_id TEXT NOT NULL,
+    url TEXT NOT NULL,                  -- the product page: one product at one store
+    title TEXT NOT NULL,
+    store TEXT NOT NULL,
+    image TEXT NOT NULL,
+    market TEXT NOT NULL,
+    first_price {FLOAT} NOT NULL,       -- when the shopper started following it
+    price {FLOAT} NOT NULL,             -- the last price we saw
+    target_price {FLOAT},               -- tell me only at or below this (NULL = any drop)
+    created_at {FLOAT} NOT NULL,
+    checked_at {FLOAT} NOT NULL,
+    UNIQUE (user_id, url)
+);
+CREATE INDEX IF NOT EXISTS watches_url ON watches (url);
+CREATE TABLE IF NOT EXISTS notifications (
+    id {ID},
+    user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,                 -- price_drop / info
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    url TEXT NOT NULL,
+    created_at {FLOAT} NOT NULL,
+    seen INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, created_at)
 """
 PG_RETRY = 300  # seconds on the local file after Postgres couldn't be reached, before trying it again
 BLOCK_AFTER = 2  # failed searches in a row before a site is skipped (one failure can be a slow moment)

@@ -4,6 +4,7 @@ Set MARKET=EG | SA | AE in .env. Everything country-specific (currency, local do
 searches, famous stores) comes from here, so opening a new country is a config change, not a rewrite.
 """
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 
@@ -30,5 +31,26 @@ MARKETS = {
 }
 
 
+# The country of the search running now: a signed-in shopper's region when the agent already searches there
+# (see live()), else MARKET from .env. Set per request, so two shoppers in different countries don't mix.
+_CHOSEN: ContextVar[str | None] = ContextVar("market", default=None)
+
+
 def current() -> Market:
-    return MARKETS.get(os.getenv("MARKET", "EG").upper(), MARKETS["EG"])
+    code = _CHOSEN.get() or os.getenv("MARKET", "EG").upper()
+    return MARKETS.get(code, MARKETS["EG"])
+
+
+def live() -> set[str]:
+    """Countries whose stores the agent can search now (LIVE_MARKETS=EG,SA in .env). The prompts and trust signals
+    are still written for Egypt, so the others stay off until they're tuned; shoppers can already pick them."""
+    return {c.strip().upper() for c in os.getenv("LIVE_MARKETS", "EG").split(",") if c.strip()} & MARKETS.keys()
+
+
+def use(code: str | None):
+    """Search in this country for the rest of this request (when it's live). Returns a token for reset()."""
+    return _CHOSEN.set(code if code in live() else None)
+
+
+def reset(token) -> None:
+    _CHOSEN.reset(token)

@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -11,7 +12,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,7 +29,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import agent, db, market  # noqa: E402  (after .env is loaded)
+from . import accounts, agent, db, market  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -49,6 +50,8 @@ CACHE_TTL = float(os.getenv("CACHE_HOURS", "6")) * 3600
 # New searches per visitor per day (each costs ~7 web searches and many LLM calls from the shared free quotas).
 # 0 = no limit (e.g. on your own PC). Searches answered from the cache don't count.
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "0"))
+# Signed-in shoppers get their own (usually higher) limit, counted per account instead of per IP. 0 = DAILY_LIMIT.
+USER_DAILY_LIMIT = int(os.getenv("USER_DAILY_LIMIT", "0"))
 LIMIT_TEXT = ("وصلت لحد البحث النهارده ({n} بحث). الموقع مجاني وبيشتغل على حصص محدودة، "
               "فالحد بيرجع بكرة. تقدر لسه تسأل عن النتايج اللي ظهرتلك.")
 
@@ -70,10 +73,40 @@ def client_id(request: Request) -> str:
     return hashlib.sha256((os.getenv("CLIENT_SALT", "dealhunter") + ip).encode()).hexdigest()[:16]
 
 
+def _user_client(user: dict) -> str:
+    return "u" + hashlib.sha256((os.getenv("CLIENT_SALT", "dealhunter") + user["id"]).encode()).hexdigest()[:15]
+
+
+def current_user(request: Request) -> dict | None:
+    """The signed-in shopper (from the signed cookie), or None. Blocking (the database): call it in a thread from
+    async code."""
+    if not accounts.enabled():
+        return None
+    try:
+        return accounts.get_user(accounts.read_session(request.cookies.get(accounts.COOKIE)))
+    except accounts.Unavailable:  # searching still works, as a visitor, while the accounts database is down
+        return None
+
+
 @app.get("/")
 def index():
     # no-cache: the browser always picks up the latest page after an update
     return FileResponse(ROOT / "static" / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/logo.svg")
+@app.get("/logo-512.png")
+@app.get("/logo-120.png")
+@app.get("/favicon.ico")
+def logo(request: Request):
+    name = {"/favicon.ico": "logo-120.png"}.get(request.url.path, request.url.path.lstrip("/"))
+    return FileResponse(ROOT / "static" / name, headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/privacy")
+def privacy():
+    """Privacy policy: Google requires its link before sign-in can be opened to everyone."""
+    return FileResponse(ROOT / "static" / "privacy.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/search")
@@ -101,6 +134,7 @@ async def _search(q: str, plan: dict | None = None, budget_text: str | None = No
     if not DEMO and payload["results"]:
         db.add_price_context(payload["results"])  # before saving today's prices: compare with what we saw earlier
         db.record_prices(payload["results"], mk)
+        await _alert_followers(payload["results"])
         if payload["mode"] == "llm":
             db.save_search(key, mk, payload)
     return payload
@@ -120,7 +154,8 @@ class ChatTurn(BaseModel):
 async def chat(turn: ChatTurn, request: Request):
     """A chat turn: the newest message is read together with the earlier ones, so a follow-up like
     'سامسونج بس' narrows the previous request instead of starting a new search."""
-    return await _chat_turn(turn, client_id(request))
+    user = await asyncio.to_thread(current_user, request)
+    return await _chat_turn(turn, client_id(request), user)
 
 
 @app.post("/api/chat/stream")
@@ -129,11 +164,12 @@ async def chat_stream(turn: ChatTurn, request: Request):
     {"type": "status", "text": ...} ... then {"type": "done", "data": <the /api/chat answer>}."""
     queue: asyncio.Queue = asyncio.Queue()
     client = client_id(request)
+    user = await asyncio.to_thread(current_user, request)
 
     async def work():
         token = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
         try:
-            queue.put_nowait({"type": "done", "data": await _chat_turn(turn, client)})
+            queue.put_nowait({"type": "done", "data": await _chat_turn(turn, client, user)})
         except HTTPException as e:
             queue.put_nowait({"type": "error", "status": e.status_code})
         except Exception:  # the page shows a friendly error; the details are in the server log
@@ -157,8 +193,36 @@ async def chat_stream(turn: ChatTurn, request: Request):
     return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache"})
 
 
-async def _chat_turn(turn: ChatTurn, client: str | None = None) -> dict:
-    """client = who is asking (None = no daily limit, e.g. scripts)."""
+async def _chat_turn(turn: ChatTurn, client: str | None = None, user: dict | None = None) -> dict:
+    """client = who is asking (None = no daily limit, e.g. scripts); user = the signed-in shopper, if any:
+    searches in their region (when the agent covers it), uses their limit and preferences."""
+    if user:
+        client = client and _user_client(user)
+    token = market.use(user and user["market"])
+    try:
+        d = await _chat_turn_in_market(turn, client, USER_DAILY_LIMIT if user and USER_DAILY_LIMIT else DAILY_LIMIT)
+    finally:
+        market.reset(token)
+    if user:
+        await asyncio.to_thread(_personalize, d, user)
+    return d
+
+
+def _personalize(d: dict, user: dict) -> None:
+    """Applies the shopper's saved preferences to an answer and marks the products they already follow."""
+    if user["prefs"].get("hide_unsure_shops") and d.get("results"):
+        d["results"] = [r for r in d["results"] if r.get("trusted") or (r.get("trust_score") or 0) >= 60]
+        d["count"] = len(d["results"])
+    followed = {w["url"] for w in accounts.list_watches(user["id"])}
+    for r in d.get("results") or []:
+        r["watched"] = r.get("url") in followed
+    mk = user["market"]
+    if mk and mk not in market.live() and d.get("action") == "search":  # searched in MARKET instead
+        d["region_note"] = (f"البحث في {market.MARKETS[mk].country_ar} لسه بنجهزه، فالنتايج دي من متاجر "
+                            f"{market.current().country_ar}. هنبعتلك إشعار أول ما يشتغل.")
+
+
+async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -> dict:
     messages = [m.model_dump() for m in turn.messages]
     said = " | ".join(m["text"] for m in messages if m["role"] == "user")
     newest = next((m["text"] for m in reversed(messages) if m["role"] == "user"), "").strip()
@@ -189,11 +253,11 @@ async def _chat_turn(turn: ChatTurn, client: str | None = None) -> dict:
         return {"action": "answer", "request": turn.request, "results": [], "demo": DEMO,
                 "answer": "معلش، الموديلات المجانية مشغولة دلوقتي فمقدرتش أرد على سؤالك. ابعته تاني كمان دقيقة."}
     request = plan["request"] if plan else " ".join(filter(None, [turn.request, newest]))  # no LLM: just append
-    if (client and DAILY_LIMIT and db.searches_today(client) >= DAILY_LIMIT
+    if (client and limit and db.searches_today(client) >= limit
             and not db.cached_search(db.cache_key(request, market.current().code), CACHE_TTL)):
         log.info("daily limit reached for %s", client)
         log.info("=" * 70 + "\n")
-        return {"action": "answer", "limit": True, "answer": LIMIT_TEXT.format(n=DAILY_LIMIT),
+        return {"action": "answer", "limit": True, "answer": LIMIT_TEXT.format(n=limit),
                 "request": turn.request, "results": [], "demo": DEMO}
     if plan and plan.get("understood"):
         agent._progress(plan["understood"])
@@ -254,6 +318,200 @@ def price_history(url: str = Query(..., max_length=1000)):
     """A product's saved prices, oldest first (for the price chart / 'is this discount real?')."""
     points = db.history(url)
     return {"url": url, "points": points, "lowest": min((p["price"] for p in points), default=None)}
+
+
+# ---------- accounts: Google sign-in, preferences, followed products, notifications ----------
+
+@app.exception_handler(accounts.Unavailable)
+def _accounts_down(request: Request, exc: accounts.Unavailable):
+    log.error("accounts request while the database is unreachable: %s", request.url.path)
+    return JSONResponse({"detail": "الحسابات مش متاحة دلوقتي، جرب كمان شوية."}, status_code=503)
+
+
+def _need_user(request: Request) -> dict:
+    user = accounts.enabled() and accounts.get_user(accounts.read_session(request.cookies.get(accounts.COOKIE)))
+    if not user:
+        raise HTTPException(401, "sign in first")
+    return user
+
+
+@app.get("/api/config")
+def config():
+    """What the page needs to know: is Google sign-in on, the regions a shopper can pick."""
+    return {"google_client_id": accounts.google_client_id(), "email_alerts": accounts.email_enabled(),
+            "regions": [{"code": c, "name": market.MARKETS[c].country_ar, "currency": market.MARKETS[c].currency_ar,
+                         "live": c in market.live()} for c in accounts.REGIONS]}
+
+
+class GoogleLogin(BaseModel):
+    credential: str = Field(min_length=20, max_length=4096)
+
+
+def _secure(request: Request) -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+
+@app.post("/api/auth/google")
+async def google_login(body: GoogleLogin, request: Request, response: Response):
+    if not accounts.enabled():
+        raise HTTPException(404, "sign-in is off (no GOOGLE_CLIENT_ID)")
+    try:
+        info = await accounts.verify_google(body.credential)
+    except accounts.AuthError as e:
+        log.warning("google sign-in refused: %s", e)
+        raise HTTPException(401, "sign-in failed")
+    user = await asyncio.to_thread(accounts.upsert_user, info)
+    response.set_cookie(accounts.COOKIE, accounts.make_session(user["id"]), max_age=accounts.SESSION_DAYS * 86400,
+                        httponly=True, samesite="lax", secure=_secure(request))
+    log.info("sign-in: %s (new: %s)", user["id"][:8], user["market"] is None)
+    return {"user": user, "unseen": await asyncio.to_thread(accounts.unseen_count, user["id"])}
+
+
+@app.post("/api/auth/logout")
+def logout(response: Response):
+    response.delete_cookie(accounts.COOKIE)
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me(request: Request):
+    user = current_user(request)
+    return {"user": user, "unseen": accounts.unseen_count(user["id"]) if user else 0}
+
+
+class Settings(BaseModel):
+    market: str | None = Field(None, pattern="^(EG|SA|AE)$")
+    email_alerts: bool | None = None
+    prefs: dict[str, bool] | None = None
+
+
+@app.patch("/api/me")
+def update_me(body: Settings, request: Request):
+    """Sign-up's region choice and the settings panel."""
+    user = _need_user(request)
+    new = accounts.update_user(user["id"], body.market, body.email_alerts, body.prefs)
+    if body.market and body.market != user["market"]:
+        name = market.MARKETS[body.market].country_ar
+        if body.market in market.live():
+            accounts.notify(user["id"], "info", f"أهلاً بيك! هندورلك في متاجر {name}",
+                            "تقدر تتابع سعر أي منتج من زرار «تابع السعر» وهنبلغك هنا أول ما ينزل.")
+        else:
+            accounts.notify(user["id"], "info", f"البحث في {name} لسه بنجهزه",
+                            f"لحد ما يشتغل النتايج هتبقى من متاجر {market.current().country_ar}، "
+                            "وهنبعتلك إشعار هنا أول ما يبقى جاهز.")
+    return {"user": new, "unseen": accounts.unseen_count(user["id"])}
+
+
+@app.delete("/api/me")
+def delete_me(request: Request, response: Response):
+    accounts.delete_user(_need_user(request)["id"])
+    response.delete_cookie(accounts.COOKIE)
+    return {"ok": True}
+
+
+class Watch(BaseModel):
+    url: str = Field(pattern="^https?://", max_length=1000)
+    title: str = Field(max_length=300)
+    store: str = Field("", max_length=100)
+    image: str = Field("", max_length=1000)
+    price: float = Field(gt=0)
+    target_price: float | None = Field(None, gt=0)
+
+
+@app.get("/api/watches")
+def watches(request: Request):
+    return {"watches": accounts.list_watches(_need_user(request)["id"])}
+
+
+@app.post("/api/watches")
+def add_watch(w: Watch, request: Request):
+    """"تابع السعر" on a result: we tell the shopper when this product's price drops."""
+    user = _need_user(request)
+    try:
+        mk = user["market"] if user["market"] in market.live() else market.current().code  # where it was found
+        watch = accounts.add_watch(user["id"], w.url, w.title, w.store, w.price, mk, w.image, w.target_price)
+    except ValueError:
+        raise HTTPException(409, f"وصلت لأقصى عدد منتجات تتابعها ({accounts.MAX_WATCHES})")
+    return {"watch": watch}
+
+
+@app.delete("/api/watches/{watch_id}")
+def remove_watch(watch_id: int, request: Request):
+    if not accounts.remove_watch(_need_user(request)["id"], watch_id):
+        raise HTTPException(404, "not found")
+    return {"ok": True}
+
+
+@app.get("/api/notifications")
+def notifications(request: Request):
+    user = _need_user(request)
+    return {"notifications": accounts.list_notifications(user["id"]), "unseen": accounts.unseen_count(user["id"])}
+
+
+@app.post("/api/notifications/seen")
+def notifications_seen(request: Request):
+    accounts.mark_seen(_need_user(request)["id"])
+    return {"ok": True}
+
+
+_mail_client = httpx.AsyncClient(timeout=15)
+
+
+async def _alert_followers(results: list[dict]) -> list[dict]:
+    """New prices just seen: notify followers of products that got cheaper (and email the ones who allowed it)."""
+    try:
+        made = await asyncio.to_thread(accounts.prices_seen, results)
+    except Exception:  # alerts must never break a search
+        log.exception("price alerts failed")
+        return []
+    for n in made:
+        log.info("price drop alert: %s", n["title"][:70])
+        if n["email_alerts"] and accounts.email_enabled():
+            await accounts.send_email(_mail_client, n["email"], n["name"], n["title"], n["body"], n["url"])
+    return made
+
+
+CHECK_HOURS = float(os.getenv("WATCH_CHECK_HOURS", "6"))  # how often each followed product page is re-checked
+
+
+def _same_page(a: str, b: str) -> bool:
+    def norm(u):
+        u = urlparse(u)
+        return (u.hostname or "").removeprefix("www.") + u.path.rstrip("/")
+    return norm(a) == norm(b)
+
+
+@app.post("/api/cron/check-watches")
+async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100)):
+    """Opens followed product pages again to catch price drops nobody searched for. Called on a schedule by
+    .github/workflows/check-watches.yml (free), with the CRON_SECRET header: the free server sleeps, so it can't
+    run its own timer."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    urls = await asyncio.to_thread(accounts.urls_to_check, CHECK_HOURS * 3600 * 0.8, limit)
+    sem = asyncio.Semaphore(4)
+    async with httpx.AsyncClient() as client:
+        async def one(url: str):
+            try:
+                products, _ = await asyncio.wait_for(agent._fetch_page(client, sem, url), timeout=25)
+            except Exception as e:  # a slow / blocked page: tried again next time
+                return url, None, type(e).__name__
+            same = [p for p in products if _same_page(p.url, url)]
+            p = same[0] if same else products[0] if len(products) == 1 else None
+            return url, p, None if p else "no price on page"
+        done = await asyncio.gather(*(one(u) for u in urls))
+    seen = [{"url": url, "price": p.price, "title": p.title, "store": p.store, "in_stock": p.in_stock,
+             "old_price": p.old_price} for url, p, _ in done if p]
+    for url, p, err in done:
+        if not p:
+            log.info("watch check %s: %s", url[:80], err)
+            await asyncio.to_thread(accounts.checked, url)
+    if seen:
+        await asyncio.to_thread(db.record_prices, seen, market.current().code)
+    made = await _alert_followers(seen)
+    return {"checked": len(urls), "prices": len(seen), "alerts": len(made),
+            "failed": {url: err for url, p, err in done if not p}}
 
 
 @app.get("/health")
