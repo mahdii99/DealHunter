@@ -34,7 +34,7 @@ def reset_usage() -> None:
     USAGE.update(calls=0, tokens=0, by_step={})
 
 
-def _count(provider: str, r: httpx.Response, step: str) -> None:
+def _count(provider: str, r: httpx.Response, step: str, model: str = "") -> None:
     try:
         data = r.json()
         u = data.get("usageMetadata", {}).get("totalTokenCount") if provider == "gemini" else             (data.get("usage") or {}).get("total_tokens")
@@ -45,6 +45,8 @@ def _count(provider: str, r: httpx.Response, step: str) -> None:
     s = USAGE["by_step"].setdefault(step, {"calls": 0, "tokens": 0})
     s["calls"] += 1
     s["tokens"] += int(u or 0)
+    if model:
+        s["model"] = model  # which model answered this step last (e.g. who judged)
 
 
 def last_model() -> str:
@@ -57,9 +59,11 @@ def available() -> bool:
 
 # lite first: it answers in ~3s; the full flash model often times out on the free tier (mahdy's check, 2026-11-10)
 GEMINI_PREFERRED = ("gemini-flash-lite-latest", "gemini-flash-latest")
-GROQ_PREFERRED = ("openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "qwen/qwen3-32b",
-                  "meta-llama/llama-4-maverick-17b-128e-instruct", "meta-llama/llama-4-scout-17b-16e-instruct",
-                  "llama-3.1-8b-instant")
+# (each Groq model has its own per-minute and daily limits; llama-4-scout and llama-3.1-8b have the biggest ones,
+# so page reading spreads over them while gpt-oss-120b is kept for planning and judging)
+GROQ_PREFERRED = ("openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b",
+                  "meta-llama/llama-4-scout-17b-16e-instruct", "qwen/qwen3-32b", "llama-3.1-8b-instant",
+                  "meta-llama/llama-4-maverick-17b-128e-instruct")
 FAST_BULK = ("groq", "cerebras", "cloudflare")  # answer in ~1-3 s: page reading goes here first, spread over their models
 # Other free tiers with the same (OpenAI-style) API. Each one added = more requests per minute/day for free.
 # provider -> (base url, key in .env, preferred models; the rest are discovered from the provider's list)
@@ -90,6 +94,7 @@ _LAST_GOOD: list[str] = []        # the model that answered last time is tried f
 COOLDOWN_SECONDS = 180   # timed out (busy right now, or the prompt was big): try others for a few minutes
 GONE_SECONDS = 30 * 86400  # 410: the provider retired the model
 BUSY_SECONDS = 60        # 429 per-minute limit / 503 overloaded: usually fine again within a minute
+STRONG_WAIT = 15         # the judge waits up to this for a strong model to free up before using a weaker one (planning: 3 s)
 STATE_FILE = Path(__file__).resolve().parent.parent / "debug" / "llm_state.json"
 
 
@@ -114,10 +119,11 @@ def _save_state() -> None:
         pass
 
 
-def _daily_quota_reset() -> float:
-    """Free daily quotas reset at midnight US Pacific time (08:00 UTC; no time-zone database needed on Windows)."""
+def _daily_quota_reset(utc_midnight: bool = False) -> float:
+    """Free daily quotas reset at midnight US Pacific time (08:00 UTC; no time-zone database needed on Windows);
+    Cloudflare's at midnight UTC."""
     now = datetime.now(timezone.utc)
-    reset = now.replace(hour=8, minute=1, second=0, microsecond=0)
+    reset = now.replace(hour=0 if utc_midnight else 8, minute=1, second=0, microsecond=0)
     return (reset if reset > now else reset + timedelta(days=1)).timestamp()
 
 
@@ -142,8 +148,9 @@ def _rest(model: str, r: httpx.Response | None = None) -> None:
     """Skip a model for a while: until tomorrow if its daily quota is gone, else a few minutes (or as long as the
     provider says, when it says)."""
     body = r.text.lower() if r is not None else ""
-    daily = r is not None and r.status_code == 429 and ("perday" in body or "per day" in body or "per-day" in body or "requests per day" in body
-                                                         or "(rpd)" in body or "tokens per day" in body)
+    daily = r is not None and r.status_code == 429 and any(x in body for x in (
+        "perday", "per day", "per-day", "(rpd)", "(tpd)",
+        "daily free allocation", "daily limit", "daily quota"))  # Cloudflare: "used up your daily free allocation"
     busy = r is not None and r.status_code in (429, 503)
     hint = retry_hint(r) if busy and not daily else None
     refused = r is not None and r.status_code in (401, 403, 404)  # not available to us: skip it until tomorrow
@@ -151,7 +158,7 @@ def _rest(model: str, r: httpx.Response | None = None) -> None:
         _COOLDOWN[model] = time.time() + GONE_SECONDS
         log.warning("LLM %s was retired by its provider, using other models", model)
     else:
-        _COOLDOWN[model] = (_daily_quota_reset() if daily or refused
+        _COOLDOWN[model] = (_daily_quota_reset(utc_midnight=model.startswith("@cf/")) if daily or refused
                             else time.time() + min(BUSY_SECONDS, hint + 0.5) if hint is not None
                             else time.time() + (BUSY_SECONDS if busy else COOLDOWN_SECONDS))
     if daily:
@@ -197,13 +204,21 @@ def _size(model: str) -> float:
 def _big_model(model: str) -> bool:
     name = model.lower()
     if any(x in name for x in ("vision", "-vl", "coder", "embed", "guard", "audio", "image", "reasoning", "thinking",
-                               "omni", "nano")):  # slow "thinking" models time out on our 10-20 s budget
+                               "omni", "nano", "reward", "creative")):  # slow "thinking" models time out on our 10-20 s budget
         return False
     return _size(name) >= 24 or any(x in name for x in ("gpt-oss", "deepseek", "llama-4", "kimi", "glm-4", "qwen3-235"))
 
 
+def strong(model: str, provider: str = "") -> bool:
+    """Models good enough to plan and judge (they decide what the shopper sees). Page reading only copies names
+    and prices, so it goes to the smaller ones and leaves the strong models' free quota for the judge."""
+    name = model.lower()
+    return (provider == "gemini" or "gpt-oss-120b" in name or _size(name) >= 100
+            or any(x in name for x in ("deepseek", "kimi")))
+
+
 def _pick(available: list[str], preferred: tuple[str, ...], custom: str | None, provider: str,
-          limit: int = 4) -> list[str]:
+          limit: int = 6) -> list[str]:
     order = ([custom] if custom else []) + list(preferred)
     if not available:  # listing failed: just try our guesses
         return list(dict.fromkeys(order))
@@ -293,8 +308,10 @@ def _text(provider: str, r: httpx.Response) -> str:
 
 async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, spread: int = 0,
                    budget: float | None = None, step: str = "other") -> dict:
-    """prefer="bulk": try the non-Gemini providers first (bulk work like reading pages, so Gemini's small daily
-    quota is kept for understanding the request and judging the results); prefer="groq" etc.: that provider.
+    """prefer="bulk": try the fast non-Gemini providers' smaller models first (bulk work like reading pages, so the
+    strong models' daily quota is kept for understanding the request and judging the results);
+    prefer="strong": the strongest models first (the judge), never just whichever model answered last;
+    prefer="groq" etc.: that provider.
     spread=n: start from the n-th model of that provider, so calls running at the same time go to different
     models (each model has its own per-minute limit)."""
     if not available():
@@ -309,24 +326,34 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
             if _configured(provider):
                 models = _pick(await _list_models(client, provider), preferred,
                                os.getenv(f"{provider.upper()}_MODEL"), provider)
-                attempts += [(provider, m, _caller(provider)) for m in models[:4]]
+                attempts += [(provider, m, _caller(provider)) for m in models]
         # last model that worked goes first; models that just failed go last (or are skipped)
         now = time.time()
-        # bulk work (reading pages) goes to the fast providers first: free models elsewhere often take 10 s+
-        fast = prefer == "bulk" and any(a[0] in FAST_BULK and _COOLDOWN.get(a[1], 0) <= now for a in attempts)
+        bulk = prefer == "bulk"
+
+        def tier(a) -> int:
+            """Bulk work (reading pages): the fast providers' smaller models, then Gemini (fast, big per-minute
+            limits, its own daily quota), then the fast strong models (kept for planning and judging), then the
+            rest (free models elsewhere often take 10 s+)."""
+            if a[0] in FAST_BULK and not strong(a[1], a[0]):
+                return 0
+            return 1 if a[0] == "gemini" else 2 if a[0] in FAST_BULK else 3
 
         def preferred(a) -> bool:
-            if prefer == "bulk":
-                return a[0] in FAST_BULK if fast else a[0] != "gemini"
+            if bulk:
+                return tier(a) == 0
+            if prefer == "strong":
+                return strong(a[1], a[0])
             return bool(prefer) and a[0] == prefer
-        attempts.sort(key=lambda a: (_COOLDOWN.get(a[1], 0) > now, not preferred(a),
-                                     prefer == "bulk" and a[0] == "gemini", a[1] not in _LAST_GOOD))
+        attempts.sort(key=lambda a: (_COOLDOWN.get(a[1], 0) > now, tier(a) if bulk else 0, not preferred(a),
+                                     prefer == "strong" and "gpt-oss-120b" not in a[1],  # fast + strong judge
+                                     a[1] not in _LAST_GOOD))
         ready = [a for a in attempts if _COOLDOWN.get(a[1], 0) <= now] or attempts
         if spread and prefer:
             mine = [a for a in ready if preferred(a)]
             if mine:
                 k = spread % len(mine)
-                ready = mine[k:] + mine[:k] + [a for a in ready if not preferred(a)]
+                ready = mine[k:] + mine[:k] + [a for a in ready if a not in mine]
 
         queue, tries, busy = list(ready), {}, set()
         while True:
@@ -335,6 +362,19 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
                 break
             if queue:
                 provider, model, call = queue.pop(0)
+                if prefer == "strong" and not preferred((provider, model, call)):
+                    # the judge: a strong model that is only resting a few seconds (per-minute limit) beats a weak
+                    # model right now, which lets wrong or no-name items through
+                    now = time.time()
+                    soon = [a for a in attempts if preferred(a) and tries.get(a[1], 0) < 2
+                            and 0 < _COOLDOWN.get(a[1], 0) - now < min(STRONG_WAIT if step == "judge" else 3, left - 5)]
+                    if soon:
+                        queue.insert(0, (provider, model, call))
+                        provider, model, call = min(soon, key=lambda a: _COOLDOWN.get(a[1], 0))
+                        wait = _COOLDOWN.get(model, 0) - now
+                        log.info("LLM: waiting %.1fs for strong model %s instead of a weaker one", wait, model)
+                        await asyncio.sleep(wait)
+                        left = (budget or TOTAL_BUDGET) - (time.monotonic() - start)
             else:
                 # Every model is resting. Per-minute limits free up within seconds, so wait for the one that is
                 # free soonest (if it is within our time) instead of giving up while there's time left.
@@ -361,7 +401,7 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
                 continue
             log.info("LLM %s -> %s in %.1fs", model, r.status_code, time.monotonic() - t)
             if r.status_code == 200:
-                _count(provider, r, step)
+                _count(provider, r, step, model)
                 try:
                     data = _json(_text(provider, r))
                 except (KeyError, IndexError, ValueError, TypeError):  # TypeError: no text in the reply (cut off)
@@ -369,7 +409,7 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
                     continue
                 if not isinstance(data, dict):  # e.g. a bare list: callers expect an object
                     data = {"products": data} if isinstance(data, list) else {}
-                if _LAST_GOOD != [model]:
+                if _LAST_GOOD != [model] and not bulk:  # page reads don't decide who judges next
                     _LAST_GOOD[:] = [model]
                     _save_state()
                 return data

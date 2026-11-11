@@ -1059,3 +1059,189 @@ def test_reply_without_text_tries_the_next_model(monkeypatch):
     assert asyncio.run(llm.ask_json("x")) == {"ok": 2}
     assert bodies[0]["max_tokens"] >= 1024
     llm._LAST_GOOD.clear()
+
+
+def _groq_only(monkeypatch, models, extra_env=()):
+    for k in ("GEMINI_API_KEY", "OPENROUTER_API_KEY", "MISTRAL_API_KEY", "NVIDIA_API_KEY", "CLOUDFLARE_API_KEY",
+              "CEREBRAS_API_KEY", "GROQ_MODEL", "GEMINI_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    for k in extra_env:
+        monkeypatch.setenv(k, "k")
+    llm._MODEL_CACHE.clear(); llm._COOLDOWN.clear(); llm._LAST_GOOD.clear()
+
+    async def fake_list(client, provider):
+        return models.get(provider, [])
+    monkeypatch.setattr(llm, "_list_models", fake_list)
+    used = []
+
+    async def answer(client, model, prompt):
+        used.append(model)
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}],
+                                         "candidates": [{"content": {"parts": [{"text": '{"ok": 1}'}]}}]})
+    monkeypatch.setattr(llm, "_groq", answer)
+    monkeypatch.setattr(llm, "_gemini", answer)
+    monkeypatch.setattr(llm, "_caller", lambda p: answer)
+    return used
+
+
+def test_judge_uses_a_strong_model_not_the_last_page_reader(monkeypatch):
+    """Live test 11 Nov, 4.1: the judge took 'the model that answered last', a page-reading model
+    (llama-3.3-70b on Cloudflare), although gpt-oss-120b was free. Page reads no longer decide who judges."""
+    used = _groq_only(monkeypatch, {"groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]})
+    asyncio.run(llm.ask_json("page", prefer="bulk", spread=1, step="read_page"))
+    assert used[-1] != "openai/gpt-oss-120b" and llm._LAST_GOOD == []  # reads keep off the strong model
+    llm._LAST_GOOD[:] = ["openai/gpt-oss-20b"]  # even when a weak model answered last
+    asyncio.run(llm.ask_json("judge", prefer="strong", step="judge"))
+    assert used[-1] == "openai/gpt-oss-120b"
+    assert llm.USAGE["by_step"]["judge"]["model"] == "openai/gpt-oss-120b"
+    llm._LAST_GOOD.clear(); llm.reset_usage()
+
+
+def test_judge_waits_a_few_seconds_for_a_strong_model(monkeypatch):
+    """A strong model resting for its per-minute limit is worth a short wait: a weak judge lets no-name items in."""
+    used = _groq_only(monkeypatch, {"groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]})
+    llm._COOLDOWN["openai/gpt-oss-120b"] = time.time() + 0.3
+    asyncio.run(llm.ask_json("judge", prefer="strong", budget=10, step="judge"))
+    assert used == ["openai/gpt-oss-120b"]
+    llm._COOLDOWN["openai/gpt-oss-120b"] = time.time() + 600  # resting long: the weaker one answers now
+    asyncio.run(llm.ask_json("judge", prefer="strong", budget=10, step="judge"))
+    assert used[-1] == "openai/gpt-oss-20b"
+    llm._COOLDOWN.clear(); llm._LAST_GOOD.clear()
+
+
+def test_page_reads_use_small_models_then_gemini_before_the_strong_one(monkeypatch):
+    used = _groq_only(monkeypatch, {"groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+                                    "gemini": ["gemini-flash-lite-latest"]}, extra_env=("GEMINI_API_KEY",))
+    asyncio.run(llm.ask_json("page", prefer="bulk", spread=1))
+    assert used == ["openai/gpt-oss-20b"]
+    llm._COOLDOWN["openai/gpt-oss-20b"] = time.time() + 600  # small one busy: Gemini, not the judge's model
+    asyncio.run(llm.ask_json("page", prefer="bulk", spread=2))
+    assert used[-1] == "gemini-flash-lite-latest"
+    llm._COOLDOWN.clear(); llm._LAST_GOOD.clear()
+
+
+def test_news_and_blog_addresses_are_not_shops():
+    """Live test: news sites (tahiamasr, timesbull, al-ain, blog.btech) were opened as if they were stores."""
+    from app import trust
+    for u in ("https://www.tahiamasr.com/News/123", "https://al-ain.com/article/xiaomi-phones",
+              "https://blog.btech.com/best-phones", "https://site.com/2025/05/best-phones", "https://x.com.eg/blog/tv"):
+        assert not trust.is_shop_candidate(u), u
+    for u in ("https://btech.com/ar/p/olympic-50l-945105411", "https://www.amazon.eg/dp/B0X", "https://shop.com/products/a"):
+        assert trust.is_shop_candidate(u), u
+
+
+def test_article_pages_are_not_read_as_stores(monkeypatch):
+    news = ('<html><head><meta property="og:type" content="article"></head><body>'
+            '<p>سعر سامسونج A16 في مصر 8999 جنيه</p></body></html>')
+    shop = news.replace("</body>", '<button>Add to cart</button></body>')
+    assert agent._is_article(news) and not agent._is_article(shop)
+    assert agent._is_article('<script type="application/ld+json">{"@type": "NewsArticle"}</script>')
+
+    replies = iter([{"page": "article", "currency": "EGP", "products": [{"title": "A16", "price": 8999}]},
+                    {"page": "shop", "currency": "USD", "products": [{"title": "A16", "price": 199}]},
+                    {"page": "shop", "currency": "EGP", "products": [
+                        {"title": "A16", "price": 8999, "url": "/p/a16"},
+                        {"title": "A16 (other country)", "price": 8000, "url": "https://www.amazon.in/dp/x"}]}])
+
+    async def fake_ask(prompt, **kw):
+        return next(replies)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    with pytest.raises(agent.NotAStore):
+        asyncio.run(agent._llm_read_page("https://news.example.com/x", "<p>x</p>", "samsung"))
+    with pytest.raises(agent.NotAStore):
+        asyncio.run(agent._llm_read_page("https://shop.com/x", "<p>x</p>", "samsung"))
+    got = asyncio.run(agent._llm_read_page("https://shop.com/x", "<p>x</p>", "samsung"))
+    assert [p.url for p in got] == ["https://shop.com/p/a16"]  # links to another country's store are dropped
+
+
+def test_page_text_sends_the_product_part_once():
+    """Token use: the LLM gets the window with the products (search words + prices), each link once, no images."""
+    menu = " ".join(f"<a href='/c/{i}'>Category {i}</a>" for i in range(400))
+    cards = "".join(f"<div><a href='/dp/{i}'><img></a><a href='/dp/{i}'>Samsung Galaxy A{i} 5000mAh</a>"
+                    f"<a href='/dp/{i}'>4.5 stars</a><span>EGP {8000 + i},00</span></div>" for i in range(30))
+    html = f"<html><body><nav>{menu}</nav>{cards}<footer>{menu}</footer></body></html>"
+    text = agent._page_text(html, ["samsung", "galaxy", "5000mah"], base_url="https://www.amazon.eg/s?k=a")
+    assert len(text) <= agent.PAGE_CHARS
+    assert text.count("Samsung Galaxy") == 30 and "Category 200 " not in text  # not the menus
+    assert text.count("[link: /dp/5]") == 1
+    md = "![img](https://cdn.x.com/a.jpg) [Galaxy A5 - EGP 8,999](https://www.amazon.eg/dp/5?ref=abc&tag=x)"
+    out = agent._page_text(md, ["galaxy"], base_url="https://www.amazon.eg/s")
+    assert "cdn.x.com" not in out and "](/dp/5)" in out
+
+
+def test_judge_down_still_shows_the_candidates(monkeypatch):
+    """Live test 11 Nov, 17.1: every model was busy at judging time and the simple rules wanted '2000w' in
+    Arabic titles ("2000 وات"), so 28 found offers became 0 results. Now they're shown, all marked to check."""
+    from app import websearch
+    from app.models import Product
+    items = [Product("Jumia", "مكنسة كهربائية توشيبا 2000 وات", 3500, "https://www.jumia.com.eg/p1", trusted=True),
+             Product("B.TECH", "مكنسة باناسونيك 2000 وات", 4200, "https://btech.com/p2", trusted=True)]
+
+    async def fake_find(queries):
+        return items, {}
+
+    async def busy(prompt, **kw):
+        raise llm.LLMError("busy")
+    monkeypatch.setattr(websearch, "available", lambda: False)
+    monkeypatch.setattr(agent, "_search_all", fake_find)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", busy)
+    out = asyncio.run(agent.run("مكنسة كهربائية 2000 وات",
+                                plan={"action": "search", "request": "مكنسة كهربائية 2000 وات", "queries": ["vacuum"]}))
+    assert out["results"] and out["results"][0]["price"] == 3500
+    assert all(r["unconfirmed"] for r in out["results"]) and "مشغولة" in out["summary"]
+
+
+def test_too_cheap_alternative_is_flagged_too():
+    """Live test 11 Nov, 8.1: the judge found no exact match and offered a 1,250 EGP 'Dior Sauvage 100 ml' as an
+    alternative (a genuine one is ~11,000 EGP); the safety net skipped alternatives, so it looked fine."""
+    from app.models import Product
+    alt = Product("cezma.com", "عطر سوفاج من ديور للرجال 100 مل", 1250, "https://cezma.com/p/1")
+    alt.alternative = True
+    agent._flag_price_outliers([alt], typical=11300)
+    assert alt.unconfirmed and "تقليد" in alt.note
+    close = Product("Amazon.eg", "Dior Sauvage EDT 60ml", 7000, "https://amazon.eg/dp/2")
+    close.alternative = True
+    agent._flag_price_outliers([close], typical=11300)
+    assert not close.unconfirmed
+
+
+def test_cloudflare_daily_allocation_rests_until_tomorrow():
+    """Cloudflare says 'you have used up your daily free allocation of 10,000 neurons': that is a daily limit,
+    not a one-minute one, so its models aren't retried on every call for the rest of the day."""
+    llm._COOLDOWN.clear()
+    r = httpx.Response(429, json={"errors": [{"message": "AiError: you have used up your daily free allocation of "
+                                                         "10,000 neurons, please upgrade"}]})
+    llm._rest("@cf/openai/gpt-oss-120b", r)
+    assert llm._COOLDOWN["@cf/openai/gpt-oss-120b"] > time.time() + 600
+    llm._COOLDOWN.clear()
+
+
+def test_no_judge_fallback_keeps_the_searched_brand_and_grade():
+    """Live test 11 Nov, 12.1 / 16.1 with every model out: the word rules showed ATA/Haier/Hisense TVs for
+    'Samsung 55 inch' and 10W-40 oil for '5W-30'. Rare words of the searches now decide (no product rules)."""
+    from app.models import Product
+    tvs = ["ATA 55 Inch Smart TV , 4K UHD LED", "Haier 55 Inch Frameless Smart TV , 4K UHD", "Hisense 55 Inch Smart TV , 4K",
+           "Samsung 55 Inch Smart TV , 4K LED", "LG 55 Inch Smart TV , 4K UHD LED", "شاشة سمارت سامسونج 55 بوصة 4K"]
+    pool = [Product("B.TECH", t, 1000 + i, f"https://btech.com/p{i}") for i, t in enumerate(tvs)]
+    got = agent._fallback_pick(pool, ["شاشة سامسونج 55 بوصة سمارت 4K", "Samsung 55 inch 4K smart TV price Egypt"])
+    assert [p.title for p in got] == [tvs[3], tvs[5]]
+    oils = ["Mobil 1 FS 5W-30 Motor Oil - 4 Liters", "Mobil Super Synthetic Technology X1 10W-40 4 Litres",
+            "PROFI-CAR Eco-Drive Longlife 1 SAE 5W-30 Synthetic Engine Oil 4L", "MOBIL 1 ESP Formula 5W-30 Motor Oil 4L",
+            "Mobil 1 10,000 km FS 5W-40Motor Oil, 4L", "1 10, 000 km 4 Liters 5W40 FS Motor Oil"]
+    pool = [Product("A", t, 1000 + i, f"https://amazon.eg/dp/{i}") for i, t in enumerate(oils)]
+    got = [p.title for p in agent._fallback_pick(pool, ["زيت عربية موبيل 1 5w30 4 لتر", "Mobil 1 5W-30 4L motor oil price Egypt"])]
+    assert oils[0] in got and oils[3] in got and not any("40" in t for t in got)
+
+
+def test_currency_block_needs_a_real_currency_and_spares_known_stores():
+    """Live test 11 Nov: cairobook.com (an Egyptian bookshop) was blocked for 'prices in ABC' (a template
+    placeholder), and samsung.com for a page of its India section (INR), which also hid samsung.com/eg."""
+    from app import db
+    from app.extract import foreign_currency
+    assert foreign_currency('<script>var t = {currency: "ABC"}</script>') is None
+    assert foreign_currency('<script>{"priceCurrency": "SAR"}</script>') == "SAR"
+    agent._remember_sites(["https://www.samsung.com/in/x", "https://saudi-shop.com/p"], [],
+                          {"samsung.com": "prices in INR", "saudi-shop.com": "prices in SAR"})
+    assert "samsung.com" not in db.blocked_sites() and "saudi-shop.com" in db.blocked_sites()
