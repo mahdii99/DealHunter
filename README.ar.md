@@ -25,11 +25,10 @@ pytest -q                           # الاختبارات
 من غير مفتاح Tavily بيرجع يدوّر في بي تك بس (احتياطي).
 
 ## نشر مجاني
-- **Hugging Face Spaces** (مجاني من غير كارت): اعمل حساب، وخد توكن Write من huggingface.co/settings/tokens وحطه في `.env` باسم `HF_TOKEN`، وبعدين:
-  `pip install huggingface_hub` ثم `python -m scripts.deploy_hf`. السكربت بيعمل الـ Space وبيحط مفاتيحك كـ secrets مخفية وبيرفع الكود (من غير `.env` ولا الداتا). نفس الأمر بيحدّث الموقع بعد أي تعديل.
+- **Render** (مجاني من غير كارت): في Render اختار New ← Blueprint واختار الريبو، وهو هيقرا `render.yaml` ويسألك على المفاتيح. الموقع بينام بعد 15 دقيقة من غير زوار، وأول فتحة بعدها بتاخد حوالي دقيقة، والداتا بتتمسح مع كل إعادة تشغيل.
+- **Hugging Face Spaces**: بقى محتاج اشتراك PRO لمواقع Docker. لو اشتركت: `python -m scripts.deploy_hf`.
 - أونلاين كل زائر ليه `DAILY_LIMIT` بحث جديد في اليوم (5 افتراضيًا) عشان الحصص المجانية تكفي، والبحث المتكرر من الكاش مش بيتحسب.
 - زرار "النتيجة دي غلط؟" تحت كل نتيجة بيحفظ البلاغ، وتشوف البلاغات بـ `python -m scripts.reports`.
-- **Render**: Web Service من الريبو، Docker، الخطة Free.
 
 ## الملفات
 - `app/agent.py` الـ agent

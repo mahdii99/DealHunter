@@ -1,0 +1,30 @@
+# Render Blueprint: free Docker web service. Render asks for the values marked sync: false when you create it.
+services:
+  - type: web
+    name: dealhunter
+    runtime: docker
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: DAILY_LIMIT
+        value: "5"
+      - key: CLIENT_SALT
+        generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: CLOUDFLARE_API_KEY
+        sync: false
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: EXA_API_KEY
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false

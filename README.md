@@ -90,8 +90,10 @@ average request from 55 s to 40 s while the average number of matching results w
 
 ## Free hosting
 
-`python -m scripts.deploy_hf` puts the site on Hugging Face Spaces (free, no card): it creates a Docker Space,
-copies the API keys from `.env` into the Space's hidden secrets, and uploads the code (never `.env` or data).
+The repo includes a `render.yaml` Blueprint for Render's free Docker web service (no card): in Render, choose
+New → Blueprint, pick this repo, and paste your API keys when asked. The free service sleeps after 15 idle minutes
+and its SQLite data resets on restart. (`python -m scripts.deploy_hf` does the same on Hugging Face Spaces, which now
+needs a PRO account for Docker.)
 Online, `DAILY_LIMIT` (default 5) caps new searches per visitor per day so the free quotas last; cached repeats
 don't count, and visitors are only stored as a salted hash of their IP.
 
