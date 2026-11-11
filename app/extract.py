@@ -216,13 +216,17 @@ def _as_product(d: dict, store: str, base_url: str, url_pattern: str | None, ima
     ), [str(d[k]) for k in ("slug", "handle", "sku", "id", "product_id") if d.get(k)]
 
 
+# ISO codes of currencies a page found from Egypt may really be in (the region + the big ones)
+REAL_CURRENCIES = set("""EGP SAR AED KWD QAR BHD OMR JOD IQD LBP SYP YER MAD DZD TND LYD SDG TRY IRR ILS USD EUR GBP
+CHF SEK NOK DKK PLN CZK HUF RON RUB UAH INR PKR BDT LKR NPR CNY HKD TWD JPY KRW SGD MYR IDR THB VND PHP AUD NZD CAD
+MXN BRL ARS CLP COP PEN ZAR NGN KES GHS ETB TZS UGX XOF XAF""".split())
 _CURRENCY = re.compile(r"(?:priceCurrency|currencyCode|currency)[\"']?\s*[:=]\s*[\"']?([A-Z]{3})\b")
 
 
 def foreign_currency(html: str) -> str | None:
     """The page's currency when the store sells in another country's currency, else None."""
     local = {a.upper() for a in market.current().currency_aliases}
-    codes = [c for c in _CURRENCY.findall(html) if c.isalpha()]
+    codes = [c for c in _CURRENCY.findall(html) if c in REAL_CURRENCIES]  # not a template placeholder ("ABC")
     if not codes or any(c in local for c in codes):
         return None
     return max(set(codes), key=codes.count)

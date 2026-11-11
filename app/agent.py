@@ -21,7 +21,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
-from . import db, fetchers, llm, trust, websearch
+from . import db, fetchers, llm, market, trust, websearch
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
@@ -31,7 +31,8 @@ from .stores import ALL_STORES
 from .stores.base import DEBUG_DIR, HEADERS
 
 log = logging.getLogger("uvicorn.error")
-MAX_CANDIDATES = 60
+MAX_CANDIDATES = 45  # cheapest first; the judge reads every line, so more = more tokens per search
+JUDGE_DOWN_RESULTS = 12  # no model could judge: the cheapest candidates, all marked "check it"
 MAX_PAGES = 20          # store pages opened per search
 MAX_PER_PAGE = 15       # products kept from one page (listing pages can have many)
 FAMOUS_RESULTS = 15     # search results for the well-known stores group (one search shared by 5-10 big stores)
@@ -110,7 +111,7 @@ async def plan_turn(messages: list[dict], current: str = "") -> dict:
     """One LLM call: understand the newest message in the context of the chat, merge it into the request,
     and plan the searches. Raises llm.LLMError when no model answers."""
     plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current)), timeout=12,
-                                prefer="groq", step="plan")  # gpt-oss-120b on Groq: strong and answers in ~1 s
+                              prefer="strong", step="plan")  # gpt-oss-120b on Groq first: strong, answers in ~1 s
     last = next((m.get("text", "") for m in reversed(messages) if m.get("role") == "user"), "")
     # names only: a price the LLM guessed would mislead the shopper and the judge
     plan["suggested_products"] = [_PRICE_TAIL.sub("", x).strip() for x in plan.get("suggested_products") or []
@@ -194,7 +195,7 @@ async def _check_plan(plan: dict, request: str) -> tuple[dict, list[dict]]:
         req=json.dumps(plan.get("requirements", []), ensure_ascii=False),
         hits="\n".join(f"- {h.get('title', '')[:120]} | {h.get('snippet', '')[:200]}" for h in hits))
     try:
-        fix = await llm.ask_json(prompt, timeout=10, budget=15, prefer="groq", step="check")
+        fix = await llm.ask_json(prompt, timeout=10, budget=15, prefer="strong", step="check")
     except llm.LLMError as e:
         log.info("agent: plan check skipped: %s", e)
         return plan, hits
@@ -222,7 +223,9 @@ Candidates (id, store, store trust 0-100 with the signals found on its site, con
 price EGP, discount, title, product link path (often holds the model number):
 {items}
 
-Return EVERY candidate that fits (often 5-20), not just the best few: the shopper wants to compare.
+Return EVERY candidate that fits (often 5-20), not just the best few: the shopper wants to compare. Check each
+candidate against EVERY requirement one by one (brand, quality, size, type, spec): if its title shows it misses
+one, drop it (e.g. a no-name item when the shopper wants well-known brands).
 A candidate fits when it (1) is what the shopper asked for. When the shopper described a need (e.g. "battery lasts
 two days"), any product that meets the requirements fits, not only the suggested ones; judge from the title/specs
 and your knowledge of that model. Variants of one product line are DIFFERENT products
@@ -254,22 +257,25 @@ asked for them. Real discounts are a plus. Reply JSON:
               say so)"}}"""
 
 
-PAGE_READ_PROMPT = """This is the text of an Egyptian online store page (links shown as [link: url] or markdown [text](url)).
-Extract the products for sale on it that could fit this shopper's request (any brand or model that may fit, not
-only the one in the search words; a later step judges the exact match): {query}
-Reply JSON: {{"products": [{{"title": "...", "price": number (current price in EGP as shown, no old price),
+PAGE_READ_PROMPT = """This is the text of a web page found while searching Egyptian online stores (links shown as
+[link: url] or markdown [text](url)). Extract the products for sale on it that could fit this shopper's request (any
+brand or model that may fit, not only the one in the search words; a later step judges the exact match): {query}
+Reply JSON: {{"page": "shop" (a store's product or listing page, where you can buy) or "article" (news, blog, review,
+guide, price list or specs page: it only talks about products),
+"currency": "currency of the prices on the page, e.g. EGP, USD, SAR",
+"products": [{{"title": "...", "price": number (current price as shown, no old price),
 "url": "the product link from the text or null", "condition": "new" | "used" | "refurbished",
 "in_stock": true | false | null (false if the page shows out of stock / sold out / غير متوفر / نفذت الكمية)}}]}}
-At most 15 products. Use only prices written on the page; never guess. Empty list if none, or if the prices are in
-another currency (SAR, AED, USD...) or are monthly installments.
+At most 12 products. Use only prices written on the page; never guess. Empty list if none, if the page is an
+article, or if the prices are monthly installments.
 PAGE:
 {text}"""
 MAX_READER_PAGES = 8  # failed pages retried through a reader service per search
 MAX_LLM_PAGES = 6  # pages with no structured data that the LLM reads itself (free-tier friendly)
 MIN_CRAWLED_TEXT = 800  # shorter "page text" from the search service is just a snippet
 MIN_TRUST = 30  # unknown shops below this (few real-shop signals on their site) are never shown
-MAX_LLM_READS = 10  # all LLM page reads per search, incl. pages the reader service opened
-PER_STORE_READS = 3  # LLM reads per store, so more stores get read
+MAX_LLM_READS = 8  # all LLM page reads per search, incl. pages the reader service opened
+PER_STORE_READS = 2  # LLM reads per store, so more stores get read (a third listing page of one store mostly repeats)
 LLM_READ_PARALLEL = 3  # pages read at once; each goes to a different model first, so per-minute limits hold
 PAGE_TIMEOUT = 7         # one store page: slower than this = a slow site, the reader service tries it instead
 PAGES_DEADLINE = 9       # all store pages: stop waiting for stragglers after this
@@ -309,18 +315,42 @@ def _progress(text: str) -> None:
 TIMES: dict[str, float] = {}  # seconds per stage of the last search (log + benchmark report)
 
 
-def _page_text(html: str, focus: list[str], limit: int = 4500) -> str:
-    """Readable page text with links kept, cut around the part that mentions the product."""
+PAGE_CHARS = 3000  # page text sent to the LLM: the part with the products (most of a page is menus and footers)
+_PRICE_NUM = re.compile(r"\d[\d,.]{2,}")
+
+
+def _page_text(html: str, focus: list[str], limit: int = PAGE_CHARS, base_url: str = "") -> str:
+    """Readable page text with links kept, cut to the window that mentions the product most (search words and
+    prices), so the LLM reads less text without losing the products."""
     html = re.sub(r"<(script|style|noscript|svg|head)\b.*?</\1>", " ", html, flags=re.S | re.I)
     html = re.sub(r"<a\b[^>]*href=[\"']([^\"'#?]+)[^\"']*[\"'][^>]*>(.*?)</a>", r" \2 [link: \1] ", html, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)  # markdown images (reader services): no names or prices
+    text = re.sub(r"\]\((https?://[^)\s?#]+)[^)]*\)", r"](\1)", text)  # tracking parameters on markdown links
+    if base_url and (site := urlparse(base_url).netloc):  # this site's own links as paths (urljoin restores them)
+        text = re.sub(r"https?://" + re.escape(site) + r"(?=/)", "", text)
+    text = re.sub(r"\[link: (?:javascript:|mailto:|tel:)[^\]]*\]", " ", text)
+    seen: set[str] = set()
+
+    def once(m: re.Match) -> str:  # a product card repeats its link 3-5 times (image, title, rating, price...)
+        if m.group(1) in seen:
+            return " "
+        seen.add(m.group(1))
+        return m.group(0)
+    text = re.sub(r"\[link: ([^\]]+)\]", once, text)
     text = re.sub(r"\s+", " ", unescape(text))
+    if len(text) <= limit:
+        return text
     low = text.lower()
-    start = 0
-    for w in sorted(focus, key=len, reverse=True):  # the most specific word, e.g. "zbook" not "hp"
-        if (i := low.find(w.lower())) != -1:
-            start = max(0, i - 300)
-            break
+    marks = sorted(m.start() for w in {w.lower() for w in focus if len(w) > 2} for m in re.finditer(re.escape(w), low))
+    if not marks:
+        return text[:limit]
+    prices = [m.start() for m in _PRICE_NUM.finditer(text)]
+
+    def score(start: int) -> int:  # search words + prices inside the window
+        end = start + limit
+        return sum(start <= i < end for i in marks) + sum(start <= i < end for i in prices) // 2
+    start = max((max(0, i - 300) for i in marks[::max(1, len(marks) // 40)]), key=score)
     return text[start:start + limit]
 
 
@@ -328,8 +358,14 @@ async def _llm_read_page(url: str, html: str, query: str, spread: int = 0, focus
     """`query` says what the shopper wants; `focus` (default: the query) holds the words used to find the part
     of a long page that shows the product."""
     words = [w for w in re.split(r"\W+", focus or query) if len(w) > 2]
-    data = await llm.ask_json(PAGE_READ_PROMPT.format(query=query, text=_page_text(html, words)), prefer="bulk", spread=spread,
-                                step="read_page")
+    data = await llm.ask_json(PAGE_READ_PROMPT.format(query=query, text=_page_text(html, words, base_url=url)),
+                              prefer="bulk", spread=spread, step="read_page")
+    if data.get("page") == "article":
+        raise NotAStore("article page (not a store)")
+    cur = str(data.get("currency") or "").strip()
+    if cur and cur.upper() not in {c.upper() for c in market.current().currency_aliases + (market.current().currency,)} \
+            and cur not in ("ج.م", "جم", "جنيه مصري", "L.E", "L.E."):
+        raise NotAStore(f"page prices in {cur[:10]}")
     out = []
     items = data.get("products")
     for x in (items if isinstance(items, list) else [])[:15]:
@@ -339,6 +375,8 @@ async def _llm_read_page(url: str, html: str, query: str, spread: int = 0, focus
         if not isinstance(price, (int, float)) or price < 5 or not x.get("title"):
             continue
         link = urljoin(url, x.get("url") or url)
+        if not trust.is_shop_candidate(link):  # e.g. a link to another country's store
+            continue
         cond = x.get("condition")
         out.append(Product(store=trust.store_name(link), title=str(x["title"])[:200], price=float(price), url=link,
                            trusted=trust.is_known(link), condition=cond if cond in ("used", "refurbished") else None,
@@ -347,6 +385,22 @@ async def _llm_read_page(url: str, html: str, query: str, spread: int = 0, focus
     for p in out:
         p.trust_score, p.trust_signals = (100, ["متجر مشهور"]) if p.trusted else (score, signals)
     return out
+
+
+class NotAStore(Exception):
+    """The LLM read the page: it isn't a place to buy (news, blog, review) or its prices are another currency."""
+
+
+_ARTICLE_TYPE = re.compile(r'"@type"\s*:\s*"(?:NewsArticle|BlogPosting|Article|ReportageNewsArticle|AnalysisNewsArticle)"'
+                           r"|<meta[^>]+property=[\"']og:type[\"'][^>]+content=[\"']article", re.I)
+_BUY = re.compile(r"add.to.(?:cart|bag|basket)|buy now|[أا]ضف (?:إلى|الى|لل)|اشتري? الآن|"
+                  r"\"@type\"\s*:\s*\"(?:Product|Offer)\"", re.I)
+
+
+def _is_article(html: str) -> bool:
+    """A news / blog page says so in its own page data (schema.org Article, og:type article) and has nothing to
+    buy on it: no LLM read needed, and its site is probably no store."""
+    return bool(_ARTICLE_TYPE.search(html)) and not _BUY.search(html)
 
 
 class RobotsDisallowed(Exception):
@@ -449,6 +503,9 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
             if not page_products and (cur := extract_mod.foreign_currency(html)):
                 errors[trust.domain(url)] = f"prices in {cur}"  # another country's store: not worth an LLM read
                 continue
+            if not page_products and _is_article(html):
+                errors[trust.domain(url)] = "article page (not a store)"  # news / blog: nothing to buy, no LLM read
+                continue
             if not page_products:
                 # Little visible text = a JavaScript-only page; a reader service renders it better.
                 if len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", html, flags=re.S))) < 1500:
@@ -473,6 +530,9 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
 
         def collect(batch, results):
             for (url, _), res in zip(batch, results):
+                if isinstance(res, NotAStore):
+                    errors[trust.domain(url)] = str(res)
+                    continue
                 if isinstance(res, Exception):
                     errors[trust.domain(url)] = f"LLM read failed: {type(res).__name__}"
                     continue
@@ -557,7 +617,8 @@ def _remember_sites(urls: list[str], products: list[Product], errors: dict[str, 
             why = errors.get(d)
             if d in worked:
                 db.site_opened(d)
-            elif why and why.startswith("prices in "):
+            elif why and why.startswith("prices in ") and not trust.is_known("https://" + d):
+                # (a well-known brand or store has sections for many countries: samsung.com/in is not samsung.com/eg)
                 db.site_failed(d, why, now_blocked=True)
             elif why and not _SLOW.search(why.split(" / ")[0]) and not trust.is_known("https://" + d):
                 # (the first part is how the site answered US; what follows " / " is the reader service)
@@ -729,8 +790,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             + (f" ({', '.join(p.trust_signals[:5])})" if p.trust_signals and not p.trusted else "")
             + (f" | CONDITION: {p.condition}" if p.condition else "") + f" | {p.price:g}"
             + (f" ({p.coupon_price:g} with checkout coupon)" if p.coupon_price else "")
-            + (f" | -{p.discount_pct}% off" if p.discount_pct else "") + f" | {p.title}"
-            + (f" | link: {_slug(p.url)}" if _slug(p.url) else "")
+            + (f" | -{p.discount_pct}% off" if p.discount_pct else "") + f" | {p.title[:140]}"
+            + (f" | link: {_slug(p.url)[:90]}" if _slug(p.url) else "")
             for i, p in enumerate(pool))
         log.info("agent: judging %d candidates", len(pool))
         _progress(f"بقارن {len(pool)} عرض من {len({p.store for p in pool})} متجر وبشيل اللي مش مطابق...")
@@ -741,7 +802,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
                 avoid=json.dumps(plan.get("avoid", []), ensure_ascii=False), minp=minp, maxp=maxp, items=items,
                 codes=json.dumps(codes, ensure_ascii=False),
                 suggested=json.dumps(plan.get("suggested_products") or [], ensure_ascii=False))
-            verdict = await llm.ask_json(prompt, timeout=20, budget=40, step="judge")  # the big call: give it time, it decides quality
+            verdict = await llm.ask_json(prompt, timeout=20, budget=40, prefer="strong", step="judge")  # the big call: give it time, it decides quality
             TIMES["judge"] = round(time.monotonic() - tj, 1)
             _save_debug("last_judge.json", {"request": raw, "plan": plan, "prompt": prompt, "verdict": verdict})
             log.info("agent: judge kept %d of %d (model %s)", len(verdict.get("matches") or []), len(pool),
@@ -762,7 +823,11 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
                     p.alternative = alternatives
                     picks.append(p)
         except llm.LLMError as e:
-            picks = rank(pool, parse_query(raw))
+            # the simple word rules miss many titles (Arabic vs English, "2000 وات" vs "2000W"); the candidates
+            # all came from searches for this request, so show the cheapest of them rather than nothing
+            picks = _fallback_pick(pool, [raw, plan.get("request") or ""] + web_queries)[:JUDGE_DOWN_RESULTS]
+            for p in picks:
+                p.unconfirmed = True
             log.warning("agent: judge failed: %s", e)
             summary = ("الموديلات المجانية مشغولة دلوقتي فمقدرتش أراجع النتايج بدقة، فدي مرتبة بالسعر بس "
                        "واتأكد من الموديل في كل واحدة. جرب تاني كمان دقيقة لنتيجة أدق.")
@@ -785,6 +850,31 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     }
 
 
+_SEARCH_NOISE = {"price", "prices", "egypt", "سعر", "اسعار", "أسعار", "مصر", "في", "من", "the", "and", "for", "with",
+                 "best", "buy", "online", "جنيه", "تحت", "عايز"}
+
+
+def _fallback_pick(pool: list[Product], queries: list[str], keep: float = 0.6) -> list[Product]:
+    """No model could judge: keep the candidates whose title has the distinctive words of one of the searches.
+    A word every candidate shares ('55', 'inch', 'tv') says little; a rarer one ('samsung') decides, so other
+    brands or grades drop out without any product-specific rule. Cheapest first."""
+    import math
+    titles = [set(re.findall(r"\w+", p.title.lower())) for p in pool]
+    n = len(pool)
+
+    def weight(w: str) -> float:
+        return math.log((n + 1) / (sum(w in t for t in titles) + 0.5))
+    best = [0.0] * n
+    for q in queries:
+        words = {w for w in re.findall(r"\w+", q.lower()) if w not in _SEARCH_NOISE and (len(w) > 1 or w.isdigit())}
+        total = sum(max(weight(w), 0.05) for w in words)
+        if not total:
+            continue
+        for i, t in enumerate(titles):
+            best[i] = max(best[i], sum(max(weight(w), 0.05) for w in words if w in t) / total)
+    return sorted((p for p, s in zip(pool, best) if s >= keep), key=_paid)
+
+
 OUTLIER_RATIO = 0.6  # a match under 60% of the typical (median) price of the other matches looks wrong
 UNIT_ERROR = 10     # over 10x the typical price of the other matches: a listing in the wrong unit
 TOO_CHEAP = 0.5      # under half of what the judge says a genuine new one costs: likely a copy or a listing mistake
@@ -794,11 +884,12 @@ def _flag_price_outliers(picks: list[Product], typical: float | None = None) -> 
     """Safety net after the judge: an offer far below what every other store asks for the same product (or, with
     few offers, far below what the judge says a genuine new one costs in Egypt) is usually a copy, a listing
     mistake, another variant or a used item. Keep it, but say so and never call it the best deal."""
-    if not picks or any(p.alternative for p in picks):
+    if not picks:
         return
+    alternatives = any(p.alternative for p in picks)  # different products: only what a genuine one costs applies
     # 10x what the others (or a genuine one) cost is a unit mistake (piasters read as pounds, a bulk lot): never
     # a real offer for the same thing, so it goes
-    for p in list(picks):
+    for p in [] if alternatives else list(picks):
         others = sorted(_paid(q) for q in picks if q is not p)
         ref = others[len(others) // 2] if others else typical
         if ref and _paid(p) > UNIT_ERROR * ref:
@@ -810,7 +901,7 @@ def _flag_price_outliers(picks: list[Product], typical: float | None = None) -> 
     for p in picks:
         others = [x for x in prices if x != _paid(p)] or prices
         median = others[len(others) // 2]
-        if len(picks) >= 3 and _paid(p) < OUTLIER_RATIO * median:
+        if len(picks) >= 3 and not alternatives and _paid(p) < OUTLIER_RATIO * median:
             ref = median
         elif typical and _paid(p) < TOO_CHEAP * typical:
             ref = typical

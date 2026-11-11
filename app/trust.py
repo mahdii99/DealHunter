@@ -4,7 +4,7 @@ Big well-known retailers are trusted by name. Every other shop gets a 0-100 scor
 page (Egyptian phone, cash on delivery, return policy, warranty, address...), so a small but real shop can
 rank next to the big ones, and a sketchy one gets dropped by the LLM judge."""
 import re
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from . import market
 
@@ -85,9 +85,22 @@ def is_local_market(url: str) -> bool:
     return tld in _GENERIC_TLDS
 
 
+# Pages that tell from their address that they are an article, not a product or a shop listing: news, blogs,
+# reviews, guides (they mention prices, but you can't buy there). Any site, any product.
+_ARTICLE_HOST = re.compile(r"^(?:blog|blogs|news|magazine|mag|articles?)\.", re.I)
+_ARTICLE_PATH = re.compile(r"/(?:news|blogs?|articles?|posts?|story|stories|magazine|buying-guides?|reviews?|"
+                           r"مقالات|اخبار|أخبار)(?:/|$)|/(?:19|20)\d\d/[01]?\d/", re.I)
+
+
+def is_article_url(url: str) -> bool:
+    parts = urlparse(url)
+    return bool(_ARTICLE_HOST.match(domain(url)) or _ARTICLE_PATH.search(unquote(parts.path)))
+
+
 def is_shop_candidate(url: str) -> bool:
     host = domain(url)
-    return bool(host) and is_local_market(url) and not any(_match(host, d) for d in NOT_STORES)
+    return (bool(host) and is_local_market(url) and not any(_match(host, d) for d in NOT_STORES)
+            and not is_article_url(url))
 
 
 # (label, points, regex) checked against the page's visible text + links.

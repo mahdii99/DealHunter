@@ -80,6 +80,7 @@ async def run_conversation(n: int, messages: list[str], turns: list[dict], offer
             "cheapest_title": cheapest["title"][:100] if cheapest else "",
             "summary": d.get("summary", ""), "failed_sites": len(d.get("store_errors") or {}), "error": err,
             **{f"t_{a}": b for a, b in (d.get("timings") or {}).items()},
+            "judge_model": ((d.get("llm_usage") or {}).get("by_step") or {}).get("judge", {}).get("model", ""),
             "llm_calls": (d.get("llm_usage") or {}).get("calls", ""), "llm_tokens": (d.get("llm_usage") or {}).get("tokens", ""),
             **{f"tok_{a}": b["tokens"] for a, b in ((d.get("llm_usage") or {}).get("by_step") or {}).items()},
         })
