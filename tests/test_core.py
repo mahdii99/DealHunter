@@ -74,7 +74,7 @@ def test_agent_with_fake_llm(monkeypatch):
         {"matches": [{"id": 1, "note": "تلات منافذ"}, {"id": 0, "note": "أرخص واحد"}], "summary": "خد الـ Wiwu"},
     ])
 
-    async def fake_ask(prompt, timeout=30, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=30, prefer=None, spread=0, budget=None, **kw):
         return next(replies)
 
     monkeypatch.setattr(store, "search", fake_search)
@@ -179,7 +179,7 @@ def test_agent_web_mode_finds_stores_itself(monkeypatch):
         {"matches": [{"id": 0, "note": "ok"}], "summary": "s"},
     ])
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         if "Use these results to check" in prompt:  # the plan check sees the web results for the shopper's words
             assert "power bank 10000mah price egypt" in prompt
             return {"understood": "باور بانك", "web_queries": ["سعر باور بانك 10000", "power bank 10000mAh egypt"],
@@ -241,7 +241,7 @@ def test_variants_collapse_and_cents_outlier():
 def test_llm_reads_page_without_structured_data(monkeypatch):
     html = '<html><body><div><a href="/dp/B01">HP ZBook Firefly 14 G10</a> EGP 52,999</div></body></html>'
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         assert "HP ZBook Firefly 14 G10 [link: /dp/B01]" in prompt and "52,999" in prompt
         return {"products": [{"title": "HP ZBook Firefly 14 G10", "price": 52999, "url": "/dp/B01", "condition": "new"},
                              {"title": "junk", "price": "n/a"}]}
@@ -263,7 +263,7 @@ def test_guessed_budget_is_ignored(monkeypatch):
         {"matches": [{"id": 0, "note": "n"}], "summary": "s"},
     ])
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         return next(replies)
 
     monkeypatch.setattr(store, "search", fake_search)
@@ -354,7 +354,7 @@ def test_chat_follow_up_refines_previous_request(monkeypatch):
         {"matches": [{"id": 0, "note": "ok"}], "summary": "s"},
     ])
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         prompts.append(prompt)
         return next(replies)
 
@@ -380,7 +380,7 @@ def test_chat_follow_up_refines_previous_request(monkeypatch):
 
 
 def test_chat_asks_when_too_vague(monkeypatch):
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         return {"action": "ask", "question": "الهدية لمين؟", "options": ["لراجل", "لست", 3]}
 
     monkeypatch.setattr(llm, "available", lambda: True)
@@ -623,7 +623,7 @@ def test_chat_stream_sends_progress_then_the_answer(monkeypatch):
         {"matches": [{"id": 0, "note": "ok"}], "summary": "s"},
     ])
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         return next(replies)
 
     monkeypatch.setattr(store, "search", fake_search)
@@ -664,7 +664,7 @@ def test_reader_returns_what_it_has_when_time_is_up(monkeypatch):
 
 
 def test_question_about_results_is_answered_without_a_new_search(monkeypatch):
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         return {"action": "answer", "answer": "بي تك وكيل رسمي، بس السعر ده أقل بكتير من السوق فاتأكد من الموديل.",
                 "request": "اول نتيجه دي اصليه؟"}
 
@@ -729,7 +729,7 @@ def test_well_known_stores_come_from_the_plan_for_any_category():
 
 
 def test_planner_suggestions_never_carry_guessed_prices(monkeypatch):
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         return {"action": "search", "request": "تيشرت", "suggested_products": [
             "Zara Men Black Crew Neck T-Shirt 100% Cotton – 199 EGP", "Samsung Galaxy A16 (5000 mAh)"]}
     monkeypatch.setattr(llm, "ask_json", fake_ask)
@@ -792,7 +792,7 @@ def test_page_we_cant_open_is_read_from_the_search_services_copy(monkeypatch):
 
     read = []
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         read.append(prompt)
         return {"products": [{"title": "DeFacto Basic Crew Neck T-Shirt", "price": 399, "url": "/p/basic-tee"}]}
 
@@ -816,7 +816,7 @@ def test_low_trust_shops_never_reach_the_judge(monkeypatch):
 
     judged = []
 
-    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
         judged.append(prompt)
         return {"matches": [{"id": 0, "sure": True, "note": "ok"}], "summary": "s"}
 
@@ -826,3 +826,236 @@ def test_low_trust_shops_never_reach_the_judge(monkeypatch):
     monkeypatch.setattr(llm, "ask_json", fake_ask)
     out = asyncio.run(agent.run("تيشرت", plan={"action": "search", "request": "تيشرت", "queries": ["tee"]}))
     assert "2segypt" not in judged[0] and [r["store"] for r in out["results"]] == ["defacto.com.eg"]
+
+
+def test_rate_limit_waits_as_long_as_the_provider_says():
+    r = httpx.Response(429, text='{"error":{"message":"Rate limit reached ... Please try again in 1.53s. Need more tokens?"}}')
+    assert llm.retry_hint(r) == 1.53
+    assert llm.retry_hint(httpx.Response(429, text="try again in 1m2.5s")) == 62.5
+    assert llm.retry_hint(httpx.Response(429, text="Please try again in 450ms.")) == 0.45
+    assert llm.retry_hint(httpx.Response(429, text='"retryDelay": "17s"')) == 17
+    assert llm.retry_hint(httpx.Response(429, headers={"retry-after": "3"}, text="")) == 3
+    assert llm.retry_hint(httpx.Response(429, text="busy")) is None
+    llm._COOLDOWN.clear()
+    llm._rest("m-short", httpx.Response(429, text="Please try again in 1.5s."))
+    assert llm._COOLDOWN["m-short"] - time.time() < 3  # not the fixed minute: the limit frees up in 1.5 s
+    llm._COOLDOWN.clear()
+
+
+def test_all_models_busy_waits_for_the_first_free_one_instead_of_giving_up(monkeypatch):
+    """Live test 4.1: every Groq model was resting after per-minute 429s, the one model left was out of quota, and
+    the planner gave up in 0.7 s with 24 s left -> a crude rules search with no results."""
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    llm._COOLDOWN.clear()
+    llm._LAST_GOOD.clear()
+    calls = []
+
+    async def one_model(client, provider):
+        return ["m1"]
+
+    async def groq(client, model, prompt):
+        calls.append(time.monotonic())
+        if len(calls) == 1:
+            return httpx.Response(429, text="Rate limit reached on tokens per minute (TPM). Please try again in 0.2s.")
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}]})
+
+    monkeypatch.setattr(llm, "_list_models", one_model)
+    monkeypatch.setattr(llm, "_groq", groq)
+    assert asyncio.run(llm.ask_json("x", prefer="groq", budget=10)) == {"ok": 1}
+    assert len(calls) == 2 and calls[1] - calls[0] >= 0.2
+    llm._COOLDOWN.clear()
+    llm._LAST_GOOD.clear()
+
+
+def test_question_about_results_is_not_searched_when_the_llm_is_down(monkeypatch):
+    """Live test 2.2: the planner failed, and 'is the first one original?' was glued onto the old request and searched."""
+    async def down(*a, **k):
+        raise llm.LLMError("busy")
+
+    async def no_search(*a, **k):
+        raise AssertionError("a question must not become a search")
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", down)
+    monkeypatch.setattr(agent, "run_rules", no_search)
+    from app import main
+    d = TestClient(main.app).post("/api/chat", json={
+        "request": "سماعة انكر R50i NC",
+        "messages": [{"role": "user", "text": "سماعة انكر R50i NC"}, {"role": "assistant", "text": "Shown: 1) ..."},
+                     {"role": "user", "text": "اول نتيجة دي اصلية ولا ممكن تكون تقليد؟"}]}).json()
+    assert d["action"] == "answer" and d["request"] == "سماعة انكر R50i NC" and d["results"] == []
+
+
+def test_pages_are_read_for_the_whole_request_not_the_first_query(monkeypatch):
+    """Live test 3.1: with one query per brand, pages found by the 2nd/3rd query were read for the 1st brand only."""
+    from app import websearch
+    page = "<html><body>" + "LC Waikiki Basic Crew Neck T-Shirt 299 EGP " * 60 + "</body></html>"
+
+    async def fake_search(client, query, max_results=8, exclude_domains=None, include_domains=None):
+        return [{"url": "https://www.lcwaikiki.eg/basic-tees", "title": "", "snippet": "", "content": ""}]
+
+    async def page_without_data(client, sem, url):
+        return [], page
+
+    read = []
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
+        read.append(prompt)
+        return {"products": []}
+
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(agent, "_fetch_page", page_without_data)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    asyncio.run(agent._web_find(["تيشرت بيزك TREE", "LC Waikiki basic t-shirt"],
+                                want="تيشرتات بيزك سادة ماركة نضيفة (well-known brand)"))
+    assert read and "تيشرتات بيزك سادة ماركة نضيفة (well-known brand)" in read[0]
+
+
+def test_dedupe_one_page_in_two_languages_or_with_its_page_title():
+    """Live test 6.1: Vodafone's iPhone 15 page showed 3 times (its <title>, the product name, the /en/ page)."""
+    from app.models import Product
+    u = "https://eshop.vodafone.com.eg/ar/prod/iphone-15"
+    page_title = Product("V", "ايفون 15 | السعر والألوان والمواصفات في مصر 2025", 54999, u)
+    name = Product("V", "iPhone 15 128GB Black", 54999, u)
+    english = Product("V", "iPhone 15 5G in Egypt | 6GB | Latest Offers", 54999, u.replace("/ar/", "/en/"))
+    other_price = Product("V", "iPhone 15 128GB Blue", 57999, u)
+    assert agent._dedupe([page_title, name, english, other_price]) == [name, other_price]
+    # two different items at one price on a listing page are both kept
+    a = Product("S", "Basic tee black", 299, "https://shop.com/collections/basic-tees")
+    b = Product("S", "Basic tee white", 299, "https://shop.com/collections/basic-tees")
+    assert len(agent._dedupe([a, b])) == 2
+
+
+def test_too_cheap_for_a_genuine_one_is_flagged_even_with_few_offers(monkeypatch):
+    """Live test 8.1: Dior Sauvage 100 ml at 1,250 EGP was shown as a trusted pick: with 1-2 offers there's no
+    median to compare with, so the judge's 'typical price of a genuine new one' is the reference."""
+    from app.models import Product
+    from app import websearch
+    fake = Product("cezma.com", "عطر سوفاج من ديور للرجال 100 مل", 1250, "https://cezma.com/products/1", trust_score=65)
+    real = Product("Amazon.eg", "Dior Sauvage EDP 100ml", 7900, "https://www.amazon.eg/dp/B1", trusted=True)
+
+    async def fake_find(queries):
+        return [fake, real], {}
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
+        assert "typical_price" in prompt
+        return {"matches": [{"id": 0, "sure": True, "note": "من متجر موثوق"}, {"id": 1, "sure": True, "note": "أصلي"}],
+                "typical_price": 8000, "best_deal_id": 0, "summary": "s"}
+
+    monkeypatch.setattr(websearch, "available", lambda: False)
+    monkeypatch.setattr(agent, "_search_all", fake_find)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    out = asyncio.run(agent.run("برفان ديور سوفاج 100 مل",
+                                plan={"action": "search", "request": "برفان ديور سوفاج 100 مل", "queries": ["dior sauvage"]}))
+    cheap, ok = out["results"]
+    assert cheap["unconfirmed"] and not cheap["best_deal"] and "تقليد" in cheap["note"]
+    assert not ok["unconfirmed"]
+
+
+def test_slow_or_big_stores_are_not_skipped_and_blocks_expire():
+    """noon.com got skipped for good after two searches where its ~1 MB pages were slower than our limit."""
+    from app import db
+    agent._remember_sites(["https://slowshop.com/p"], [], {"slowshop.com": "TimeoutError / reader too slow"})
+    agent._remember_sites(["https://slowshop.com/p"], [], {"slowshop.com": "ReadTimeout"})
+    agent._remember_sites(["https://www.noon.com/egypt-en/x"], [], {"noon.com": "403"})
+    agent._remember_sites(["https://www.noon.com/egypt-en/y"], [], {"noon.com": "403"})
+    assert db.blocked_sites() == set()  # slow != blocked; a well-known store is never skipped for it
+    agent._remember_sites(["https://old.com/p"], [], {"old.com": "prices in SAR"})
+    assert db.blocked_sites() == {"old.com"}
+    with db._db() as c:
+        c.execute("UPDATE blocked_sites SET last_failed = ? WHERE domain = 'old.com'", (time.time() - 8 * 86400,))
+    assert db.blocked_sites() == set()  # tried again after a week
+    db.unblock("old.com")
+
+
+def test_every_store_gets_a_turn_before_any_gets_a_second_page():
+    """Live test: the well-known group's results were mostly Amazon pages, so noon/Jumia got no page budget."""
+    urls = ["https://www.amazon.eg/a", "https://www.amazon.eg/b", "https://www.amazon.eg/c", "https://www.noon.com/x",
+            "https://www.amazon.eg/d", "https://www.jumia.com.eg/y", "https://www.noon.com/z"]
+    assert agent._take_turns(urls) == [
+        "https://www.amazon.eg/a", "https://www.noon.com/x", "https://www.jumia.com.eg/y",
+        "https://www.amazon.eg/b", "https://www.noon.com/z", "https://www.amazon.eg/c", "https://www.amazon.eg/d"]
+
+
+def test_our_own_page_requests_respect_robots_txt(monkeypatch):
+    from app import fetchers
+    fetchers._ROBOTS.clear()
+    fetched = []
+
+    def handler(request: httpx.Request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /search")
+        fetched.append(request.url.path)
+        return httpx.Response(200, text="<html></html>")
+
+    async def go(url):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await agent._fetch_page(c, asyncio.Semaphore(1), url)
+
+    with pytest.raises(agent.RobotsDisallowed):
+        asyncio.run(go("https://shop.test/search?q=x"))
+    asyncio.run(go("https://shop.test/p/1"))
+    assert fetched == ["/p/1"]
+    fetchers._ROBOTS.clear()
+
+
+def test_openrouter_daily_limit_rests_until_tomorrow():
+    llm._COOLDOWN.clear()
+    llm._rest("openrouter/free", httpx.Response(429, text='{"error":{"message":"Rate limit exceeded: free-models-per-day."}}'))
+    assert llm._COOLDOWN["openrouter/free"] - time.time() > 600  # not retried every minute all day
+    llm._COOLDOWN.clear()
+
+
+def test_price_in_the_wrong_unit_is_dropped():
+    """Live test 14.1 / 17.1: an office chair at 850,000 EGP and a vacuum at 829,900 (piasters read as pounds)."""
+    from app.models import Product
+    picks = [Product("arkan", "كرسي مكتب شبك", 7499, "u1"), Product("wood", "كرسي اداري شبك", 9900, "u2"),
+             Product("wood", "كرسي شبك طبي اداري", 850000, "u3")]
+    agent._flag_price_outliers(picks)
+    assert [p.price for p in picks] == [7499, 9900]
+    alone = [Product("x", "Panasonic MC-CL605", 829900, "u4")]
+    agent._flag_price_outliers(alone, typical=5000)
+    assert alone == []
+
+
+def test_llm_use_is_counted_per_step(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    llm._COOLDOWN.clear(); llm._LAST_GOOD.clear(); llm.reset_usage()
+
+    async def one_model(client, provider):
+        return ["m1"]
+
+    async def groq(client, model, prompt):
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}], "usage": {"total_tokens": 1234}})
+
+    monkeypatch.setattr(llm, "_list_models", one_model)
+    monkeypatch.setattr(llm, "_groq", groq)
+    asyncio.run(llm.ask_json("x", step="judge"))
+    asyncio.run(llm.ask_json("x", step="judge"))
+    assert llm.USAGE["calls"] == 2 and llm.USAGE["tokens"] == 2468 and llm.USAGE["by_step"]["judge"]["calls"] == 2
+    llm._LAST_GOOD.clear(); llm.reset_usage()
+
+
+def test_reply_without_text_tries_the_next_model(monkeypatch):
+    """Live run 2: Cloudflare's gpt-oss used its default 256 tokens thinking and returned content=None, which
+    crashed the whole chat turn (TypeError) instead of moving on to another model."""
+    monkeypatch.setenv("CLOUDFLARE_API_KEY", "k")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "a")
+    llm._COOLDOWN.clear(); llm._LAST_GOOD.clear()
+    bodies = []
+
+    def handler(request: httpx.Request):
+        import json as _j
+        body = _j.loads(request.content)
+        bodies.append(body)
+        if body["model"] == "@cf/openai/gpt-oss-120b":
+            return httpx.Response(200, json={"choices": [{"message": {"content": None}, "finish_reason": "length"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 2}'}}]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    assert asyncio.run(llm.ask_json("x")) == {"ok": 2}
+    assert bodies[0]["max_tokens"] >= 1024
+    llm._LAST_GOOD.clear()

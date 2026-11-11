@@ -10,6 +10,8 @@ About 7 web searches and 4-12 LLM calls per search turn: the full run uses a rea
 """
 import asyncio
 import csv
+import json
+import logging
 import sys
 import time
 from datetime import datetime
@@ -55,6 +57,8 @@ async def run_conversation(n: int, messages: list[str], turns: list[dict], offer
     for k, text in enumerate(messages, 1):
         history.append({"role": "user", "text": text})
         t = time.monotonic()
+        (main.ROOT / "debug" / "last_judge.json").unlink(missing_ok=True)  # so a turn without a judge call has none
+        logging.getLogger("uvicorn.error").info("##### TURN %s.%s: %s", n, k, text)
         try:
             d = await main._chat_turn(main.ChatTurn(messages=history, request=request))
             err = ""
@@ -76,6 +80,8 @@ async def run_conversation(n: int, messages: list[str], turns: list[dict], offer
             "cheapest_title": cheapest["title"][:100] if cheapest else "",
             "summary": d.get("summary", ""), "failed_sites": len(d.get("store_errors") or {}), "error": err,
             **{f"t_{a}": b for a, b in (d.get("timings") or {}).items()},
+            "llm_calls": (d.get("llm_usage") or {}).get("calls", ""), "llm_tokens": (d.get("llm_usage") or {}).get("tokens", ""),
+            **{f"tok_{a}": b["tokens"] for a, b in ((d.get("llm_usage") or {}).get("by_step") or {}).items()},
         })
         for r in res:
             offers.append({"conv": n, "turn": k, "message": text, "store": r["store"], "price": r["price"],
@@ -83,8 +89,29 @@ async def run_conversation(n: int, messages: list[str], turns: list[dict], offer
                            "unsure": "yes" if r.get("unconfirmed") else "", "best_deal": "yes" if r.get("best_deal") else "",
                            "alternative": "yes" if r.get("alternative") else "", "trust": r.get("trust_score", ""),
                            "url": r["url"]})
+        _keep_judge(n, k, d)
+        degraded = bool(err) or d.get("mode") == "rules" or "الموديلات المجانية مشغولة" in (d.get("summary") or d.get("answer") or "")
+        _QUOTA["bad_in_a_row"] = _QUOTA["bad_in_a_row"] + 1 if degraded else 0
+        turns[-1]["llm_degraded"] = "yes" if degraded else ""
         print(f"[{n}.{k}] {text}: {d.get('action')} {len(res)} results in {secs:.0f}s"
               + (f" cheapest {cheapest['price']} @ {cheapest['store']}" if cheapest else "") + (f" ({err})" if err else ""))
+
+
+_QUOTA = {"bad_in_a_row": 0}
+STOP_AFTER_DEGRADED = 2  # turns in a row without the LLM (free quotas gone): stop instead of burning web searches
+RUN_DIR = None  # debug/live_test/<time>/: the server log and each turn's judge exchange, to see WHY a result came out
+
+
+def _keep_judge(n: int, k: int, d: dict) -> None:
+    """last_judge.json is overwritten every search: keep a copy per turn (only if this turn wrote it)."""
+    src = main.ROOT / "debug" / "last_judge.json"
+    if RUN_DIR is None or d.get("action") != "search" or not src.exists():
+        return
+    try:
+        data = json.loads(src.read_text(encoding="utf-8"))
+        (RUN_DIR / f"judge_{n}.{k}.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
 
 
 def save(turns: list[dict], offers: list[dict]) -> str:
@@ -119,9 +146,22 @@ def save(turns: list[dict], offers: list[dict]) -> str:
 
 
 async def run(picked: list[int]) -> None:
+    global RUN_DIR
     main.CACHE_TTL = 0  # every turn is a real search
+    RUN_DIR = main.ROOT / "debug" / "live_test" / f"{datetime.now():%Y-%m-%d_%H-%M}"
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(RUN_DIR / "server.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
+    server_log = logging.getLogger("uvicorn.error")
+    server_log.addHandler(handler)
+    server_log.setLevel(logging.INFO)
+    print("server log + judge files:", RUN_DIR)
     turns, offers = [], []
     for n, conv in enumerate(CONVERSATIONS, 1):
+        if _QUOTA["bad_in_a_row"] >= STOP_AFTER_DEGRADED:
+            print(f"STOPPED before conversation {n}: {STOP_AFTER_DEGRADED} turns in a row without the LLM "
+                  "(free quotas used up), so the rest would only burn web searches")
+            break
         if not picked or n in picked:
             await run_conversation(n, conv, turns, offers)
     searches = [t for t in turns if t["action"] == "search"]
