@@ -7,197 +7,663 @@
 <link rel="icon" href="/logo.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/logo-512.png">
 <meta name="theme-color" content="#0f766e">
+<meta name="theme-color" content="#0F766E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Readex+Pro:wght@500;700&display=swap" rel="stylesheet">
+<script>  // theme before first paint: the visitor's choice, else the system's
+  try { const t = localStorage.getItem('dh-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#6b7280; --accent:#0f766e; --border:#e5e7eb; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#181b22; --text:#e8eaef; --muted:#9aa1ad; --accent:#2dd4bf; --border:#2a2f3a; } }
+  :root { --bg:#F4F7F6; --header:rgba(244,247,246,.88); --card:#fff; --card2:#EDF2F1; --text:#13221F; --muted:#56665F;
+          --border:#DCE4E1; --border2:#C3CFCB; --accent:#0F766E; --on-accent:#fff; --soft:#DDF1EC; --ink:#0B5F58;
+          --deal:#B93A0A; --deal-soft:#FDEBE1; --warn:#9A4D00; --warn-soft:#FDF1DC; --scrim:rgba(10,20,18,.45); --shadow:rgba(15,40,35,.10);
+          color-scheme: light; }
+  :root[data-theme="dark"] { --bg:#0C1312; --header:rgba(12,19,18,.88); --card:#141F1D; --card2:#1B2926; --text:#E6EEEC; --muted:#9DAEA9;
+          --border:#263633; --border2:#344743; --accent:#2DD4BF; --on-accent:#04221F; --soft:#103A35; --ink:#5EEAD4;
+          --deal:#FDBA74; --deal-soft:#3A2112; --warn:#FCD34D; --warn-soft:#3A2E10; --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.45);
+          color-scheme: dark; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0C1312; --header:rgba(12,19,18,.88); --card:#141F1D; --card2:#1B2926;
+          --text:#E6EEEC; --muted:#9DAEA9; --border:#263633; --border2:#344743; --accent:#2DD4BF; --on-accent:#04221F; --soft:#103A35;
+          --ink:#5EEAD4; --deal:#FDBA74; --deal-soft:#3A2112; --warn:#FCD34D; --warn-soft:#3A2E10; --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.45);
+          color-scheme: dark; } }
   * { box-sizing:border-box; }
   [hidden] { display:none !important; }
-  body { margin:0; font-family:system-ui,"Segoe UI",Tahoma,sans-serif; background:var(--bg); color:var(--text); }
-  main { max-width:900px; margin:0 auto; padding:24px 16px 120px; }
-  .top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-  .top button { padding:8px 14px; font-size:14px; background:transparent; color:var(--accent); border:1px solid var(--accent); }
-  #chat { display:grid; gap:18px; }
-  .u { justify-self:start; max-width:80%; background:var(--accent); color:#fff; padding:10px 14px; border-radius:16px 16px 16px 4px; white-space:pre-wrap; }
-  .a { display:grid; gap:10px; }
-  .chips { display:flex; flex-wrap:wrap; gap:8px; }
-  .chip { padding:6px 12px; font-size:14px; border-radius:20px; background:var(--card); color:var(--accent); border:1px solid var(--accent); }
-  .sugg { font-size:13px; color:var(--muted); }
-  .req { font-size:13px; color:var(--muted); }
-  .composer { position:fixed; bottom:0; inset-inline:0; background:var(--bg); border-top:1px solid var(--border); padding:12px 16px; }
-  .composer form { max-width:900px; margin:0 auto; }
-  .hint { color:var(--muted); font-size:14px; }
-  h1 { margin:0 0 4px; font-size:28px; }
-  h1.brand { display:flex; align-items:center; gap:10px; }
-  p.sub { margin:0 0 20px; color:var(--muted); }
-  form { display:flex; gap:8px; }
-  input { flex:1; padding:14px; font-size:16px; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--text); }
-  button { padding:0 22px; font-size:16px; border:0; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; }
-  button:disabled { opacity:.6; }
-  .meta { color:var(--muted); font-size:14px; margin:14px 0; min-height:20px; }
-  .meta.live .step::before { content:""; display:inline-block; width:8px; height:8px; margin-inline-end:8px;
-    border-radius:50%; background:var(--accent, #2dd4bf); animation:pulse 1s ease-in-out infinite; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 "IBM Plex Sans Arabic","Readex Pro",system-ui,"Segoe UI",Tahoma,sans-serif; }
+  button, input, textarea { font:inherit; color:inherit; }
+  button { cursor:pointer; }
+  button:disabled { opacity:.55; cursor:not-allowed; }
+  :focus-visible { outline:2px solid #14B8A6; outline-offset:2px; }
+  ::placeholder { color:var(--muted); opacity:1; }
+  a { color:var(--ink); }
+  svg { flex-shrink:0; }
+  .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+  .display { font-family:"Readex Pro","IBM Plex Sans Arabic",sans-serif; }
+
+  /* header */
+  header { position:sticky; top:0; z-index:10; background:var(--header); border-bottom:1px solid var(--border); backdrop-filter:blur(10px); }
+  .bar { max-width:1240px; margin:0 auto; padding:12px 24px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .brand { display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--text); }
+  .brand .name { font:700 21px/1.1 "Readex Pro",sans-serif; letter-spacing:-.01em; }
+  .brand .name b { color:var(--accent); font-weight:700; }
+  .brand .tag { display:block; font-size:12px; color:var(--muted); }
+  .tools { display:flex; align-items:center; gap:8px; }
+  .btn { height:44px; padding:0 14px; border-radius:12px; border:1px solid var(--border); background:var(--card); display:inline-flex;
+         align-items:center; justify-content:center; gap:8px; font-size:14px; white-space:nowrap; text-decoration:none; color:var(--text); }
+  .btn:hover { border-color:var(--border2); }
+  .btn.icon { width:44px; padding:0; }
+  .btn.primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
+  .btn .dim { color:var(--muted); font-size:13px; }
+  .mobile-only { display:none; }
+  .moon { display:inline; } .sun { display:none; }
+  :root[data-theme="dark"] .moon { display:none; } :root[data-theme="dark"] .sun { display:inline; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .moon { display:none; } :root:not([data-theme="light"]) .sun { display:inline; } }
+  .pop-wrap { position:relative; }
+  .pop { position:absolute; top:calc(100% + 8px); inset-inline-end:0; z-index:20; width:270px; padding:8px; border-radius:16px; background:var(--card);
+         border:1px solid var(--border); box-shadow:0 16px 40px var(--shadow); display:grid; gap:4px; }
+  .pop .hint { padding:6px 10px 8px; font-size:12px; color:var(--muted); }
+  .opt { min-height:48px; padding:0 12px; border-radius:10px; border:0; background:transparent; display:flex; align-items:center;
+         justify-content:space-between; gap:8px; text-align:start; }
+  .opt:hover:not(:disabled), .opt[aria-checked="true"] { background:var(--soft); }
+  .opt .code { font:600 12px "Readex Pro",sans-serif; padding:2px 6px; border-radius:6px; background:var(--card2); color:var(--muted); margin-inline-end:8px; }
+  .opt small { color:var(--muted); font-size:12px; }
+
+  /* layout */
+  .layout { max-width:1240px; margin:0 auto; padding:28px 24px 0; display:flex; flex-wrap:wrap; align-items:flex-start; gap:24px; }
+  aside { flex:1 1 240px; max-width:280px; display:grid; gap:16px; position:sticky; top:92px; }
+  .panel { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:16px; display:grid; gap:4px; }
+  .panel h2 { margin:0 0 6px; font-size:14px; font-weight:600; color:var(--muted); display:flex; align-items:center; gap:8px; }
+  .panel .empty { font-size:13px; color:var(--muted); }
+  .hist { min-height:44px; padding:8px 10px; border-radius:10px; border:0; background:transparent; display:grid; text-align:start; line-height:1.4; }
+  .hist:hover { background:var(--card2); }
+  .hist span { font-size:14px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hist small { font-size:12px; color:var(--muted); }
+  .saved-link { display:flex; gap:10px; align-items:center; padding:6px; border-radius:10px; text-decoration:none; color:var(--text); }
+  .saved-link:hover { background:var(--card2); }
+  .saved-link img, .saved-link .ph { width:40px; height:40px; border-radius:8px; object-fit:contain; background:#fff; flex-shrink:0; }
+  .saved-link .ph { background:var(--card2); }
+  .saved-link span { font-size:13px; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .saved-link b { display:block; color:var(--ink); font-size:13px; }
+  .count { min-width:28px; height:24px; padding:0 8px; border-radius:12px; background:var(--soft); color:var(--ink); font-size:13px; font-weight:600;
+           display:inline-flex; align-items:center; justify-content:center; margin-inline-start:auto; }
+  .promo { background:var(--soft); border-radius:16px; padding:18px; display:grid; gap:10px; }
+  .promo h2 { margin:0; font-size:16px; color:var(--ink); }
+  .promo p { margin:0; font-size:13px; }
+  .promo button { justify-self:start; height:40px; padding:0 14px; border-radius:10px; border:1px solid var(--ink); background:transparent; color:var(--ink); font-weight:600; font-size:14px; }
+  main { flex:999 1 560px; min-width:0; display:flex; flex-direction:column; gap:16px; }
+
+  /* empty state */
+  .hero { padding:64px 24px 16px; display:flex; flex-direction:column; align-items:center; text-align:center; gap:14px; }
+  .hero h1 { margin:0; font-size:40px; line-height:1.25; }
+  .hero p { margin:0; max-width:560px; color:var(--muted); font-size:16px; }
+  .sugs { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:8px; max-width:640px; }
+  .sug { min-height:44px; padding:0 16px; border-radius:22px; border:1px solid var(--border); background:var(--card); font-size:14px; }
+  .sug:hover { border-color:var(--accent); }
+
+  /* chat */
+  #chat { display:flex; flex-direction:column; gap:18px; }
+  .u { align-self:flex-start; max-width:80%; padding:10px 16px; border-radius:18px 18px 18px 6px; background:var(--accent); color:var(--on-accent);
+       font-weight:500; white-space:pre-wrap; overflow-wrap:anywhere; }
+  [dir="ltr"] .u { border-radius:18px 18px 6px 18px; }
+  .a { display:flex; flex-direction:column; gap:12px; }
+  .und { font-weight:600; }
+  .sugg, .req, .meta, .hint-line { font-size:13px; color:var(--muted); }
+  .meta.live { display:flex; align-items:center; gap:8px; font-size:14px; }
+  .meta.live .step::before { content:""; display:inline-block; width:8px; height:8px; margin-inline-end:8px; border-radius:50%; background:var(--accent);
+                             animation:pulse 1s ease-in-out infinite; }
   .meta.live .secs { opacity:.6; font-size:12px; }
   @keyframes pulse { 50% { opacity:.25; } }
-  .grid { display:grid; gap:12px; }
-  .item { display:flex; gap:14px; background:var(--card); border:1px solid var(--border); border-radius:12px; padding:12px; text-decoration:none; color:inherit; }
-  .item img { width:84px; height:84px; object-fit:contain; background:#fff; border-radius:8px; flex-shrink:0; }
-  .item .t { font-size:15px; line-height:1.4; direction:ltr; text-align:left; }
-  .item .p { font-weight:700; font-size:18px; margin-top:6px; color:var(--accent); }
-  .item .old { text-decoration:line-through; color:var(--muted); font-size:13px; margin-inline-start:8px; font-weight:400; }
-  .badge { display:inline-block; font-size:12px; padding:2px 8px; border-radius:20px; border:1px solid var(--border); color:var(--muted); margin-top:6px; }
+  .chips, .sorts { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { min-height:40px; padding:0 14px; border-radius:20px; background:var(--card); color:var(--ink); border:1px solid var(--accent); font-size:14px; }
+  .sort { min-height:38px; padding:0 14px; border-radius:20px; border:1px solid var(--border); background:var(--card); font-size:13px; font-weight:500; }
+  .sort[aria-pressed="true"] { background:var(--text); color:var(--bg); border-color:var(--text); }
+  .sum { padding:14px 16px; border-radius:14px; background:var(--soft); display:flex; gap:10px; align-items:flex-start; }
+  .sum svg { color:var(--ink); margin-top:3px; }
+  .err { color:var(--warn); font-size:13px; }
+  .grid { display:flex; flex-direction:column; gap:12px; }
+  .wrap { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .wrap.best { border:2px solid var(--accent); padding:15px; }
+  .item { display:flex; gap:16px; align-items:flex-start; text-decoration:none; color:inherit; }
+  .thumb { width:112px; height:112px; flex-shrink:0; border-radius:12px; background:#fff; border:1px solid var(--border); overflow:hidden;
+           display:flex; align-items:center; justify-content:center; color:var(--muted); }
+  .thumb img { width:100%; height:100%; object-fit:contain; padding:6px; }
+  .thumb.noimg { background:var(--card2); }
+  .info { flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; }
+  .item .t { font-size:15px; font-weight:500; line-height:1.45; overflow-wrap:anywhere; }
+  .item:hover .t { color:var(--ink); text-decoration:underline; }
+  .item .p { font:700 20px "Readex Pro","IBM Plex Sans Arabic",sans-serif; color:var(--ink); margin-top:2px; }
+  .item .old { text-decoration:line-through; color:var(--muted); font:400 13px "IBM Plex Sans Arabic",sans-serif; margin-inline-start:8px; }
+  .coupon { font-size:13px; color:var(--deal); }
+  .note { font-size:13px; color:var(--muted); }
+  .badges { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .badge { display:inline-block; font-size:12px; font-weight:500; padding:2px 10px; border-radius:20px; border:1px solid var(--border); color:var(--muted); }
   .badge[title] { cursor:help; }
-  .badge.ok { color:var(--accent); border-color:var(--accent); }
-  .badge.deal { color:#fff; background:#dc2626; border-color:#dc2626; }
-  .badge.warn { color:#ea580c; border-color:#ea580c; }
-  .best { border-color:var(--accent); }
-  .und { color:var(--text); margin-bottom:4px; }
-  .sum { margin-top:8px; padding:10px 12px; border-radius:10px; background:var(--card); border:1px solid var(--accent); color:var(--text); }
-  .coupon { font-size:13px; color:#ea580c; margin-top:2px; }
-  .note { font-size:13px; color:var(--muted); margin-top:4px; }
-  .err { color:#b45309; font-size:13px; }
-  .report { margin-top:6px; font-size:12px; padding:2px 8px; border-radius:20px;
-            background:transparent; color:var(--muted); border:1px solid var(--border); cursor:pointer; }
-  .reasons { display:flex; flex-wrap:wrap; gap:6px; padding:8px 12px 0; }
-  .reasons button { font-size:12px; padding:4px 10px; border-radius:20px; background:var(--card); color:var(--text);
-                    border:1px solid var(--border); cursor:pointer; }
-  .thanks { font-size:12px; color:var(--accent); padding:6px 12px 0; }
-  .acts { display:flex; flex-wrap:wrap; gap:6px; }
-  .watch { margin-top:6px; font-size:12px; padding:2px 10px; border-radius:20px; background:transparent;
-           color:var(--accent); border:1px solid var(--accent); cursor:pointer; }
-  .watch.on { background:var(--accent); color:#fff; }
-  #acct { display:flex; align-items:center; gap:8px; position:relative; }
-  #acct .me { display:flex; align-items:center; gap:6px; padding:4px 10px 4px 4px; border-radius:20px; font-size:14px;
-              background:var(--card); color:var(--text); border:1px solid var(--border); }
-  #acct .me img { width:28px; height:28px; border-radius:50%; }
-  #acct .bell { position:relative; padding:6px 10px; font-size:16px; background:var(--card); color:var(--text);
-                border:1px solid var(--border); border-radius:20px; }
-  #acct .bell b { position:absolute; top:-6px; inset-inline-start:-6px; min-width:18px; height:18px; padding:0 5px;
-                  font-size:11px; line-height:18px; border-radius:9px; background:#dc2626; color:#fff; }
-  #panel { position:absolute; top:44px; inset-inline-end:0; z-index:5; width:min(360px, calc(100vw - 32px));
-           max-height:70vh; overflow:auto; background:var(--card); border:1px solid var(--border); border-radius:12px;
-           box-shadow:0 8px 30px rgba(0,0,0,.15); padding:12px; }
+  .badge.store { color:var(--text); }
+  .badge.ok { color:var(--ink); background:var(--soft); border-color:var(--soft); }
+  .badge.deal { color:var(--deal); background:var(--deal-soft); border-color:var(--deal-soft); }
+  .badge.warn { color:var(--warn); background:var(--warn-soft); border-color:var(--warn-soft); }
+  .actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding-top:10px; border-top:1px solid var(--border); }
+  .act { height:40px; padding:0 12px; border-radius:10px; border:1px solid var(--border); background:transparent; display:inline-flex; align-items:center;
+         gap:6px; font-size:13px; text-decoration:none; color:var(--text); }
+  .act.go { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; font-size:14px; }
+  .act[aria-pressed="true"] svg { fill:var(--accent); stroke:var(--accent); }
+  .report { margin-inline-start:auto; border:0; color:var(--muted); }
+  .reasons { display:flex; flex-wrap:wrap; gap:6px; }
+  .reasons button { min-height:36px; padding:0 12px; border-radius:18px; border:1px solid var(--border); background:var(--card2); font-size:12px; }
+  .thanks { font-size:13px; color:var(--ink); }
+
+  /* composer */
+  .composer { position:sticky; bottom:0; z-index:5; padding:12px 0 16px; background:var(--bg); display:grid; gap:8px; }
+  .composer .box { display:flex; align-items:center; gap:8px; padding:6px; border-radius:16px; background:var(--card); border:1px solid var(--border2);
+                   box-shadow:0 6px 24px var(--shadow); }
+  .composer .box:focus-within { border-color:var(--accent); }
+  .composer input { flex:1; min-width:0; height:48px; padding:0 12px; border:0; outline:none; background:transparent; font-size:16px; }
+  .composer .send { height:48px; padding:0 20px; border-radius:12px; border:0; background:var(--accent); color:var(--on-accent); display:inline-flex;
+                    align-items:center; gap:8px; font-size:15px; font-weight:600; }
+  [dir="rtl"] .composer .send svg { transform:scaleX(-1); }
+  .disclaimer { font-size:12px; color:var(--muted); text-align:center; }
+  footer { border-top:1px solid var(--border); margin-top:24px; }
+  footer .bar { flex-wrap:wrap; padding:18px 24px; font-size:13px; color:var(--muted); }
+  footer nav { display:flex; flex-wrap:wrap; gap:18px; }
+  footer a, footer button.link { color:var(--muted); background:none; border:0; padding:0; font-size:13px; text-decoration:underline; }
+
+  /* sheets & dialog */
+  .overlay { position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .overlay .scrim { position:absolute; inset:0; border:0; background:var(--scrim); cursor:default; }
+  .dialog { position:relative; width:100%; max-width:520px; max-height:92vh; overflow-y:auto; background:var(--card); border-radius:20px; padding:24px;
+            box-shadow:0 24px 60px var(--shadow); display:grid; gap:14px; }
+  .dialog .head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  .dialog .head > div { display:flex; gap:12px; align-items:flex-start; }
+  .dialog h2 { margin:0; font-size:19px; }
+  .dialog .sub { margin:2px 0 0; font-size:13px; color:var(--muted); }
+  .badge-ic { width:44px; height:44px; border-radius:12px; background:var(--soft); color:var(--ink); display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .x { width:44px; height:44px; border-radius:12px; border:0; background:var(--card2); display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }
+  fieldset { margin:0; padding:0; border:0; }
+  legend, .lbl { padding:0; margin-bottom:8px; font-size:14px; font-weight:600; display:block; }
+  .lbl small { font-weight:400; color:var(--muted); }
+  .kinds { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }
+  .kind { position:relative; }
+  .kind input { position:absolute; opacity:0; inset:0; margin:0; cursor:pointer; }
+  .kind span { min-height:48px; padding:0 12px; border-radius:12px; border:1.5px solid var(--border); display:flex; align-items:center; gap:8px; font-size:14px; font-weight:500; }
+  .kind span::before { content:""; width:14px; height:14px; border-radius:50%; border:2px solid var(--border2); flex-shrink:0; }
+  .kind input:checked + span { border-color:var(--accent); background:var(--soft); }
+  .kind input:checked + span::before { border-color:var(--accent); background:var(--accent); box-shadow:inset 0 0 0 2px var(--card); }
+  .kind input:focus-visible + span { outline:2px solid #14B8A6; outline-offset:2px; }
+  .field { width:100%; padding:12px; border-radius:12px; border:1px solid var(--border2); background:var(--bg); font-size:15px; }
+  textarea.field { resize:vertical; min-height:120px; line-height:1.6; }
+  .field:focus { border-color:var(--accent); outline:none; }
+  .counter { font-size:12px; color:var(--muted); text-align:end; margin-top:4px; }
+  .row-end { display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }
+  .row-end .btn { height:48px; padding:0 20px; font-size:15px; }
+  .done { display:flex; flex-direction:column; align-items:center; text-align:center; gap:10px; padding:18px 0 4px; }
+  .done .ok-ic { width:64px; height:64px; border-radius:50%; background:var(--soft); color:var(--ink); display:inline-flex; align-items:center; justify-content:center; }
+  .done p { margin:0; color:var(--muted); font-size:14px; max-width:360px; }
+  .sheet-items { display:grid; gap:4px; }
+  .sheet-item { min-height:52px; padding:0 14px; border-radius:14px; border:0; background:transparent; display:flex; align-items:center; gap:10px; font-size:15px; text-align:start; }
+  .sheet-item:hover { background:var(--card2); }
+  .sheet-item.primary { background:var(--accent); color:var(--on-accent); font-weight:600; }
+  .sheet-label { padding:10px 4px 2px; font-size:13px; font-weight:600; color:var(--muted); }
+  .seg { display:grid; grid-template-columns:repeat(auto-fit, minmax(0, 1fr)); gap:6px; }
+  .seg button { min-height:52px; padding:6px; border-radius:12px; border:1px solid var(--border); background:transparent; display:flex; flex-direction:column;
+                align-items:center; justify-content:center; line-height:1.3; font-size:14px; font-weight:600; }
+  .seg button small { font-size:12px; font-weight:400; color:var(--muted); }
+  .seg button[aria-checked="true"] { border-color:var(--accent); background:var(--soft); }
+  .switch { width:48px; height:28px; border-radius:14px; background:var(--border2); padding:3px; display:flex; margin-inline-start:auto; }
+  .switch::after { content:""; width:22px; height:22px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.3); }
+  [aria-checked="true"] .switch { background:var(--accent); justify-content:flex-end; }
+  .toast { position:fixed; bottom:100px; left:50%; transform:translateX(-50%); z-index:60; padding:10px 16px; border-radius:12px; background:var(--text);
+           color:var(--bg); font-size:14px; font-weight:500; box-shadow:0 8px 24px var(--shadow); }
+
+  @media (max-width:760px) {
+    .desktop-only { display:none !important; }
+    .mobile-only { display:flex; }
+    .bar { padding:10px 16px; }
+    .layout { padding:16px 16px 0; }
+    .hero { padding:28px 4px 8px; } .hero h1 { font-size:26px; }
+    .wrap { padding:12px; } .wrap.best { padding:11px; }
+    .item { gap:12px; }
+    .thumb { width:88px; height:88px; }
+    .u { max-width:90%; }
+    .composer .send .lbl-send { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+    .composer .send { padding:0 16px; }
+    .overlay { align-items:flex-end; padding:0; }
+    .dialog { max-width:none; border-radius:24px 24px 0 0; padding:12px 16px 24px; max-height:90vh; }
+    .dialog::before { content:""; width:40px; height:4px; border-radius:2px; background:var(--border2); justify-self:center; }
+    .row-end .btn.primary { flex:1; }
+    footer { display:none; }
+  }
+
+  /* account: Google sign-in, notifications, followed products, settings */
+  .acct { display:flex; align-items:center; gap:8px; }
+  .acct .me img { width:28px; height:28px; border-radius:50%; }
+  .acct .me { padding:0 12px 0 8px; }
+  .acct .bell { position:relative; }
+  .acct .bell b { position:absolute; top:-6px; inset-inline-start:-6px; min-width:18px; height:18px; padding:0 5px; font-size:11px; line-height:18px;
+                  border-radius:9px; background:#dc2626; color:#fff; }
+  #panel { width:min(360px, calc(100vw - 32px)); max-height:70vh; overflow:auto; padding:12px; display:block; }
   .tabs { display:flex; gap:6px; margin-bottom:10px; }
-  .tabs button { flex:1; padding:6px; font-size:13px; background:transparent; color:var(--muted); border:1px solid var(--border); }
-  .tabs button.on { color:var(--accent); border-color:var(--accent); }
+  .tabs button { flex:1; min-height:36px; border-radius:10px; font-size:13px; background:transparent; color:var(--muted); border:1px solid var(--border); }
+  .tabs button.on { color:var(--ink); border-color:var(--accent); background:var(--soft); }
   .row { padding:8px 0; border-bottom:1px solid var(--border); font-size:14px; }
   .row:last-child { border-bottom:0; }
-  .row .when { font-size:12px; color:var(--muted); }
+  .row .when, .panel-hint { font-size:12px; color:var(--muted); }
   .row.new { font-weight:600; }
   .row a { color:inherit; }
-  .row .x { float:inline-end; font-size:12px; padding:2px 8px; background:transparent; color:var(--muted); border:1px solid var(--border); }
+  .row .x { float:inline-end; font-size:12px; padding:2px 8px; border-radius:8px; background:transparent; color:var(--muted); border:1px solid var(--border); }
   .set { display:grid; gap:10px; font-size:14px; }
   .set select { padding:6px; border-radius:8px; background:var(--card); color:var(--text); border:1px solid var(--border); }
-  .set .danger { padding:6px; font-size:13px; background:transparent; color:#dc2626; border:1px solid #dc2626; }
-  .set .plain { padding:6px; font-size:13px; background:transparent; color:var(--text); border:1px solid var(--border); }
-  dialog { border:1px solid var(--border); border-radius:14px; background:var(--card); color:var(--text); padding:20px;
-           width:min(420px, calc(100vw - 32px)); }
-  dialog::backdrop { background:rgba(0,0,0,.45); }
-  dialog h2 { margin:0 0 6px; font-size:20px; }
+  .set .danger { min-height:40px; border-radius:10px; font-size:13px; background:transparent; color:#dc2626; border:1px solid #dc2626; }
+  .set .plain { min-height:40px; border-radius:10px; font-size:13px; background:transparent; border:1px solid var(--border); }
+  .act.watch.on { background:var(--soft); color:var(--ink); border-color:var(--accent); }
   .regions { display:grid; gap:8px; margin:14px 0; }
-  .regions button { padding:12px; font-size:16px; background:var(--bg); color:var(--text); border:1px solid var(--border); }
-  .regions button.on { border-color:var(--accent); color:var(--accent); font-weight:700; }
+  .regions button { min-height:48px; padding:0 12px; border-radius:12px; font-size:16px; background:var(--bg); border:1px solid var(--border); }
+  .regions button.on { border-color:var(--accent); color:var(--ink); font-weight:700; }
   .regions small { color:var(--muted); font-size:12px; }
+  @media (max-width:760px) { .acct .me span.nm { display:none; } }
 </style>
 </head>
 <body>
-<main>
-  <div class="top"><h1 class="brand"><img src="/logo.svg" alt="" width="34" height="34">DealHunter</h1>
-    <div id="acct"><button id="reset" type="button" hidden>طلب جديد</button><span id="gbtn"></span>
-      <div id="panel" hidden></div></div></div>
-  <p class="sub">قولّي محتاج إيه بكلامك حتى لو مش عارف اسمه، وأنا أدورلك في المتاجر على أرخص سعر. وبعد النتايج تقدر تكمّل وتعدّل على طلبك. <a href="/privacy" style="color:inherit;font-size:13px">الخصوصية</a></p>
-  <div id="chat"></div>
-</main>
-<dialog id="welcome">
-  <h2>أهلاً <span id="wname"></span>!</h2>
-  <div class="hint">انت بتشتري منين؟ هندورلك في متاجر بلدك وبعملتها.</div>
-  <div class="regions" id="regions"></div>
-  <label class="hint" id="walerts" hidden><input type="checkbox" id="wmail" checked> ابعتلي إيميل لما سعر منتج بتابعه ينزل</label>
-  <div style="margin-top:14px"><button id="wsave" type="button" style="width:100%;padding:12px" disabled>يلا نبدأ</button></div>
-</dialog>
-<div class="composer">
-  <form id="f">
-    <input id="q" placeholder="اكتب طلبك أو عدّل على اللي فات..." autocomplete="off" required minlength="2" maxlength="300">
-    <button id="b">ابعت</button>
-  </form>
+<header>
+  <div class="bar">
+    <a class="brand" href="/" aria-label="DealHunter">
+      <img src="/logo.svg" width="38" height="38" alt="">
+      <span><span class="name" dir="ltr">Deal<b>Hunter</b></span><span class="tag desktop-only" data-t="tagline"></span></span>
+    </a>
+    <nav class="tools desktop-only" data-t-aria="tools">
+      <button class="btn primary" type="button" data-act="new">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span data-t="newChat"></span></button>
+      <div class="pop-wrap">
+        <button class="btn" type="button" id="regionBtn" aria-haspopup="true" aria-expanded="false">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>
+          <span class="region-name"></span><span class="dim region-cur"></span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+        <div class="pop" id="regionPop" role="radiogroup" hidden>
+          <div class="hint" data-t="regionHint"></div>
+          <div class="region-opts" style="display:grid;gap:4px"></div>
+        </div>
+      </div>
+      <button class="btn" type="button" data-act="lang">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg><span lang="en" data-t="switchLang"></span></button>
+      <button class="btn icon" type="button" data-act="theme" data-t-aria="darkMode">
+        <svg class="moon" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+        <svg class="sun" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
+      <button class="btn" type="button" data-act="feedback">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12z"/><path d="M8.5 11h7M8.5 14.5h4"/></svg><span data-t="feedback"></span></button>
+    </nav>
+    <div class="acct pop-wrap" id="acct"><span id="gbtn"></span><div class="pop" id="panel" hidden></div></div>
+    <div class="tools mobile-only">
+      <button class="btn icon" type="button" data-act="theme" data-t-aria="darkMode">
+        <svg class="moon" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+        <svg class="sun" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
+      <button class="btn icon" type="button" data-act="menu" data-t-aria="menu">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="desktop-only">
+    <section class="panel">
+      <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span data-t="historyTitle"></span></h2>
+      <div class="history-list" style="display:grid;gap:2px"></div>
+    </section>
+    <section class="panel">
+      <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg><span data-t="saved"></span><span class="count saved-count"></span></h2>
+      <div class="saved-list" style="display:grid;gap:2px"></div>
+    </section>
+    <section class="promo">
+      <h2 class="display" data-t="promoTitle"></h2>
+      <p data-t="promoText"></p>
+      <button type="button" data-act="feedback" data-t="promoBtn"></button>
+    </section>
+  </aside>
+
+  <main>
+    <section class="hero" id="hero">
+      <img src="/logo.svg" width="72" height="72" alt="">
+      <h1 class="display" data-t="emptyTitle"></h1>
+      <p data-t="emptySub"></p>
+      <div class="sugs" id="sugs"></div>
+    </section>
+    <div id="chat" aria-live="polite"></div>
+    <form class="composer" id="f">
+      <label class="sr" for="q" data-t="askLabel"></label>
+      <div class="box">
+        <input id="q" autocomplete="off" required minlength="2" maxlength="300" data-t-ph="placeholder">
+        <button class="send" id="b"><span class="lbl-send" data-t="send"></span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+      </div>
+      <div class="disclaimer" data-t="disclaimer"></div>
+    </form>
+  </main>
 </div>
+
+<footer>
+  <div class="bar">
+    <span dir="ltr">© <span id="year"></span> DealHunter</span>
+    <nav data-t-aria="links"><span data-t="footerNote"></span><a href="/privacy" data-t="privacy"></a><button class="link" type="button" data-act="feedback" data-t="feedback"></button></nav>
+  </div>
+</footer>
+
+<!-- mobile menu -->
+<div class="overlay" id="menu" hidden>
+  <button class="scrim" type="button" data-act="close" tabindex="-1" data-t-aria="close"></button>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+    <div class="head"><h2 class="display" id="menuTitle" data-t="menu"></h2>
+      <button class="x" type="button" data-act="close" data-t-aria="close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <div class="sheet-items">
+      <button class="sheet-item primary" type="button" data-act="new"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span data-t="newChat"></span></button>
+      <div class="sheet-label" data-t="historyTitle"></div>
+      <div class="history-list" style="display:grid;gap:2px"></div>
+      <div class="sheet-label" style="display:flex"><span data-t="saved"></span><span class="count saved-count"></span></div>
+      <div class="saved-list" style="display:grid;gap:2px"></div>
+      <div class="sheet-label" data-t="region"></div>
+      <div class="seg region-seg" role="radiogroup"></div>
+      <div class="sheet-label" data-t="language"></div>
+      <div class="seg" role="radiogroup">
+        <button type="button" role="radio" data-lang="ar">العربية</button>
+        <button type="button" role="radio" data-lang="en" lang="en">English</button>
+      </div>
+      <button class="sheet-item" type="button" role="switch" id="themeSwitch" data-act="theme" style="margin-top:6px">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg><span data-t="darkMode"></span><span class="switch" aria-hidden="true"></span></button>
+      <button class="sheet-item" type="button" data-act="feedback" style="border:1px solid var(--border);background:var(--card2)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12z"/><path d="M8.5 11h7M8.5 14.5h4"/></svg><span data-t="feedback"></span></button>
+    </div>
+  </div>
+</div>
+
+<!-- complaints & suggestions -->
+<div class="overlay" id="fb" hidden>
+  <button class="scrim" type="button" data-act="close" tabindex="-1" data-t-aria="close"></button>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="fbTitle">
+    <form id="fbForm" style="display:grid;gap:14px">
+      <div class="head">
+        <div><span class="badge-ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12z"/><path d="M8.5 11h7M8.5 14.5h4"/></svg></span>
+          <div><h2 class="display" id="fbTitle" data-t="fbTitle"></h2><p class="sub" data-t="fbSub"></p></div></div>
+        <button class="x" type="button" data-act="close" data-t-aria="close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <fieldset><legend data-t="fbKind"></legend>
+        <div class="kinds">
+          <label class="kind"><input type="radio" name="kind" value="complaint"><span data-t="kComplaint"></span></label>
+          <label class="kind"><input type="radio" name="kind" value="suggestion" checked><span data-t="kSuggestion"></span></label>
+          <label class="kind"><input type="radio" name="kind" value="result"><span data-t="kResult"></span></label>
+          <label class="kind"><input type="radio" name="kind" value="question"><span data-t="kQuestion"></span></label>
+        </div>
+      </fieldset>
+      <div><label class="lbl" for="fbMsg" data-t="fbMsg"></label>
+        <textarea class="field" id="fbMsg" rows="5" maxlength="2000" required minlength="3" data-t-ph="fbMsgPh"></textarea>
+        <div class="counter" id="fbCount"></div></div>
+      <div><label class="lbl" for="fbContact"><span data-t="fbContact"></span> <small data-t="optional"></small></label>
+        <input class="field" id="fbContact" maxlength="200" autocomplete="email" placeholder="name@example.com" dir="ltr" style="height:48px"></div>
+      <div class="err" id="fbErr" hidden data-t="fbErr"></div>
+      <div class="row-end">
+        <button class="btn" type="button" data-act="close" data-t="cancel"></button>
+        <button class="btn primary" id="fbSend" disabled data-t="fbSend"></button>
+      </div>
+    </form>
+    <div class="done" id="fbDone" hidden>
+      <span class="ok-ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+      <h2 class="display" data-t="fbThanks"></h2>
+      <p data-t="fbThanksSub"></p>
+      <button class="btn primary" type="button" data-act="close" data-t="ok" style="height:48px;padding:0 28px"></button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<!-- first sign-in: where do you shop? -->
+<div class="overlay" id="welcome" hidden>
+  <div class="scrim"></div>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="wTitle">
+    <h2 class="display" id="wTitle"><span data-t="hello"></span> <span id="wname"></span>!</h2>
+    <p class="sub" data-t="whereShop"></p>
+    <div class="regions" id="regions"></div>
+    <label class="sub" id="walerts" hidden><input type="checkbox" id="wmail" checked> <span data-t="mailAlerts"></span></label>
+    <div style="margin-top:14px"><button class="btn primary" id="wsave" type="button" style="width:100%" disabled data-t="letsGo"></button></div>
+  </div>
+</div>
+
 <script>
-const f = document.getElementById('f'), q = document.getElementById('q'), b = document.getElementById('b');
-const chat = document.getElementById('chat'), reset = document.getElementById('reset');
+// ---------- UI text (the agent's own answers stay in Arabic) ----------
+const T = {
+  ar: { tagline: 'أرخص سعر في المتاجر، من غير لف', tools: 'أدوات الموقع', newChat: 'طلب جديد', region: 'المنطقة',
+    regionHint: 'المتاجر والعملة بتتغير حسب المنطقة', soon: 'قريبًا', language: 'اللغة', switchLang: 'English', darkMode: 'الوضع الليلي',
+    feedback: 'شكاوى ومقترحات', menu: 'القايمة', close: 'إغلاق', historyTitle: 'طلباتك الأخيرة', noHistory: 'لسه مدورتش على حاجة.',
+    saved: 'المحفوظات', noSaved: 'دوس "احفظ" على أي نتيجة عشان تلاقيها هنا.',
+    promoTitle: 'عندك فكرة أو مشكلة؟', promoText: 'كل رسالة بنقراها بنفسنا وبنحسّن بيها النتايج.', promoBtn: 'ابعتلنا رأيك',
+    emptyTitle: 'محتاج تشتري إيه النهارده؟',
+    emptySub: 'قولّي محتاج إيه بكلامك حتى لو مش عارف اسمه، وأنا أدورلك في المتاجر على أرخص سعر. وبعد النتايج تقدر تكمّل وتعدّل على طلبك.',
+    sugs: ['لابتوب للمذاكرة تحت ٢٠ ألف', 'هدية لأمي في حدود ٥٠٠', 'مكنسة روبوت كويسة', 'سماعة بلوتوث للجيم'],
+    askLabel: 'اكتب طلبك', placeholder: 'اكتب طلبك أو عدّل على اللي فات...', send: 'ابعت',
+    disclaimer: 'الأسعار بتتجاب لحظيًا من المتاجر، اتأكد من السعر النهائي في صفحة المتجر.',
+    links: 'روابط', footerNote: 'الموقع مجاني ومش تبع أي متجر.',
+    cheap: 'الأرخص', trust: 'الأعلى ثقة', deals: 'عليها خصم', sortLabel: 'ترتيب النتايج', noDeals: 'مفيش نتايج عليها خصم في الطلب ده.',
+    open: 'افتح في المتجر', save: 'احفظ', savedOne: 'اتحفظ', share: 'شارك', copied: 'اتنسخ الرابط', report: 'النتيجة دي غلط؟',
+    thanks: 'شكرًا، هنراجعها ونصلحها.', understanding: 'بفهم طلبك...', error: 'حصلت مشكلة، جرب تاني.', sec: 'ث',
+    fbTitle: 'صندوق الشكاوى والمقترحات', fbSub: 'رأيك بيفرق معانا، وبنرد على كل رسالة فيها وسيلة تواصل.', fbKind: 'نوع الرسالة',
+    kComplaint: 'شكوى', kSuggestion: 'اقتراح', kResult: 'مشكلة في نتيجة', kQuestion: 'سؤال', fbMsg: 'رسالتك',
+    fbMsgPh: 'احكيلنا حصل إيه، أو نفسك الموقع يعمل إيه...', fbContact: 'إيميلك أو رقمك', optional: '(اختياري، عشان نرد عليك)',
+    cancel: 'إلغاء', fbSend: 'ابعت الرسالة', fbErr: 'مقدرناش نبعت الرسالة، جرب تاني.', fbThanks: 'وصلتنا رسالتك، شكرًا!',
+    fbThanksSub: 'هنراجعها في أقرب وقت، ولو سبت وسيلة تواصل هنرد عليك.', ok: 'تمام',
+    privacy: 'الخصوصية', follow: 'تابع السعر', following: 'بتتابعه', signInToFollow: 'سجّل دخول بجوجل فوق عشان نبلغك',
+    hello: 'أهلاً', whereShop: 'انت بتشتري منين؟ هندورلك في متاجر بلدك وبعملتها.', mailAlerts: 'ابعتلي إيميل لما سعر منتج بتابعه ينزل',
+    letsGo: 'يلا نبدأ', notes: 'الإشعارات', watches: 'بتتابعها', settings: 'الإعدادات', account: 'حسابك', wait: 'ثانية...',
+    noNotes: 'مفيش إشعارات لسه. دوس «تابع السعر» على أي منتج وهنبلغك هنا أول ما سعره ينزل.', noWatches: 'مش بتتابع حاجة لسه.',
+    cancelWatch: 'إلغاء', nowAt: 'دلوقتي', was: 'كان', yourRegion: 'بلدك', onlyTrusted: 'وريني المتاجر المشهورة والموثوقة بس',
+    logout: 'تسجيل خروج', deleteMe: 'امسح حسابي وكل بياناتي', sureDelete: 'متأكد؟ هنمسح حسابك والمنتجات اللي بتتابعها والإشعارات.',
+    signInFailed: 'معرفناش نسجلك دخول، جرب تاني.',
+    now: 'دلوقتي', minAgo: n => `من ${n} دقيقة`, hrAgo: n => `من ${n} ساعة`, dayAgo: n => n === 1 ? 'امبارح' : `من ${n} أيام` },
+  en: { tagline: 'The lowest price across stores', tools: 'Site tools', newChat: 'New search', region: 'Region',
+    regionHint: 'Stores and currency change by region', soon: 'Soon', language: 'Language', switchLang: 'العربية', darkMode: 'Dark mode',
+    feedback: 'Feedback', menu: 'Menu', close: 'Close', historyTitle: 'Recent searches', noHistory: 'No searches yet.',
+    saved: 'Saved', noSaved: 'Tap "Save" on any result to keep it here.',
+    promoTitle: 'Got an idea or a problem?', promoText: 'We read every message ourselves and use it to improve results.', promoBtn: 'Send feedback',
+    emptyTitle: 'What do you need to buy today?',
+    emptySub: 'Describe what you need in your own words, even if you don’t know its name, and I’ll find the lowest price. You can refine it after the results.',
+    sugs: ['Laptop for studying under 20k', 'A gift for mom around 500', 'A good robot vacuum', 'Bluetooth earbuds for the gym'],
+    askLabel: 'Type your request', placeholder: 'Type a request or refine the last one...', send: 'Send',
+    disclaimer: 'Prices are fetched live from stores. Check the final price on the store’s page.',
+    links: 'Links', footerNote: 'Free to use, not owned by any store.',
+    cheap: 'Cheapest', trust: 'Most trusted', deals: 'On sale', sortLabel: 'Sort results', noDeals: 'No discounted results for this request.',
+    open: 'Open in store', save: 'Save', savedOne: 'Saved', share: 'Share', copied: 'Link copied', report: 'Wrong result?',
+    thanks: 'Thanks, we’ll review and fix it.', understanding: 'Understanding your request...', error: 'Something went wrong, try again.', sec: 's',
+    fbTitle: 'Complaints & suggestions', fbSub: 'Your opinion matters. We reply to every message that includes a way to reach you.', fbKind: 'Message type',
+    kComplaint: 'Complaint', kSuggestion: 'Suggestion', kResult: 'Problem with a result', kQuestion: 'Question', fbMsg: 'Your message',
+    fbMsgPh: 'Tell us what happened, or what you wish the site could do...', fbContact: 'Email or phone', optional: '(optional, so we can reply)',
+    cancel: 'Cancel', fbSend: 'Send message', fbErr: 'Couldn’t send it, please try again.', fbThanks: 'Got it, thank you!',
+    fbThanksSub: 'We’ll review it soon, and reply if you left a way to reach you.', ok: 'Done',
+    privacy: 'Privacy', follow: 'Follow price', following: 'Following', signInToFollow: 'Sign in with Google above to get alerts',
+    hello: 'Welcome', whereShop: 'Where do you shop? We’ll search your country’s stores in its currency.', mailAlerts: 'Email me when a followed product gets cheaper',
+    letsGo: 'Let’s go', notes: 'Notifications', watches: 'Following', settings: 'Settings', account: 'Your account', wait: 'One moment...',
+    noNotes: 'No notifications yet. Tap “Follow price” on any product and we’ll tell you here when it drops.', noWatches: 'You’re not following anything yet.',
+    cancelWatch: 'Remove', nowAt: 'now', was: 'was', yourRegion: 'Your country', onlyTrusted: 'Show only well-known and trusted stores',
+    logout: 'Sign out', deleteMe: 'Delete my account and all my data', sureDelete: 'Sure? This deletes your account, followed products and notifications.',
+    signInFailed: 'We couldn’t sign you in, try again.',
+    now: 'Just now', minAgo: n => `${n} min ago`, hrAgo: n => `${n} h ago`, dayAgo: n => n === 1 ? 'Yesterday' : `${n} days ago` }
+};
+const REASONS = {wrong_product: ['منتج تاني مش اللي طلبته', 'Different product'], wrong_price: ['السعر غلط', 'Wrong price'],
+                 bad_store: ['المتجر مش موثوق', 'Untrusted store'], sold_out: ['خلصان', 'Sold out'], other: ['حاجة تانية', 'Something else']};
+const store = {  // localStorage can be blocked (private mode): the page still works, it just forgets
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
+let lang = store.get('dh-lang', 'ar') === 'en' ? 'en' : 'ar';
+const t = k => T[lang][k];
+const $ = s => document.querySelector(s), $$ = s => document.querySelectorAll(s);
+const f = $('#f'), q = $('#q'), b = $('#b'), chat = $('#chat'), hero = $('#hero');
 let history = [], currentRequest = '';  // the chat so far + the standalone request of the last search
+let markets = [{code: 'EG', name_ar: 'مصر', name_en: 'Egypt', currency_ar: 'ج.م', currency: 'EGP', enabled: true}], marketCode = 'EG';
+const cur = () => markets.find(m => m.code === marketCode) || markets[0];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => lang === 'ar' ? new Intl.NumberFormat('ar-EG').format(n) + ' ' + cur().currency_ar
+                               : cur().currency + ' ' + new Intl.NumberFormat('en-US').format(n);
+const pct = n => lang === 'ar' ? new Intl.NumberFormat('ar-EG').format(n) + '٪' : n + '%';
+
+// ---------- language, theme, region ----------
+function applyLang() {
+  document.documentElement.lang = lang; document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+  $$('[data-t]').forEach(el => { el.textContent = t(el.dataset.t); });
+  $$('[data-t-ph]').forEach(el => { el.placeholder = t(el.dataset.tPh); });
+  $$('[data-t-aria]').forEach(el => { el.setAttribute('aria-label', t(el.dataset.tAria)); });
+  $$('[data-lang]').forEach(el => el.setAttribute('aria-checked', String(el.dataset.lang === lang)));
+  $('#sugs').innerHTML = t('sugs').map(s => `<button class="sug" type="button">${esc(s)}</button>`).join('');
+  drawRegion(); drawSide(); fbCount();
+  shown.forEach((d, i) => { const el = chat.querySelector(`.a[data-turn="${i}"]`); if (el) el.innerHTML = render(d, i); });
+}
+function isDark() {
+  const th = document.documentElement.dataset.theme;
+  return th ? th === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+}
+function toggleTheme() {
+  const next = isDark() ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next; store.set('dh-theme', next); themeState();
+}
+function themeState() {
+  const d = String(isDark());
+  $$('[data-act="theme"]').forEach(el => el.setAttribute(el.id === 'themeSwitch' ? 'aria-checked' : 'aria-pressed', d));
+}
+function drawRegion() {
+  const m = cur();
+  $$('.region-name').forEach(el => { el.textContent = lang === 'ar' ? m.name_ar : m.name_en; });
+  $$('.region-cur').forEach(el => { el.textContent = '· ' + (lang === 'ar' ? m.currency_ar : m.currency); });
+  $('.region-opts').innerHTML = markets.map(x => `
+    <button class="opt" type="button" role="radio" data-market="${x.code}" aria-checked="${x.code === marketCode}" ${x.enabled ? '' : 'disabled'}>
+      <span><span class="code" dir="ltr">${x.code}</span>${esc(lang === 'ar' ? x.name_ar : x.name_en)}</span>
+      <small>${x.enabled ? esc(lang === 'ar' ? x.currency_ar : x.currency) : t('soon')}</small></button>`).join('');
+  $('.region-seg').innerHTML = markets.map(x => `
+    <button type="button" role="radio" data-market="${x.code}" aria-checked="${x.code === marketCode}" ${x.enabled ? '' : 'disabled'}>
+      ${esc(lang === 'ar' ? x.name_ar : x.name_en)}<small>${x.enabled ? esc(lang === 'ar' ? x.currency_ar : x.currency) : t('soon')}</small></button>`).join('');
+}
+function regionMenu(open) {
+  $('#regionPop').hidden = !open; $('#regionBtn').setAttribute('aria-expanded', String(open));
+}
+// /api/config is read once below (startAccounts): it also says whether Google sign-in is on
+
+// ---------- recent searches & saved results (kept in this browser only) ----------
+let recent = store.get('dh-history', []), saved = store.get('dh-saved', []);
+function ago(at) {
+  const m = Math.round((Date.now() - at) / 60000);
+  if (m < 1) return t('now'); if (m < 60) return t('minAgo')(m);
+  const h = Math.round(m / 60); return h < 24 ? t('hrAgo')(h) : t('dayAgo')(Math.round(h / 24));
+}
+function drawSide() {
+  const hl = recent.length ? recent.map(r => `<button class="hist" type="button" data-again="${esc(r.q)}"><span dir="auto">${esc(r.q)}</span><small>${ago(r.at)}</small></button>`).join('')
+                           : `<div class="empty">${t('noHistory')}</div>`;
+  $$('.history-list').forEach(el => { el.innerHTML = hl; });
+  const sl = saved.length ? saved.map(p => `<a class="saved-link" href="${esc(p.url)}" target="_blank" rel="noopener nofollow">
+      ${p.image ? `<img src="${esc(p.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ph'}))">` : '<span class="ph"></span>'}
+      <span><span dir="auto">${esc(p.title)}</span><b>${fmt(p.price)} · ${esc(p.store)}</b></span></a>`).join('')
+                          : `<div class="empty">${t('noSaved')}</div>`;
+  $$('.saved-list').forEach(el => { el.innerHTML = sl; });
+  $$('.saved-count').forEach(el => { el.textContent = lang === 'ar' ? new Intl.NumberFormat('ar-EG').format(saved.length) : saved.length; });
+}
+function remember(text) {
+  recent = [{q: text, at: Date.now()}, ...recent.filter(r => r.q !== text)].slice(0, 8); store.set('dh-history', recent); drawSide();
+}
+const isSaved = url => saved.some(s => s.url === url);
+
+// ---------- results ----------
+const PH = '<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>';
+function imgFail(img) {  // store blocks hotlinking? load it through our server, else show the placeholder
+  if (img.dataset.proxy) { img.src = img.dataset.proxy; delete img.dataset.proxy; return; }
+  const box = img.parentElement; box.classList.add('noimg'); box.innerHTML = PH;
+}
 function trustBadge(p) {
   const tip = esc((p.trust_signals || []).join('، '));
-  if (p.trusted) return '<span class="badge ok" title="متجر كبير ومعروف في مصر">متجر مشهور</span>';
+  if (p.trusted) return `<span class="badge ok" title="${lang === 'ar' ? 'متجر كبير ومعروف' : 'A big, well-known store'}">${lang === 'ar' ? 'متجر مشهور' : 'Well-known store'}</span>`;
   const sc = p.trust_score ?? 0;
-  if (sc >= 60) return `<span class="badge ok" title="${tip}">متجر موثوق ${sc}%</span>`;
-  if (sc >= 40) return `<span class="badge" title="${tip}">ثقة متوسطة ${sc}%</span>`;
-  return `<span class="badge warn" title="${tip}">متجر غير مؤكد</span>`;
+  if (sc >= 60) return `<span class="badge ok" title="${tip}">${lang === 'ar' ? 'متجر موثوق' : 'Trusted store'} ${pct(sc)}</span>`;
+  if (sc >= 40) return `<span class="badge" title="${tip}">${lang === 'ar' ? 'ثقة متوسطة' : 'Medium trust'} ${pct(sc)}</span>`;
+  return `<span class="badge warn" title="${tip}">${lang === 'ar' ? 'متجر غير مؤكد' : 'Unverified store'}</span>`;
 }
-function imgFail(img) {  // store blocks hotlinking? load it through our server, else hide it
-  if (img.dataset.proxy) { img.src = img.dataset.proxy; delete img.dataset.proxy; } else img.remove();
-}
-const fmt = n => new Intl.NumberFormat('ar-EG').format(n) + ' ج.م';
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const shown = [];  // every turn's answer, so a report knows which result and which request it is about
-const REASONS = {wrong_product: 'منتج تاني مش اللي طلبته', wrong_price: 'السعر غلط', bad_store: 'المتجر مش موثوق',
-                 sold_out: 'خلصان', other: 'حاجة تانية'};
-function card(p, i) {
+const COND = {used: ['مستعمل', 'Used'], refurbished: ['مجدد', 'Refurbished'], 'open box': ['أوبن بوكس', 'Open box']};
+const L = (ar, en) => lang === 'ar' ? ar : en;
+function card(p, i, rank, turn) {  // i = position in the agent's list (0 = cheapest), rank = position as shown
+  const sv = isSaved(p.url);
   return `
-    <div class="wrap" data-t="${shown.length - 1}" data-i="${i}">
-      <a class="item ${i === 0 ? 'best' : ''}" href="${esc(p.url)}" target="_blank" rel="noopener nofollow">
-        ${p.image ? `<img src="${esc(p.image)}" data-proxy="/img?u=${encodeURIComponent(p.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="imgFail(this)">` : ''}
-        <div>
-          <div class="t">${esc(p.title)}</div>
-          ${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}
-          <div class="p">${fmt(p.price)}${p.old_price && p.old_price > p.price ? `<span class="old">${fmt(p.old_price)}</span>` : ''}</div>
-          ${p.coupon_price ? `<div class="coupon">${fmt(p.coupon_price)} بعد كوبون ${fmt(p.price - p.coupon_price)} عند الدفع</div>` : ''}
-          <span class="badge">${esc(p.store)}</span> ${p.condition ? `<span class="badge warn">${({used:'مستعمل',refurbished:'مجدد','open box':'أوبن بوكس'})[p.condition] || esc(p.condition)}</span> ` : ''}${trustBadge(p)}${p.discount_pct ? ` <span class="badge deal">خصم ${p.discount_pct}%</span>` : ''}${p.best_deal ? ' <span class="badge deal">أحسن عرض</span>' : ''}${p.unconfirmed ? ' <span class="badge warn" title="العنوان مش موضح النوع بالظبط، اتأكد من صفحة المنتج">اتأكد من الموديل</span>' : ''} ${i === 0 ? '<span class="badge">الأرخص</span>' : ''}
-        </div>
+    <div class="wrap ${rank === 0 ? 'best' : ''}" data-t="${turn}" data-i="${i}">
+      <a class="item" href="${esc(p.url)}" target="_blank" rel="noopener nofollow">
+        <span class="thumb ${p.image ? '' : 'noimg'}">${p.image ? `<img src="${esc(p.image)}" data-proxy="/img?u=${encodeURIComponent(p.image)}" alt="${esc(p.title)}" loading="lazy" referrerpolicy="no-referrer" onerror="imgFail(this)">` : PH}</span>
+        <span class="info">
+          <span class="t" dir="auto">${esc(p.title)}</span>
+          ${p.note ? `<span class="note">${esc(p.note)}</span>` : ''}
+          <span class="p">${fmt(p.price)}${p.old_price && p.old_price > p.price ? `<span class="old">${fmt(p.old_price)}</span>` : ''}</span>
+          ${p.coupon_price ? `<span class="coupon">${L(`${fmt(p.coupon_price)} بعد كوبون ${fmt(p.price - p.coupon_price)} عند الدفع`, `${fmt(p.coupon_price)} after a ${fmt(p.price - p.coupon_price)} coupon at checkout`)}</span>` : ''}
+          <span class="badges">
+            <span class="badge store">${esc(p.store)}</span>
+            ${i === 0 ? `<span class="badge ok">${t('cheap')}</span>` : ''}
+            ${p.discount_pct ? `<span class="badge deal">${L('خصم ' + pct(p.discount_pct), pct(p.discount_pct) + ' off')}</span>` : ''}
+            ${p.best_deal ? `<span class="badge deal">${L('أحسن عرض', 'Best deal')}</span>` : ''}
+            ${p.condition ? `<span class="badge warn">${esc((COND[p.condition] || [p.condition, p.condition])[lang === 'ar' ? 0 : 1])}</span>` : ''}
+            ${trustBadge(p)}
+            ${p.unconfirmed ? `<span class="badge warn" title="${L('العنوان مش موضح النوع بالظبط، اتأكد من صفحة المنتج', 'The title doesn’t state the exact model, check the product page')}">${L('اتأكد من الموديل', 'Check the model')}</span>` : ''}
+          </span>
+        </span>
       </a>
-      <div class="acts">
-        <button class="watch ${p.watched ? 'on' : ''}" type="button" title="هنبلغك أول ما سعره ينزل">${p.watched ? '✓ بتتابعه' : '🔔 تابع السعر'}</button>
-        <button class="report" type="button" title="لو النتيجة دي غلط قولّنا عشان نصلحها">النتيجة دي غلط؟</button>
+      <div class="actions">
+        <a class="act go" href="${esc(p.url)}" target="_blank" rel="noopener nofollow">${t('open')}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></a>
+        <button class="act save" type="button" aria-pressed="${sv}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg><span>${sv ? t('savedOne') : t('save')}</span></button>
+        <button class="act watch ${p.watched ? 'on' : ''}" type="button" title="${L('هنبلغك أول ما سعره ينزل', 'We’ll tell you when the price drops')}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 16v-5a6 6 0 0 0-12 0v5l-2 2h16z"/><path d="M10 21h4"/></svg><span>${p.watched ? t('following') : t('follow')}</span></button>
+        <button class="act share" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4"/></svg>${t('share')}</button>
+        <button class="act report" type="button" title="${L('لو النتيجة دي غلط قولّنا عشان نصلحها', 'Tell us if this result is wrong so we can fix it')}">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>${t('report')}</button>
       </div>
     </div>`;
+}
+const shown = [];  // every turn's answer, so a report knows which result and which request it is about
+const SPARK = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>';
+function ordered(d) {  // the results as the chosen sort shows them, each with its place in the agent's list
+  const list = d.results.map((p, i) => ({p, i}));
+  if (d.sort === 'trust') list.sort((x, y) => (y.p.trusted - x.p.trusted) || ((y.p.trust_score ?? 0) - (x.p.trust_score ?? 0)) || (x.i - y.i));
+  if (d.sort === 'deals') return list.filter(x => x.p.discount_pct || (x.p.old_price && x.p.old_price > x.p.price));
+  return list;
+}
+function render(d, turn) {  // one assistant turn
+  if (d.action === 'answer') return `<div class="sum">${SPARK}<span>${esc(d.answer)}</span></div>`;
+  if (d.action === 'ask') {
+    return `<div class="und">${esc(d.question)}</div>` +
+      `<div class="chips">${(d.options || []).map(o => `<button class="chip" type="button">${esc(o)}</button>`).join('')}</div>`;
+  }
+  // pages we couldn't open: only shown with ?debug=1 in the address (kept out of the normal page)
+  const errs = new URLSearchParams(location.search).has('debug') ? Object.keys(d.store_errors || {}) : [];
+  const alt = d.results.length && d.results[0].alternative;
+  const list = ordered(d), sort = d.sort || 'cheap';
+  return (d.demo ? `<div class="err">${L('وضع تجريبي: نتايج من صفحات عينة مش أسعار حقيقية', 'Demo mode: results from sample pages, not real prices')}</div>` : '') +
+    (d.region_note ? `<div class="err">${esc(d.region_note)}</div>` : '') +
+    (d.understood ? `<div class="und">${esc(d.understood)}</div>` : '') +
+    (d.suggested_products && d.suggested_products.length ? `<div class="sugg">${L('حاجات تناسب طلبك دوّرت عليها: ', 'Things that fit your request I searched for: ')}${d.suggested_products.map(esc).join('، ')}</div>` : '') +
+    `<div class="meta">${L(`راجعنا ${d.candidates_checked} منتج ولقينا ${d.count} مناسب`, `Checked ${d.candidates_checked} products, ${d.count} match`)}` + (d.max_price ? ` · ${L('تحت', 'under')} ${fmt(d.max_price)}` : '') + '</div>' +
+    (d.results.length > 1 ? `<div class="sorts" role="group" aria-label="${t('sortLabel')}">${['cheap', 'trust', 'deals'].map(k =>
+      `<button class="sort" type="button" data-sort="${k}" aria-pressed="${sort === k}">${t(k)}</button>`).join('')}</div>` : '') +
+    (d.summary ? `<div class="sum">${SPARK}<span>${esc(d.summary)}</span></div>` : '') +
+    (errs.length ? `<div class="err">${L('صفحات مقدرناش نفتحها: ', 'Pages we couldn’t open: ')}${errs.map(k => esc(k) + ' (' + esc(d.store_errors[k]).slice(0, 60) + ')').join('، ')}</div>` : '') +
+    (alt ? `<div class="err">${L('مالقيناش المطلوب بالظبط، ودي أقرب بدائل من متاجر حقيقية:', 'We didn’t find exactly that; these are the closest alternatives from real stores:')}</div>` : '') +
+    `<div class="grid">${list.length ? list.map((x, rank) => card(x.p, x.i, rank, turn)).join('') : `<div class="hint-line">${t('noDeals')}</div>`}</div>` +
+    (d.results.length ? `<div class="hint-line">${L('عايز تغيّر حاجة؟ اكتبها تحت، مثلاً: ماركة معينة، أرخص، لون تاني.', 'Want to change something? Type it below, e.g. a brand, cheaper, another color.')}</div>` : '');
+}
+function said(d) {  // what the assistant "said", so the next message is understood in context
+  if (d.action === 'ask') return d.question;
+  if (d.action === 'answer') return d.answer;
+  const top = d.results.slice(0, 5).map((p, i) => `${i + 1}) ${p.title} - ${p.price} ${d.market || 'EGP'} (${p.store})`).join('; ');
+  return [d.understood, d.summary, top && 'Shown: ' + top].filter(Boolean).join(' ');
 }
 function add(cls, html) {
   const el = document.createElement('div'); el.className = cls; el.innerHTML = html; chat.appendChild(el);
   el.scrollIntoView({behavior: 'smooth', block: 'start'}); return el;
 }
-function render(d) {  // one assistant turn
-  if (d.action === 'answer') return `<div class="sum">${esc(d.answer)}</div>`;
-  if (d.action === 'ask') {
-    return `<div class="und">${esc(d.question)}</div>` +
-      `<div class="chips">${(d.options || []).map(o => `<button class="chip" type="button">${esc(o)}</button>`).join('')}</div>`;
-  }
-  shown.push(d);
-  // pages we couldn't open: only shown with ?debug=1 in the address (kept out of the normal page)
-  const errs = new URLSearchParams(location.search).has('debug') ? Object.keys(d.store_errors || {}) : [];
-  const alt = d.results.length && d.results[0].alternative;
-  return (d.demo ? '<div class="err">وضع تجريبي: نتايج من صفحات عينة مش أسعار حقيقية</div>' : '') +
-    (d.region_note ? `<div class="err">${esc(d.region_note)}</div>` : '') +
-    (d.understood ? `<div class="und">${esc(d.understood)}</div>` : '') +
-    (d.suggested_products && d.suggested_products.length ? `<div class="sugg">حاجات تناسب طلبك دوّرت عليها: ${d.suggested_products.map(esc).join('، ')}</div>` : '') +
-    `<div class="meta">راجعنا ${d.candidates_checked} منتج ولقينا ${d.count} مناسب` + (d.max_price ? ` · تحت ${fmt(d.max_price)}` : '') + '</div>' +
-    (d.summary ? `<div class="sum">${esc(d.summary)}</div>` : '') +
-    (errs.length ? `<div class="err">صفحات مقدرناش نفتحها: ${errs.map(k => esc(k) + ' (' + esc(d.store_errors[k]).slice(0, 60) + ')').join('، ')}</div>` : '') +
-    (alt ? '<div class="err">مالقيناش المطلوب بالظبط، ودي أقرب بدائل من متاجر حقيقية:</div>' : '') +
-    `<div class="grid">${d.results.map(card).join('')}</div>` +
-    (d.results.length ? '<div class="hint">عايز تغيّر حاجة؟ اكتبها تحت، مثلاً: ماركة معينة، أرخص، لون تاني.</div>' : '');
-}
-function remember(d) {  // what the assistant "said", so the next message is understood in context
-  if (d.action === 'ask') return d.question;
-  if (d.action === 'answer') return d.answer;
-  const top = d.results.slice(0, 5).map((p, i) => `${i + 1}) ${p.title} - ${p.price} EGP (${p.store})`).join('; ');
-  return [d.understood, d.summary, top && 'Shown: ' + top].filter(Boolean).join(' ');
-}
 async function send(text) {
   text = text.trim(); if (text.length < 2 || b.disabled) return;
-  reset.hidden = false; q.value = '';
+  hero.hidden = true; q.value = '';
   add('u', esc(text));
+  if (!history.length) remember(text);
   history.push({role: 'user', text});
-  const a = add('a', '<div class="meta live"><span class="step">بفهم طلبك...</span> <span class="secs"></span></div>');
+  const a = add('a', `<div class="meta live"><span class="step">${t('understanding')}</span> <span class="secs"></span></div>`);
   const step = a.querySelector('.step'), secs = a.querySelector('.secs'), t0 = Date.now();
-  const timer = setInterval(() => { secs.textContent = Math.round((Date.now() - t0) / 1000) + ' ث'; }, 1000);
+  const timer = setInterval(() => { secs.textContent = Math.round((Date.now() - t0) / 1000) + ' ' + t('sec'); }, 1000);
   b.disabled = true;
   try {
     // progress arrives line by line (what the agent is doing now), the answer comes in the last line
@@ -222,99 +688,164 @@ async function send(text) {
     }
     if (!d) throw new Error('no answer');
     if (d.action === 'search') currentRequest = d.request || currentRequest;
-    history.push({role: 'assistant', text: remember(d).slice(0, 1500)});
-    a.innerHTML = render(d);
+    history.push({role: 'assistant', text: said(d).slice(0, 1500)});
+    a.dataset.turn = shown.length; shown.push(d);
+    a.innerHTML = render(d, shown.length - 1);
   } catch (err) {
     history.pop();
-    a.innerHTML = '<div class="err">حصلت مشكلة، جرب تاني.</div>';
+    a.innerHTML = `<div class="err">${t('error')}</div>`;
   } finally { clearInterval(timer); b.disabled = false; q.focus(); }
 }
+function newChat() {
+  history = []; currentRequest = ''; shown.length = 0; chat.innerHTML = ''; hero.hidden = false; closeAll(); q.focus();
+}
+
+// ---------- sheets, dialog, toast ----------
+let lastFocus = null;
+function openSheet(id) {
+  closeAll(); lastFocus = document.activeElement; const el = $('#' + id); el.hidden = false;
+  (el.querySelector('textarea, .x') || el).focus();
+}
+function closeAll() {
+  ['menu', 'fb'].forEach(id => { $('#' + id).hidden = true; }); regionMenu(false);
+  if (lastFocus && document.contains(lastFocus)) lastFocus.focus(); lastFocus = null;
+}
+function openFeedback() {
+  $('#fbForm').hidden = false; $('#fbDone').hidden = true; $('#fbErr').hidden = true; openSheet('fb');
+}
+function fbCount() {
+  const n = $('#fbMsg').value.trim().length;
+  $('#fbCount').textContent = (lang === 'ar' ? new Intl.NumberFormat('ar-EG') : new Intl.NumberFormat('en-US')).format($('#fbMsg').value.length) + ' / 2000';
+  $('#fbSend').disabled = n < 3;
+}
+let toastT;
+function toast(text) { const el = $('#toast'); el.textContent = text; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { el.hidden = true; }, 1800); }
+
+// ---------- events ----------
 f.addEventListener('submit', e => { e.preventDefault(); send(q.value); });
-document.addEventListener('click', e => {  // quick answers of a question
-  if (e.target.classList.contains('chip')) send(e.target.textContent);
+$('#fbMsg').addEventListener('input', fbCount);
+$('#fbForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = $('#fbSend'); btn.disabled = true; $('#fbErr').hidden = true;
+  try {
+    const r = await fetch('/api/feedback', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind: $('#fbForm').kind.value, message: $('#fbMsg').value.trim(), contact: $('#fbContact').value.trim(), lang})});
+    if (!r.ok) throw new Error(r.status);
+    $('#fbMsg').value = ''; $('#fbContact').value = ''; fbCount();
+    $('#fbForm').hidden = true; $('#fbDone').hidden = false; $('#fbDone button').focus();
+  } catch (err) { $('#fbErr').hidden = false; btn.disabled = false; }
 });
-document.addEventListener('click', e => {  // "this result is wrong": pick why, then it's saved for review
-  const w = e.target.closest('.wrap');
-  if (!w) return;
-  if (e.target.classList.contains('report')) {
-    e.target.remove();
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAll(); });
+document.addEventListener('click', e => {
+  const el = e.target.closest('button, a'); if (!el) { if (!e.target.closest('.pop-wrap')) regionMenu(false); return; }
+  if (!el.closest('.pop-wrap')) regionMenu(false);
+  const act = el.dataset.act;
+  if (act === 'new') return newChat();
+  if (act === 'lang') { lang = lang === 'ar' ? 'en' : 'ar'; store.set('dh-lang', lang); return applyLang(); }
+  if (act === 'theme') return toggleTheme();
+  if (act === 'feedback') return openFeedback();
+  if (act === 'menu') return openSheet('menu');
+  if (act === 'close') return closeAll();
+  if (el.id === 'regionBtn') return regionMenu($('#regionPop').hidden);
+  if (el.dataset.lang) { lang = el.dataset.lang; store.set('dh-lang', lang); return applyLang(); }
+  if (el.dataset.market) {
+    marketCode = el.dataset.market; drawRegion(); regionMenu(false);
+    if (me && me.market !== marketCode) api('/api/me', {method: 'PATCH', body: JSON.stringify({market: marketCode})}).then(signedIn).catch(() => {});
+    return;
+  }
+  if (el.dataset.again) { const text = el.dataset.again; newChat(); return send(text); }
+  if (el.classList.contains('sug')) return send(el.textContent);
+  if (el.classList.contains('chip')) return send(el.textContent);  // quick answers of a question
+  if (el.dataset.sort) {
+    const a = el.closest('.a'), d = shown[+a.dataset.turn]; d.sort = el.dataset.sort; a.innerHTML = render(d, +a.dataset.turn); return;
+  }
+  const w = el.closest('.wrap'); if (!w) return;
+  const d = shown[+w.dataset.t], p = d.results[+w.dataset.i];
+  if (el.classList.contains('save')) {
+    saved = isSaved(p.url) ? saved.filter(s => s.url !== p.url)
+                           : [{url: p.url, title: p.title, price: p.price, store: p.store, image: p.image || ''}, ...saved].slice(0, 30);
+    store.set('dh-saved', saved); drawSide();
+    el.setAttribute('aria-pressed', String(isSaved(p.url))); el.querySelector('span').textContent = isSaved(p.url) ? t('savedOne') : t('save');
+  } else if (el.classList.contains('share')) {
+    const data = {title: p.title, text: `${p.title} - ${fmt(p.price)} (${p.store})`, url: p.url};
+    if (navigator.share) navigator.share(data).catch(() => {});
+    else navigator.clipboard.writeText(p.url).then(() => toast(t('copied'))).catch(() => {});
+  } else if (el.classList.contains('report')) {  // "this result is wrong": pick why, then it's saved for review
+    el.remove();
     w.insertAdjacentHTML('beforeend', '<div class="reasons">' +
-      Object.entries(REASONS).map(([k, v]) => `<button type="button" data-r="${k}">${v}</button>`).join('') + '</div>');
-  } else if (e.target.dataset.r) {
-    const d = shown[+w.dataset.t], p = d.results[+w.dataset.i];
+      Object.entries(REASONS).map(([k, v]) => `<button type="button" data-r="${k}">${v[lang === 'ar' ? 0 : 1]}</button>`).join('') + '</div>');
+  } else if (el.dataset.r) {
     fetch('/api/report', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({reason: e.target.dataset.r, request: d.request || d.query || '', url: p.url,
+      body: JSON.stringify({reason: el.dataset.r, request: d.request || d.query || '', url: p.url,
                             store: p.store, title: p.title, price: p.price})}).catch(() => {});
-    w.querySelector('.reasons').outerHTML = '<div class="thanks">شكرًا، هنراجعها ونصلحها.</div>';
+    w.querySelector('.reasons').outerHTML = `<div class="thanks">${t('thanks')}</div>`;
   }
 });
 // ---------- account: Google sign-in, region, followed products, notifications ----------
 let cfg = {regions: []}, me = null, unseen = 0, tab = 'notes';
-const acct = document.getElementById('acct'), panel = document.getElementById('panel'), gbtn = document.getElementById('gbtn');
+const acct = $('#acct'), panel = $('#panel'), gbtn = $('#gbtn');
 const api = (path, opts = {}) => fetch(path, {headers: {'Content-Type': 'application/json'}, ...opts})
   .then(r => r.ok ? r.json() : r.json().catch(() => ({})).then(j => Promise.reject({status: r.status, ...j})));
-const ago = t => { const m = Math.round((Date.now() / 1000 - t) / 60);
-  return m < 60 ? `من ${Math.max(m, 1)} دقيقة` : m < 1440 ? `من ${Math.round(m / 60)} ساعة` : `من ${Math.round(m / 1440)} يوم`; };
 function drawAcct() {
   acct.querySelectorAll('.me, .bell').forEach(e => e.remove());
   gbtn.hidden = !!me;
   if (!me) return;
   gbtn.insertAdjacentHTML('afterend',
-    `<button class="bell" type="button" title="الإشعارات">🔔${unseen ? `<b>${unseen}</b>` : ''}</button>` +
-    `<button class="me" type="button" title="حسابك">${me.picture ? `<img src="${esc(me.picture)}" alt="" referrerpolicy="no-referrer">` : ''}${esc(me.name.split(' ')[0])}</button>`);
+    `<button class="btn icon bell" type="button" aria-label="${t('notes')}">
+       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 16v-5a6 6 0 0 0-12 0v5l-2 2h16z"/><path d="M10 21h4"/></svg>${unseen ? `<b>${unseen}</b>` : ''}</button>` +
+    `<button class="btn me" type="button" aria-label="${t('account')}">${me.picture ? `<img src="${esc(me.picture)}" alt="" referrerpolicy="no-referrer">` : ''}<span class="nm">${esc(me.name.split(' ')[0])}</span></button>`);
 }
 function signedIn(d) {
   me = d.user; unseen = d.unseen || 0; drawAcct();
+  if (me && me.market && markets.some(m => m.code === me.market)) { marketCode = me.market; drawRegion(); }
   if (me && !me.market) welcome();
 }
 async function onGoogle(resp) {
   try { signedIn(await api('/api/auth/google', {method: 'POST', body: JSON.stringify({credential: resp.credential})})); }
-  catch { alert('معرفناش نسجلك دخول، جرب تاني.'); }
+  catch (e) { toast(t('signInFailed')); }
 }
-function welcome() {
-  const dlg = document.getElementById('welcome'), save = document.getElementById('wsave');
+function welcome() {  // the region is needed: this dialog has no close button
+  const save = $('#wsave'), box = $('#regions');
   let pick = me.market;
-  document.getElementById('wname').textContent = me.name.split(' ')[0];
-  document.getElementById('walerts').hidden = !cfg.email_alerts;
-  const box = document.getElementById('regions');
-  box.innerHTML = cfg.regions.map(r => `<button type="button" data-c="${r.code}">${esc(r.name)} <small>(${esc(r.currency)})${r.live ? '' : ' · قريب'}</small></button>`).join('');
+  $('#wname').textContent = me.name.split(' ')[0];
+  $('#walerts').hidden = !cfg.email_alerts;
+  box.innerHTML = cfg.regions.map(r => `<button type="button" data-c="${r.code}">${esc(r.name)} <small>(${esc(r.currency)})${r.live ? '' : ' · ' + t('soon')}</small></button>`).join('');
   box.onclick = e => { const btn = e.target.closest('button'); if (!btn) return;
     pick = btn.dataset.c; box.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === btn)); save.disabled = false; };
   save.onclick = async () => {
-    signedIn(await api('/api/me', {method: 'PATCH', body: JSON.stringify({market: pick, email_alerts: document.getElementById('wmail').checked})}));
-    dlg.close();
+    signedIn(await api('/api/me', {method: 'PATCH', body: JSON.stringify({market: pick, email_alerts: $('#wmail').checked})}));
+    $('#welcome').hidden = true;
   };
-  dlg.addEventListener('cancel', e => e.preventDefault(), {once: true});  // the region is needed: no closing with Esc
-  dlg.showModal();
+  $('#welcome').hidden = false;
 }
+const agoSec = at => ago(at * 1000);
 async function drawPanel() {
-  const tabs = `<div class="tabs">${[['notes', 'الإشعارات'], ['watches', 'بتتابعها'], ['settings', 'الإعدادات']]
-    .map(([k, v]) => `<button type="button" data-tab="${k}" class="${tab === k ? 'on' : ''}">${v}</button>`).join('')}</div>`;
-  panel.innerHTML = tabs + '<div class="hint">ثانية...</div>';
+  const tabs = `<div class="tabs">${['notes', 'watches', 'settings']
+    .map(k => `<button type="button" data-tab="${k}" class="${tab === k ? 'on' : ''}">${t(k)}</button>`).join('')}</div>`;
+  panel.innerHTML = tabs + `<div class="panel-hint">${t('wait')}</div>`;
   let body = '';
   try {
     if (tab === 'notes') {
       const d = await api('/api/notifications');
       body = d.notifications.map(n => `<div class="row ${n.seen ? '' : 'new'}">${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener nofollow">${esc(n.title)}</a>` : esc(n.title)}` +
-        `<div>${esc(n.body)}</div><div class="when">${ago(n.created_at)}</div></div>`).join('') ||
-        '<div class="hint">مفيش إشعارات لسه. دوس «تابع السعر» على أي منتج وهنبلغك هنا أول ما سعره ينزل.</div>';
+        `<div>${esc(n.body)}</div><div class="when">${agoSec(n.created_at)}</div></div>`).join('') || `<div class="panel-hint">${t('noNotes')}</div>`;
       if (d.unseen) { api('/api/notifications/seen', {method: 'POST'}); unseen = 0; drawAcct(); }
     } else if (tab === 'watches') {
       const d = await api('/api/watches');
-      body = d.watches.map(w => `<div class="row"><button class="x" type="button" data-unwatch="${w.id}">إلغاء</button>` +
+      body = d.watches.map(w => `<div class="row"><button class="x" type="button" data-unwatch="${w.id}">${t('cancelWatch')}</button>` +
         `<a href="${esc(w.url)}" target="_blank" rel="noopener nofollow">${esc(w.title)}</a>` +
-        `<div class="when">${esc(w.store)} · دلوقتي ${fmt(w.price)}${w.price < w.first_price ? ` (كان ${fmt(w.first_price)})` : ''}</div></div>`).join('') ||
-        '<div class="hint">مش بتتابع حاجة لسه.</div>';
+        `<div class="when">${esc(w.store)} · ${t('nowAt')} ${fmt(w.price)}${w.price < w.first_price ? ` (${t('was')} ${fmt(w.first_price)})` : ''}</div></div>`).join('') ||
+        `<div class="panel-hint">${t('noWatches')}</div>`;
     } else {
       body = `<div class="set">
-        <div>${esc(me.email)}</div>
-        <label>بلدك: <select id="smarket">${cfg.regions.map(r => `<option value="${r.code}" ${r.code === me.market ? 'selected' : ''}>${esc(r.name)}${r.live ? '' : ' (قريب)'}</option>`).join('')}</select></label>
-        ${cfg.email_alerts ? `<label><input type="checkbox" id="smail" ${me.email_alerts ? 'checked' : ''}> إيميل لما سعر منتج بتابعه ينزل</label>` : ''}
-        <label><input type="checkbox" id="sunsure" ${me.prefs.hide_unsure_shops ? 'checked' : ''}> وريني المتاجر المشهورة والموثوقة بس</label>
-        <button class="plain" type="button" id="slogout">تسجيل خروج</button>
-        <button class="danger" type="button" id="sdelete">امسح حسابي وكل بياناتي</button></div>`;
+        <div dir="ltr" style="text-align:start">${esc(me.email)}</div>
+        <label>${t('yourRegion')}: <select id="smarket">${cfg.regions.map(r => `<option value="${r.code}" ${r.code === me.market ? 'selected' : ''}>${esc(r.name)}${r.live ? '' : ' (' + t('soon') + ')'}</option>`).join('')}</select></label>
+        ${cfg.email_alerts ? `<label><input type="checkbox" id="smail" ${me.email_alerts ? 'checked' : ''}> ${t('mailAlerts')}</label>` : ''}
+        <label><input type="checkbox" id="sunsure" ${me.prefs.hide_unsure_shops ? 'checked' : ''}> ${t('onlyTrusted')}</label>
+        <button class="plain" type="button" id="slogout">${t('logout')}</button>
+        <button class="danger" type="button" id="sdelete">${t('deleteMe')}</button></div>`;
     }
-  } catch { body = '<div class="err">حصلت مشكلة، جرب تاني.</div>'; }
+  } catch (e) { body = `<div class="err">${t('error')}</div>`; }
   panel.innerHTML = tabs + body;
 }
 panel.addEventListener('change', async e => {
@@ -323,26 +854,24 @@ panel.addEventListener('change', async e => {
   if (patch) signedIn(await api('/api/me', {method: 'PATCH', body: JSON.stringify(patch)}));
 });
 acct.addEventListener('click', async e => {
-  const t = e.target.closest('button'); if (!t) return;
-  if (t.classList.contains('bell') || t.classList.contains('me')) {
-    tab = t.classList.contains('bell') ? 'notes' : 'settings';
+  const b2 = e.target.closest('button'); if (!b2) return;
+  if (b2.classList.contains('bell') || b2.classList.contains('me')) {
+    tab = b2.classList.contains('bell') ? 'notes' : 'settings';
     panel.hidden = !panel.hidden; if (!panel.hidden) drawPanel();
-  } else if (t.dataset.tab) { tab = t.dataset.tab; drawPanel(); }
-  else if (t.dataset.unwatch) { await api('/api/watches/' + t.dataset.unwatch, {method: 'DELETE'}).catch(() => {}); drawPanel(); }
-  else if (t.id === 'slogout') { await api('/api/auth/logout', {method: 'POST'}); location.reload(); }
-  else if (t.id === 'sdelete' && confirm('متأكد؟ هنمسح حسابك والمنتجات اللي بتتابعها والإشعارات.')) {
-    await api('/api/me', {method: 'DELETE'}); location.reload();
-  }
+  } else if (b2.dataset.tab) { tab = b2.dataset.tab; drawPanel(); }
+  else if (b2.dataset.unwatch) { await api('/api/watches/' + b2.dataset.unwatch, {method: 'DELETE'}).catch(() => {}); drawPanel(); }
+  else if (b2.id === 'slogout') { await api('/api/auth/logout', {method: 'POST'}); location.reload(); }
+  else if (b2.id === 'sdelete' && confirm(t('sureDelete'))) { await api('/api/me', {method: 'DELETE'}); location.reload(); }
 });
 document.addEventListener('click', e => {  // a click outside closes the panel (a redrawn tab button is no longer on the page)
   if (!panel.hidden && e.target.isConnected && !acct.contains(e.target)) panel.hidden = true;
 });
-document.addEventListener('click', async e => {  // "تابع السعر" on a result
-  if (!e.target.classList.contains('watch')) return;
-  const w = e.target.closest('.wrap'), p = shown[+w.dataset.t].results[+w.dataset.i], btn = e.target;
+document.addEventListener('click', async e => {  // "follow price" on a result
+  const btn = e.target.closest('.act.watch'); if (!btn) return;
+  const w = btn.closest('.wrap'), p = shown[+w.dataset.t].results[+w.dataset.i], lbl = btn.querySelector('span');
   if (!me) {
     if (!cfg.google_client_id) return;
-    btn.textContent = 'سجّل دخول بجوجل فوق عشان نبلغك'; window.google?.accounts.id.prompt(); return;
+    lbl.textContent = t('signInToFollow'); window.google?.accounts.id.prompt(); return;
   }
   try {
     if (p.watched) {
@@ -354,25 +883,28 @@ document.addEventListener('click', async e => {  // "تابع السعر" on a r
                                                                      image: p.image || '', price: p.price})});
       p.watched = true;
     }
-    btn.classList.toggle('on', p.watched); btn.textContent = p.watched ? '✓ بتتابعه' : '🔔 تابع السعر';
-  } catch (err) { btn.textContent = err.detail && typeof err.detail === 'string' ? err.detail : 'حصلت مشكلة'; }
+    btn.classList.toggle('on', p.watched); lbl.textContent = p.watched ? t('following') : t('follow');
+  } catch (err) { lbl.textContent = err.detail && typeof err.detail === 'string' ? err.detail : t('error'); }
 });
 (async function startAccounts() {
-  try { cfg = await api('/api/config'); } catch { return; }
+  try { cfg = await api('/api/config'); } catch (e) { return; }
+  if (cfg.markets) { markets = cfg.markets; marketCode = cfg.market; drawRegion(); }
   if (!cfg.google_client_id) return;  // sign-in is off on this server
   signedIn(await api('/api/me').catch(() => ({user: null})));
   const s = document.createElement('script');
   s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
   s.onload = () => {
     google.accounts.id.initialize({client_id: cfg.google_client_id, callback: onGoogle, ux_mode: 'popup', auto_select: false});
-    google.accounts.id.renderButton(gbtn, {type: 'standard', shape: 'pill', size: 'medium', text: 'signin_with', locale: 'ar'});
+    const small = matchMedia('(max-width:760px)').matches;  // on phones the header has room for Google's round icon only
+    google.accounts.id.renderButton(gbtn, small ? {type: 'icon', shape: 'circle', size: 'large'}
+                                                : {type: 'standard', shape: 'pill', size: 'large', text: 'signin_with', locale: lang});
   };
   document.head.appendChild(s);
   setInterval(() => { if (me && !document.hidden) api('/api/me').then(d => { if (d.user) { unseen = d.unseen; drawAcct(); } }).catch(() => {}); }, 120000);
 })();
-reset.addEventListener('click', () => {
-  history = []; currentRequest = ''; chat.innerHTML = ''; reset.hidden = true; q.focus();
-});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', themeState);
+$('#year').textContent = new Date().getFullYear();
+applyLang(); themeState();
 </script>
 </body>
 </html>
