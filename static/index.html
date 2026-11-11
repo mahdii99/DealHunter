@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DealHunter - أرخص سعر في المتاجر</title>
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/logo-512.png">
+<meta name="theme-color" content="#0f766e">
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#6b7280; --accent:#0f766e; --border:#e5e7eb; }
   @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#181b22; --text:#e8eaef; --muted:#9aa1ad; --accent:#2dd4bf; --border:#2a2f3a; } }
@@ -24,6 +27,7 @@
   .composer form { max-width:900px; margin:0 auto; }
   .hint { color:var(--muted); font-size:14px; }
   h1 { margin:0 0 4px; font-size:28px; }
+  h1.brand { display:flex; align-items:center; gap:10px; }
   p.sub { margin:0 0 20px; color:var(--muted); }
   form { display:flex; gap:8px; }
   input { flex:1; padding:14px; font-size:16px; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--text); }
@@ -57,14 +61,59 @@
   .reasons button { font-size:12px; padding:4px 10px; border-radius:20px; background:var(--card); color:var(--text);
                     border:1px solid var(--border); cursor:pointer; }
   .thanks { font-size:12px; color:var(--accent); padding:6px 12px 0; }
+  .acts { display:flex; flex-wrap:wrap; gap:6px; }
+  .watch { margin-top:6px; font-size:12px; padding:2px 10px; border-radius:20px; background:transparent;
+           color:var(--accent); border:1px solid var(--accent); cursor:pointer; }
+  .watch.on { background:var(--accent); color:#fff; }
+  #acct { display:flex; align-items:center; gap:8px; position:relative; }
+  #acct .me { display:flex; align-items:center; gap:6px; padding:4px 10px 4px 4px; border-radius:20px; font-size:14px;
+              background:var(--card); color:var(--text); border:1px solid var(--border); }
+  #acct .me img { width:28px; height:28px; border-radius:50%; }
+  #acct .bell { position:relative; padding:6px 10px; font-size:16px; background:var(--card); color:var(--text);
+                border:1px solid var(--border); border-radius:20px; }
+  #acct .bell b { position:absolute; top:-6px; inset-inline-start:-6px; min-width:18px; height:18px; padding:0 5px;
+                  font-size:11px; line-height:18px; border-radius:9px; background:#dc2626; color:#fff; }
+  #panel { position:absolute; top:44px; inset-inline-end:0; z-index:5; width:min(360px, calc(100vw - 32px));
+           max-height:70vh; overflow:auto; background:var(--card); border:1px solid var(--border); border-radius:12px;
+           box-shadow:0 8px 30px rgba(0,0,0,.15); padding:12px; }
+  .tabs { display:flex; gap:6px; margin-bottom:10px; }
+  .tabs button { flex:1; padding:6px; font-size:13px; background:transparent; color:var(--muted); border:1px solid var(--border); }
+  .tabs button.on { color:var(--accent); border-color:var(--accent); }
+  .row { padding:8px 0; border-bottom:1px solid var(--border); font-size:14px; }
+  .row:last-child { border-bottom:0; }
+  .row .when { font-size:12px; color:var(--muted); }
+  .row.new { font-weight:600; }
+  .row a { color:inherit; }
+  .row .x { float:inline-end; font-size:12px; padding:2px 8px; background:transparent; color:var(--muted); border:1px solid var(--border); }
+  .set { display:grid; gap:10px; font-size:14px; }
+  .set select { padding:6px; border-radius:8px; background:var(--card); color:var(--text); border:1px solid var(--border); }
+  .set .danger { padding:6px; font-size:13px; background:transparent; color:#dc2626; border:1px solid #dc2626; }
+  .set .plain { padding:6px; font-size:13px; background:transparent; color:var(--text); border:1px solid var(--border); }
+  dialog { border:1px solid var(--border); border-radius:14px; background:var(--card); color:var(--text); padding:20px;
+           width:min(420px, calc(100vw - 32px)); }
+  dialog::backdrop { background:rgba(0,0,0,.45); }
+  dialog h2 { margin:0 0 6px; font-size:20px; }
+  .regions { display:grid; gap:8px; margin:14px 0; }
+  .regions button { padding:12px; font-size:16px; background:var(--bg); color:var(--text); border:1px solid var(--border); }
+  .regions button.on { border-color:var(--accent); color:var(--accent); font-weight:700; }
+  .regions small { color:var(--muted); font-size:12px; }
 </style>
 </head>
 <body>
 <main>
-  <div class="top"><h1>DealHunter</h1><button id="reset" type="button" hidden>طلب جديد</button></div>
-  <p class="sub">قولّي محتاج إيه بكلامك حتى لو مش عارف اسمه، وأنا أدورلك في المتاجر على أرخص سعر. وبعد النتايج تقدر تكمّل وتعدّل على طلبك.</p>
+  <div class="top"><h1 class="brand"><img src="/logo.svg" alt="" width="34" height="34">DealHunter</h1>
+    <div id="acct"><button id="reset" type="button" hidden>طلب جديد</button><span id="gbtn"></span>
+      <div id="panel" hidden></div></div></div>
+  <p class="sub">قولّي محتاج إيه بكلامك حتى لو مش عارف اسمه، وأنا أدورلك في المتاجر على أرخص سعر. وبعد النتايج تقدر تكمّل وتعدّل على طلبك. <a href="/privacy" style="color:inherit;font-size:13px">الخصوصية</a></p>
   <div id="chat"></div>
 </main>
+<dialog id="welcome">
+  <h2>أهلاً <span id="wname"></span>!</h2>
+  <div class="hint">انت بتشتري منين؟ هندورلك في متاجر بلدك وبعملتها.</div>
+  <div class="regions" id="regions"></div>
+  <label class="hint" id="walerts" hidden><input type="checkbox" id="wmail" checked> ابعتلي إيميل لما سعر منتج بتابعه ينزل</label>
+  <div style="margin-top:14px"><button id="wsave" type="button" style="width:100%;padding:12px" disabled>يلا نبدأ</button></div>
+</dialog>
 <div class="composer">
   <form id="f">
     <input id="q" placeholder="اكتب طلبك أو عدّل على اللي فات..." autocomplete="off" required minlength="2" maxlength="300">
@@ -104,7 +153,10 @@ function card(p, i) {
           <span class="badge">${esc(p.store)}</span> ${p.condition ? `<span class="badge warn">${({used:'مستعمل',refurbished:'مجدد','open box':'أوبن بوكس'})[p.condition] || esc(p.condition)}</span> ` : ''}${trustBadge(p)}${p.discount_pct ? ` <span class="badge deal">خصم ${p.discount_pct}%</span>` : ''}${p.best_deal ? ' <span class="badge deal">أحسن عرض</span>' : ''}${p.unconfirmed ? ' <span class="badge warn" title="العنوان مش موضح النوع بالظبط، اتأكد من صفحة المنتج">اتأكد من الموديل</span>' : ''} ${i === 0 ? '<span class="badge">الأرخص</span>' : ''}
         </div>
       </a>
-      <button class="report" type="button" title="لو النتيجة دي غلط قولّنا عشان نصلحها">النتيجة دي غلط؟</button>
+      <div class="acts">
+        <button class="watch ${p.watched ? 'on' : ''}" type="button" title="هنبلغك أول ما سعره ينزل">${p.watched ? '✓ بتتابعه' : '🔔 تابع السعر'}</button>
+        <button class="report" type="button" title="لو النتيجة دي غلط قولّنا عشان نصلحها">النتيجة دي غلط؟</button>
+      </div>
     </div>`;
 }
 function add(cls, html) {
@@ -122,6 +174,7 @@ function render(d) {  // one assistant turn
   const errs = new URLSearchParams(location.search).has('debug') ? Object.keys(d.store_errors || {}) : [];
   const alt = d.results.length && d.results[0].alternative;
   return (d.demo ? '<div class="err">وضع تجريبي: نتايج من صفحات عينة مش أسعار حقيقية</div>' : '') +
+    (d.region_note ? `<div class="err">${esc(d.region_note)}</div>` : '') +
     (d.understood ? `<div class="und">${esc(d.understood)}</div>` : '') +
     (d.suggested_products && d.suggested_products.length ? `<div class="sugg">حاجات تناسب طلبك دوّرت عليها: ${d.suggested_products.map(esc).join('، ')}</div>` : '') +
     `<div class="meta">راجعنا ${d.candidates_checked} منتج ولقينا ${d.count} مناسب` + (d.max_price ? ` · تحت ${fmt(d.max_price)}` : '') + '</div>' +
@@ -195,6 +248,128 @@ document.addEventListener('click', e => {  // "this result is wrong": pick why, 
     w.querySelector('.reasons').outerHTML = '<div class="thanks">شكرًا، هنراجعها ونصلحها.</div>';
   }
 });
+// ---------- account: Google sign-in, region, followed products, notifications ----------
+let cfg = {regions: []}, me = null, unseen = 0, tab = 'notes';
+const acct = document.getElementById('acct'), panel = document.getElementById('panel'), gbtn = document.getElementById('gbtn');
+const api = (path, opts = {}) => fetch(path, {headers: {'Content-Type': 'application/json'}, ...opts})
+  .then(r => r.ok ? r.json() : r.json().catch(() => ({})).then(j => Promise.reject({status: r.status, ...j})));
+const ago = t => { const m = Math.round((Date.now() / 1000 - t) / 60);
+  return m < 60 ? `من ${Math.max(m, 1)} دقيقة` : m < 1440 ? `من ${Math.round(m / 60)} ساعة` : `من ${Math.round(m / 1440)} يوم`; };
+function drawAcct() {
+  acct.querySelectorAll('.me, .bell').forEach(e => e.remove());
+  gbtn.hidden = !!me;
+  if (!me) return;
+  gbtn.insertAdjacentHTML('afterend',
+    `<button class="bell" type="button" title="الإشعارات">🔔${unseen ? `<b>${unseen}</b>` : ''}</button>` +
+    `<button class="me" type="button" title="حسابك">${me.picture ? `<img src="${esc(me.picture)}" alt="" referrerpolicy="no-referrer">` : ''}${esc(me.name.split(' ')[0])}</button>`);
+}
+function signedIn(d) {
+  me = d.user; unseen = d.unseen || 0; drawAcct();
+  if (me && !me.market) welcome();
+}
+async function onGoogle(resp) {
+  try { signedIn(await api('/api/auth/google', {method: 'POST', body: JSON.stringify({credential: resp.credential})})); }
+  catch { alert('معرفناش نسجلك دخول، جرب تاني.'); }
+}
+function welcome() {
+  const dlg = document.getElementById('welcome'), save = document.getElementById('wsave');
+  let pick = me.market;
+  document.getElementById('wname').textContent = me.name.split(' ')[0];
+  document.getElementById('walerts').hidden = !cfg.email_alerts;
+  const box = document.getElementById('regions');
+  box.innerHTML = cfg.regions.map(r => `<button type="button" data-c="${r.code}">${esc(r.name)} <small>(${esc(r.currency)})${r.live ? '' : ' · قريب'}</small></button>`).join('');
+  box.onclick = e => { const btn = e.target.closest('button'); if (!btn) return;
+    pick = btn.dataset.c; box.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === btn)); save.disabled = false; };
+  save.onclick = async () => {
+    signedIn(await api('/api/me', {method: 'PATCH', body: JSON.stringify({market: pick, email_alerts: document.getElementById('wmail').checked})}));
+    dlg.close();
+  };
+  dlg.addEventListener('cancel', e => e.preventDefault(), {once: true});  // the region is needed: no closing with Esc
+  dlg.showModal();
+}
+async function drawPanel() {
+  const tabs = `<div class="tabs">${[['notes', 'الإشعارات'], ['watches', 'بتتابعها'], ['settings', 'الإعدادات']]
+    .map(([k, v]) => `<button type="button" data-tab="${k}" class="${tab === k ? 'on' : ''}">${v}</button>`).join('')}</div>`;
+  panel.innerHTML = tabs + '<div class="hint">ثانية...</div>';
+  let body = '';
+  try {
+    if (tab === 'notes') {
+      const d = await api('/api/notifications');
+      body = d.notifications.map(n => `<div class="row ${n.seen ? '' : 'new'}">${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener nofollow">${esc(n.title)}</a>` : esc(n.title)}` +
+        `<div>${esc(n.body)}</div><div class="when">${ago(n.created_at)}</div></div>`).join('') ||
+        '<div class="hint">مفيش إشعارات لسه. دوس «تابع السعر» على أي منتج وهنبلغك هنا أول ما سعره ينزل.</div>';
+      if (d.unseen) { api('/api/notifications/seen', {method: 'POST'}); unseen = 0; drawAcct(); }
+    } else if (tab === 'watches') {
+      const d = await api('/api/watches');
+      body = d.watches.map(w => `<div class="row"><button class="x" type="button" data-unwatch="${w.id}">إلغاء</button>` +
+        `<a href="${esc(w.url)}" target="_blank" rel="noopener nofollow">${esc(w.title)}</a>` +
+        `<div class="when">${esc(w.store)} · دلوقتي ${fmt(w.price)}${w.price < w.first_price ? ` (كان ${fmt(w.first_price)})` : ''}</div></div>`).join('') ||
+        '<div class="hint">مش بتتابع حاجة لسه.</div>';
+    } else {
+      body = `<div class="set">
+        <div>${esc(me.email)}</div>
+        <label>بلدك: <select id="smarket">${cfg.regions.map(r => `<option value="${r.code}" ${r.code === me.market ? 'selected' : ''}>${esc(r.name)}${r.live ? '' : ' (قريب)'}</option>`).join('')}</select></label>
+        ${cfg.email_alerts ? `<label><input type="checkbox" id="smail" ${me.email_alerts ? 'checked' : ''}> إيميل لما سعر منتج بتابعه ينزل</label>` : ''}
+        <label><input type="checkbox" id="sunsure" ${me.prefs.hide_unsure_shops ? 'checked' : ''}> وريني المتاجر المشهورة والموثوقة بس</label>
+        <button class="plain" type="button" id="slogout">تسجيل خروج</button>
+        <button class="danger" type="button" id="sdelete">امسح حسابي وكل بياناتي</button></div>`;
+    }
+  } catch { body = '<div class="err">حصلت مشكلة، جرب تاني.</div>'; }
+  panel.innerHTML = tabs + body;
+}
+panel.addEventListener('change', async e => {
+  const patch = e.target.id === 'smarket' ? {market: e.target.value} : e.target.id === 'smail' ? {email_alerts: e.target.checked}
+    : e.target.id === 'sunsure' ? {prefs: {hide_unsure_shops: e.target.checked}} : null;
+  if (patch) signedIn(await api('/api/me', {method: 'PATCH', body: JSON.stringify(patch)}));
+});
+acct.addEventListener('click', async e => {
+  const t = e.target.closest('button'); if (!t) return;
+  if (t.classList.contains('bell') || t.classList.contains('me')) {
+    tab = t.classList.contains('bell') ? 'notes' : 'settings';
+    panel.hidden = !panel.hidden; if (!panel.hidden) drawPanel();
+  } else if (t.dataset.tab) { tab = t.dataset.tab; drawPanel(); }
+  else if (t.dataset.unwatch) { await api('/api/watches/' + t.dataset.unwatch, {method: 'DELETE'}).catch(() => {}); drawPanel(); }
+  else if (t.id === 'slogout') { await api('/api/auth/logout', {method: 'POST'}); location.reload(); }
+  else if (t.id === 'sdelete' && confirm('متأكد؟ هنمسح حسابك والمنتجات اللي بتتابعها والإشعارات.')) {
+    await api('/api/me', {method: 'DELETE'}); location.reload();
+  }
+});
+document.addEventListener('click', e => {  // a click outside closes the panel (a redrawn tab button is no longer on the page)
+  if (!panel.hidden && e.target.isConnected && !acct.contains(e.target)) panel.hidden = true;
+});
+document.addEventListener('click', async e => {  // "تابع السعر" on a result
+  if (!e.target.classList.contains('watch')) return;
+  const w = e.target.closest('.wrap'), p = shown[+w.dataset.t].results[+w.dataset.i], btn = e.target;
+  if (!me) {
+    if (!cfg.google_client_id) return;
+    btn.textContent = 'سجّل دخول بجوجل فوق عشان نبلغك'; window.google?.accounts.id.prompt(); return;
+  }
+  try {
+    if (p.watched) {
+      const d = await api('/api/watches'), found = d.watches.find(x => x.url === p.url);
+      if (found) await api('/api/watches/' + found.id, {method: 'DELETE'});
+      p.watched = false;
+    } else {
+      await api('/api/watches', {method: 'POST', body: JSON.stringify({url: p.url, title: p.title, store: p.store || '',
+                                                                     image: p.image || '', price: p.price})});
+      p.watched = true;
+    }
+    btn.classList.toggle('on', p.watched); btn.textContent = p.watched ? '✓ بتتابعه' : '🔔 تابع السعر';
+  } catch (err) { btn.textContent = err.detail && typeof err.detail === 'string' ? err.detail : 'حصلت مشكلة'; }
+});
+(async function startAccounts() {
+  try { cfg = await api('/api/config'); } catch { return; }
+  if (!cfg.google_client_id) return;  // sign-in is off on this server
+  signedIn(await api('/api/me').catch(() => ({user: null})));
+  const s = document.createElement('script');
+  s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
+  s.onload = () => {
+    google.accounts.id.initialize({client_id: cfg.google_client_id, callback: onGoogle, ux_mode: 'popup', auto_select: false});
+    google.accounts.id.renderButton(gbtn, {type: 'standard', shape: 'pill', size: 'medium', text: 'signin_with', locale: 'ar'});
+  };
+  document.head.appendChild(s);
+  setInterval(() => { if (me && !document.hidden) api('/api/me').then(d => { if (d.user) { unseen = d.unseen; drawAcct(); } }).catch(() => {}); }, 120000);
+})();
 reset.addEventListener('click', () => {
   history = []; currentRequest = ''; chat.innerHTML = ''; reset.hidden = true; q.focus();
 });

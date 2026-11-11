@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DealHunter">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#0f5f58"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g transform="translate(256 256) scale(0.88) translate(-256 -256)">
+  <!-- a price tag pointing up-left -->
+  <g transform="rotate(45 256 256)">
+    <path d="M70 256 L170 150 H410 a30 30 0 0 1 30 30 V332 a30 30 0 0 1 -30 30 H170 Z"
+          fill="#ffffff" stroke="#ffffff" stroke-width="20" stroke-linejoin="round"/>
+    <circle cx="160" cy="256" r="24" fill="#0f766e"/>
+  </g>
+  <!-- the price going down -->
+  <path d="M300 236 V352 M252 306 L300 354 L348 306" fill="none" stroke="#0f766e" stroke-width="36"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
