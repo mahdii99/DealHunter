@@ -224,6 +224,38 @@ def report(r: Report, request: Request):
     return {"ok": True}
 
 
+class Feedback(BaseModel):
+    kind: str = Field(pattern="^(complaint|suggestion|result|question)$")
+    message: str = Field(min_length=3, max_length=2000)
+    contact: str = Field("", max_length=200)
+    lang: str = Field("ar", pattern="^(ar|en)$")
+
+
+@app.post("/api/feedback")
+def feedback(f: Feedback, request: Request):
+    """The complaints & suggestions box: saved for review (python -m scripts.feedback)."""
+    db.add_feedback(f.kind, f.message.strip(), f.contact.strip(), f.lang, client_id(request))
+    log.info("FEEDBACK %s: %s", f.kind, f.message[:80])
+    return {"ok": True}
+
+
+@app.get("/api/config")
+def config():
+    """What the page needs to draw its region menu: the market this server searches, and all known ones
+    (only the current one works today; the others show as "coming soon")."""
+    cur = market.current()
+    return {"market": cur.code, "markets": [{"code": m.code, "name_ar": m.country_ar, "name_en": m.country_en,
+                                             "currency_ar": m.currency_ar, "currency": m.currency,
+                                             "enabled": m.code == cur.code} for m in market.MARKETS.values()],
+            "demo": DEMO}
+
+
+@app.get("/logo.svg")
+def logo():
+    return FileResponse(ROOT / "static" / "logo.svg", media_type="image/svg+xml",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
 # Some stores block their images when shown on another site, so the page loads them through us.
 # Only hosts of images that appeared in our own results are allowed, so it can't be used as an open proxy.
 IMAGE_HOSTS = {"media.btech.com", "eg.jumia.is"}

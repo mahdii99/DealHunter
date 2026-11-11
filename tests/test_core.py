@@ -26,7 +26,7 @@ def _llm_state_in_tmp(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)  # .env may point at the real database
     if pg := os.getenv("TEST_DATABASE_URL"):  # also run against a real Postgres (an empty test database!)
         monkeypatch.setenv("DATABASE_URL", pg)
-        for table in ("searches", "prices", "blocked_sites", "usage", "reports"):
+        for table in ("searches", "prices", "blocked_sites", "usage", "reports", "feedback"):
             db._db.run(f"DROP TABLE IF EXISTS {table}")
         db.close()
     yield
@@ -1292,3 +1292,19 @@ def test_price_db_keeps_working_when_postgres_is_unreachable(monkeypatch, caplog
     assert "can't reach DATABASE_URL" in caplog.text
     db._db._pg_down_until = 0.0
 
+
+
+def test_feedback_box_is_saved_and_config_lists_markets():
+    from fastapi.testclient import TestClient
+    from app import db
+    from app.main import app
+    c = TestClient(app)
+    assert c.post("/api/feedback", json={"kind": "suggestion", "message": "ضيفوا مقارنة بين منتجين"}).json() == {"ok": True}
+    assert c.post("/api/feedback", json={"kind": "spam", "message": "hello"}).status_code == 422
+    assert c.post("/api/feedback", json={"kind": "complaint", "message": ""}).status_code == 422
+    rows = db.list_feedback()
+    assert len(rows) == 1 and rows[0]["kind"] == "suggestion" and rows[0]["contact"] == ""
+    cfg = c.get("/api/config").json()
+    assert cfg["market"] == "EG" and {m["code"] for m in cfg["markets"]} == {"EG", "SA", "AE"}
+    assert [m["code"] for m in cfg["markets"] if m["enabled"]] == ["EG"]
+    assert c.get("/").status_code == 200 and c.get("/logo.svg").status_code == 200
