@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from pathlib import Path
 
@@ -22,6 +23,12 @@ def _llm_state_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "STATE_FILE", tmp_path / "llm_state.json")
     from app import db
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "prices.db")
+    monkeypatch.delenv("DATABASE_URL", raising=False)  # .env may point at the real database
+    if pg := os.getenv("TEST_DATABASE_URL"):  # also run against a real Postgres (an empty test database!)
+        monkeypatch.setenv("DATABASE_URL", pg)
+        for table in ("searches", "prices", "blocked_sites", "usage", "reports"):
+            db._db.run(f"DROP TABLE IF EXISTS {table}")
+        db.close()
     yield
     db.close()
 
@@ -964,8 +971,7 @@ def test_slow_or_big_stores_are_not_skipped_and_blocks_expire():
     assert db.blocked_sites() == set()  # slow != blocked; a well-known store is never skipped for it
     agent._remember_sites(["https://old.com/p"], [], {"old.com": "prices in SAR"})
     assert db.blocked_sites() == {"old.com"}
-    with db._db() as c:
-        c.execute("UPDATE blocked_sites SET last_failed = ? WHERE domain = 'old.com'", (time.time() - 8 * 86400,))
+    db._db.run("UPDATE blocked_sites SET last_failed = ? WHERE domain = 'old.com'", (time.time() - 8 * 86400,))
     assert db.blocked_sites() == set()  # tried again after a week
     db.unblock("old.com")
 
@@ -1273,4 +1279,16 @@ def test_daily_limit_per_visitor_and_wrong_result_reports(monkeypatch):
     [rep] = db.list_reports()
     assert rep["reason"] == "wrong_price" and rep["request"] == "سخان"
     assert c.post("/api/report", json={"reason": "nonsense", "url": "u"}).status_code == 422
-    assert "1.1.1.1" not in str(db._db().execute("SELECT * FROM usage").fetchall())  # only a hash is stored
+    assert "1.1.1.1" not in str(db._db.run("SELECT * FROM usage"))  # only a hash is stored
+
+
+def test_price_db_keeps_working_when_postgres_is_unreachable(monkeypatch, caplog):
+    from app import db
+    monkeypatch.setenv("DATABASE_URL", "host=127.0.0.1 port=1 user=x dbname=x connect_timeout=1")
+    db.close()
+    db._db._pg_down_until = 0.0
+    db.count_search("abc")  # no error: falls back to the local file
+    assert db.searches_today("abc") == 1 and not db._db.pg
+    assert "can't reach DATABASE_URL" in caplog.text
+    db._db._pg_down_until = 0.0
+
