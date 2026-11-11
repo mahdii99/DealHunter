@@ -288,6 +288,21 @@ def report(r: Report, request: Request):
     return {"ok": True}
 
 
+class Feedback(BaseModel):
+    kind: str = Field(pattern="^(complaint|suggestion|result|question)$")
+    message: str = Field(min_length=3, max_length=2000)
+    contact: str = Field("", max_length=200)
+    lang: str = Field("ar", pattern="^(ar|en)$")
+
+
+@app.post("/api/feedback")
+def feedback(f: Feedback, request: Request):
+    """The complaints & suggestions box: saved for review (python -m scripts.feedback)."""
+    db.add_feedback(f.kind, f.message.strip(), f.contact.strip(), f.lang, client_id(request))
+    log.info("FEEDBACK %s: %s", f.kind, f.message[:80])
+    return {"ok": True}
+
+
 # Some stores block their images when shown on another site, so the page loads them through us.
 # Only hosts of images that appeared in our own results are allowed, so it can't be used as an open proxy.
 IMAGE_HOSTS = {"media.btech.com", "eg.jumia.is"}
@@ -337,10 +352,15 @@ def _need_user(request: Request) -> dict:
 
 @app.get("/api/config")
 def config():
-    """What the page needs to know: is Google sign-in on, the regions a shopper can pick."""
-    return {"google_client_id": accounts.google_client_id(), "email_alerts": accounts.email_enabled(),
+    """What the page needs: the region menu (the market searched now, and which ones work today), whether Google
+    sign-in and email alerts are on, and the regions a shopper can pick at sign-up."""
+    cur, live = market.current(), market.live()
+    return {"market": cur.code, "demo": DEMO,
+            "markets": [{"code": m.code, "name_ar": m.country_ar, "name_en": m.country_en, "currency_ar": m.currency_ar,
+                         "currency": m.currency, "enabled": m.code in live} for m in market.MARKETS.values()],
+            "google_client_id": accounts.google_client_id(), "email_alerts": accounts.email_enabled(),
             "regions": [{"code": c, "name": market.MARKETS[c].country_ar, "currency": market.MARKETS[c].currency_ar,
-                         "live": c in market.live()} for c in accounts.REGIONS]}
+                         "live": c in live} for c in accounts.REGIONS]}
 
 
 class GoogleLogin(BaseModel):

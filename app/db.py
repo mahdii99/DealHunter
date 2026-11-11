@@ -1,7 +1,8 @@
 """Price database: every price the agent shows is saved with the date, so we can:
   - answer the same request again from the cache without spending the free quotas,
   - show a product's price history and the lowest price we've seen,
-  - skip sites whose pages never open, count each visitor's searches, keep "this result is wrong" reports,
+  - skip sites whose pages never open, count each visitor's searches, keep "this result is wrong" reports
+    and the complaints & suggestions box,
   - keep shopper accounts: Google sign-in, region, preferences, followed products, notifications (app/accounts.py).
 
 Where it's stored:
@@ -61,6 +62,15 @@ CREATE TABLE IF NOT EXISTS reports (
     store TEXT NOT NULL,
     title TEXT NOT NULL,
     price {FLOAT},
+    client TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feedback (
+    id {ID},
+    at {FLOAT} NOT NULL,
+    kind TEXT NOT NULL,             -- complaint / suggestion / result / question
+    message TEXT NOT NULL,
+    contact TEXT NOT NULL,          -- email or phone the visitor chose to leave, "" if none
+    lang TEXT NOT NULL,
     client TEXT NOT NULL
 );
 -- shopper accounts (app/accounts.py)
@@ -315,6 +325,17 @@ def add_report(reason: str, request: str, url: str, store: str, title: str, pric
     """A shopper said a result is wrong: kept so we can see what to fix (scripts/reports.py lists them)."""
     _db.run("INSERT INTO reports (at, reason, request, url, store, title, price, client) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (time.time(), reason, request[:600], url[:1000], store[:100], title[:300], price, client))
+
+
+def add_feedback(kind: str, message: str, contact: str, lang: str, client: str) -> None:
+    """The complaints & suggestions box on the page (scripts/feedback.py lists them)."""
+    _db.run("INSERT INTO feedback (at, kind, message, contact, lang, client) VALUES (?, ?, ?, ?, ?, ?)",
+            (time.time(), kind, message[:2000], contact[:200], lang[:5], client))
+
+
+def list_feedback(limit: int = 200) -> list[dict]:
+    rows = _db.run("SELECT at, kind, message, contact, lang FROM feedback ORDER BY at DESC LIMIT ?", (limit,))
+    return [dict(zip(("at", "kind", "message", "contact", "lang"), r)) for r in rows]
 
 
 def list_reports(limit: int = 200) -> list[dict]:
