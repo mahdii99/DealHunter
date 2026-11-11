@@ -94,6 +94,12 @@ def index():
     return FileResponse(ROOT / "static" / "index.html", headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/privacy")
+def privacy():
+    """Privacy policy: Google requires its link before sign-in can be opened to everyone."""
+    return FileResponse(ROOT / "static" / "privacy.html", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=2, max_length=300)):
     log.info("=" * 70)
