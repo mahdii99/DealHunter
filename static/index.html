@@ -216,6 +216,7 @@
            color:var(--bg); font-size:14px; font-weight:500; box-shadow:0 8px 24px var(--shadow); }
 
   @media (max-width:760px) {
+    header { backdrop-filter:none; background:var(--bg); }  /* blur behind a sticky bar is slow on phones */
     .desktop-only { display:none !important; }
     .mobile-only { display:flex; }
     .bar { padding:10px 16px; }
@@ -499,6 +500,7 @@ let history = [], currentRequest = '';  // the chat so far + the standalone requ
 let markets = [{code: 'EG', name_ar: 'مصر', name_en: 'Egypt', currency_ar: 'ج.م', currency: 'EGP', enabled: true}], marketCode = 'EG';
 const cur = () => markets.find(m => m.code === marketCode) || markets[0];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const link = u => /^https?:\/\//i.test(u || '') ? esc(u) : '#';  // only web addresses become links (never javascript:)
 const fmt = n => lang === 'ar' ? new Intl.NumberFormat('ar-EG').format(n) + ' ' + cur().currency_ar
                                : cur().currency + ' ' + new Intl.NumberFormat('en-US').format(n);
 const pct = n => lang === 'ar' ? new Intl.NumberFormat('ar-EG').format(n) + '٪' : n + '%';
@@ -554,8 +556,8 @@ function drawSide() {
   const hl = recent.length ? recent.map(r => `<button class="hist" type="button" data-again="${esc(r.q)}"><span dir="auto">${esc(r.q)}</span><small>${ago(r.at)}</small></button>`).join('')
                            : `<div class="empty">${t('noHistory')}</div>`;
   $$('.history-list').forEach(el => { el.innerHTML = hl; });
-  const sl = saved.length ? saved.map(p => `<a class="saved-link" href="${esc(p.url)}" target="_blank" rel="noopener nofollow">
-      ${p.image ? `<img src="${esc(p.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ph'}))">` : '<span class="ph"></span>'}
+  const sl = saved.length ? saved.map(p => `<a class="saved-link" href="${link(p.url)}" target="_blank" rel="noopener nofollow">
+      ${p.image ? `<img src="${thumb(p.image)}" alt="" width="40" height="40" loading="lazy" decoding="async" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ph'}))">` : '<span class="ph"></span>'}
       <span><span dir="auto">${esc(p.title)}</span><b>${fmt(p.price)} · ${esc(p.store)}</b></span></a>`).join('')
                           : `<div class="empty">${t('noSaved')}</div>`;
   $$('.saved-list').forEach(el => { el.innerHTML = sl; });
@@ -568,8 +570,10 @@ const isSaved = url => saved.some(s => s.url === url);
 
 // ---------- results ----------
 const PH = '<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>';
-function imgFail(img) {  // store blocks hotlinking? load it through our server, else show the placeholder
-  if (img.dataset.proxy) { img.src = img.dataset.proxy; delete img.dataset.proxy; return; }
+// product photos come through our server as small thumbnails: store originals can be huge and make phones slow
+const thumb = url => '/img?u=' + encodeURIComponent(url);
+function imgFail(img) {  // our thumbnail failed? try the store's own image, else show the placeholder
+  if (img.dataset.orig) { img.src = img.dataset.orig; delete img.dataset.orig; return; }
   const box = img.parentElement; box.classList.add('noimg'); box.innerHTML = PH;
 }
 function trustBadge(p) {
@@ -586,8 +590,8 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
   const sv = isSaved(p.url);
   return `
     <div class="wrap ${rank === 0 ? 'best' : ''}" data-t="${turn}" data-i="${i}">
-      <a class="item" href="${esc(p.url)}" target="_blank" rel="noopener nofollow">
-        <span class="thumb ${p.image ? '' : 'noimg'}">${p.image ? `<img src="${esc(p.image)}" data-proxy="/img?u=${encodeURIComponent(p.image)}" alt="${esc(p.title)}" loading="lazy" referrerpolicy="no-referrer" onerror="imgFail(this)">` : PH}</span>
+      <a class="item" href="${link(p.url)}" target="_blank" rel="noopener nofollow">
+        <span class="thumb ${p.image ? '' : 'noimg'}">${p.image ? `<img src="${thumb(p.image)}" data-orig="${esc(p.image)}" alt="${esc(p.title)}" width="104" height="104" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="imgFail(this)">` : PH}</span>
         <span class="info">
           <span class="t" dir="auto">${esc(p.title)}</span>
           ${p.note ? `<span class="note">${esc(p.note)}</span>` : ''}
@@ -605,7 +609,7 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
         </span>
       </a>
       <div class="actions">
-        <a class="act go" href="${esc(p.url)}" target="_blank" rel="noopener nofollow">${t('open')}
+        <a class="act go" href="${link(p.url)}" target="_blank" rel="noopener nofollow">${t('open')}
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></a>
         <button class="act save" type="button" aria-pressed="${sv}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg><span>${sv ? t('savedOne') : t('save')}</span></button>
@@ -848,13 +852,13 @@ async function drawPanel() {
   try {
     if (tab === 'notes') {
       const d = await api('/api/notifications');
-      body = d.notifications.map(n => `<div class="row ${n.seen ? '' : 'new'}">${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener nofollow">${esc(n.title)}</a>` : esc(n.title)}` +
+      body = d.notifications.map(n => `<div class="row ${n.seen ? '' : 'new'}">${n.url ? `<a href="${link(n.url)}" target="_blank" rel="noopener nofollow">${esc(n.title)}</a>` : esc(n.title)}` +
         `<div>${esc(n.body)}</div><div class="when">${agoSec(n.created_at)}</div></div>`).join('') || `<div class="panel-hint">${t('noNotes')}</div>`;
       if (d.unseen) { api('/api/notifications/seen', {method: 'POST'}); unseen = 0; drawAcct(); }
     } else if (tab === 'watches') {
       const d = await api('/api/watches');
       body = d.watches.map(w => `<div class="row"><button class="x" type="button" data-unwatch="${w.id}">${t('cancelWatch')}</button>` +
-        `<a href="${esc(w.url)}" target="_blank" rel="noopener nofollow">${esc(w.title)}</a>` +
+        `<a href="${link(w.url)}" target="_blank" rel="noopener nofollow">${esc(w.title)}</a>` +
         `<div class="when">${esc(w.store)} · ${t('nowAt')} ${fmt(w.price)}${w.price < w.first_price ? ` (${t('was')} ${fmt(w.first_price)})` : ''}</div></div>`).join('') ||
         `<div class="panel-hint">${t('noWatches')}</div>`;
     } else {

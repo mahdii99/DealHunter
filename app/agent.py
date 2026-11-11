@@ -14,7 +14,6 @@ import contextvars
 import json
 import logging
 import re
-import sqlite3
 import time
 from html import unescape
 from urllib.parse import unquote, urljoin, urlparse
@@ -458,7 +457,7 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
     errors: dict[str, str] = {}
     async with httpx.AsyncClient() as client:
         # Two groups searched side by side: famous stores, and every other shop. The judge compares them all.
-        blocked = db.blocked_sites()  # sites we couldn't open in earlier searches: don't spend searches on them
+        blocked = await _blocked_sites()  # sites we couldn't open in earlier searches: don't spend searches on them
         famous = [d for d in famous or trust.FAMOUS_SITES if d not in blocked]
         groups = {"famous": dict(include_domains=famous),
                   "other": dict(exclude_domains=famous + trust.CLASSIFIEDS + sorted(blocked)[:100])}
@@ -587,7 +586,7 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         collect(first, await _results(max(left, 1), first_tasks))
         collect(later, later_res)
         TIMES["reading"] = round(time.monotonic() - t - TIMES["search"] - TIMES["pages"], 1)
-    _remember_sites(urls, products, errors)
+    await asyncio.to_thread(_remember_sites, urls, products, errors)  # the database may be far: off the event loop
     log.info("web: %d products from %d pages in %.1fs, failed=%s",
              len(products), len(urls) - len(errors), time.monotonic() - t, list(errors))
     return products, errors
@@ -604,6 +603,14 @@ def _take_turns(urls: list[str]) -> list[str]:
         by_store.setdefault(trust.domain(u), []).append(u)
     rounds = max((len(v) for v in by_store.values()), default=0)
     return [v[i] for i in range(rounds) for v in by_store.values() if i < len(v)]
+
+
+async def _blocked_sites() -> set[str]:
+    try:
+        return await asyncio.to_thread(db.blocked_sites)
+    except Exception as e:  # the database being down must not stop the search
+        log.warning("could not read blocked sites: %s", e)
+        return set()
 
 
 def _remember_sites(urls: list[str], products: list[Product], errors: dict[str, str]) -> None:
@@ -623,7 +630,7 @@ def _remember_sites(urls: list[str], products: list[Product], errors: dict[str, 
             elif why and not _SLOW.search(why.split(" / ")[0]) and not trust.is_known("https://" + d):
                 # (the first part is how the site answered US; what follows " / " is the reader service)
                 db.site_failed(d, why)
-    except (sqlite3.Error, OSError) as e:  # never let bookkeeping break a search
+    except Exception as e:  # never let bookkeeping break a search (SQLite or Postgres errors alike)
         log.warning("could not save blocked sites: %s", e)
 
 
