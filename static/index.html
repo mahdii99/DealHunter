@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DealHunter - أرخص سعر في المتاجر</title>
-<link rel="icon" href="/logo.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/logo-512.png">
+<link rel="icon" href="/logo.svg?v=2" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/logo-512.png?v=2">
 <meta name="theme-color" content="#0f766e">
 <meta name="theme-color" content="#0F766E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -28,6 +28,7 @@
           --ink:#5EEAD4; --deal:#FDBA74; --deal-soft:#3A2112; --warn:#FCD34D; --warn-soft:#3A2E10; --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.45);
           color-scheme: dark; } }
   * { box-sizing:border-box; }
+  html { overflow-x:clip; }  /* nothing may widen the page on phones */
   [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 "IBM Plex Sans Arabic","Readex Pro",system-ui,"Segoe UI",Tahoma,sans-serif; }
   button, input, textarea { font:inherit; color:inherit; }
@@ -153,7 +154,7 @@
   .thanks { font-size:13px; color:var(--ink); }
 
   /* composer */
-  .composer { position:sticky; bottom:0; z-index:5; padding:12px 0 16px; background:var(--bg); display:grid; gap:8px; }
+  .composer { position:sticky; bottom:0; z-index:5; padding:12px 0 16px; background:var(--bg); display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; }
   .composer .box { display:flex; align-items:center; gap:8px; padding:6px; border-radius:16px; background:var(--card); border:1px solid var(--border2);
                    box-shadow:0 6px 24px var(--shadow); }
   .composer .box:focus-within { border-color:var(--accent); }
@@ -266,7 +267,7 @@
 <header>
   <div class="bar">
     <a class="brand" href="/" aria-label="DealHunter">
-      <img src="/logo.svg" width="38" height="38" alt="">
+      <img src="/logo.svg?v=2" width="38" height="38" alt="">
       <span><span class="name" dir="ltr">Deal<b>Hunter</b></span><span class="tag desktop-only" data-t="tagline"></span></span>
     </a>
     <nav class="tools desktop-only" data-t-aria="tools">
@@ -320,7 +321,7 @@
 
   <main>
     <section class="hero" id="hero">
-      <img src="/logo.svg" width="72" height="72" alt="">
+      <img src="/logo.svg?v=2" width="72" height="72" alt="">
       <h1 class="display" data-t="emptyTitle"></h1>
       <p data-t="emptySub"></p>
       <div class="sugs" id="sugs"></div>
@@ -516,7 +517,7 @@ function isDark() {
 }
 function toggleTheme() {
   const next = isDark() ? 'light' : 'dark';
-  document.documentElement.dataset.theme = next; store.set('dh-theme', next); themeState();
+  document.documentElement.dataset.theme = next; store.set('dh-theme', next); themeState(); drawGoogle();
 }
 function themeState() {
   const d = String(isDark());
@@ -655,6 +656,21 @@ function add(cls, html) {
   const el = document.createElement('div'); el.className = cls; el.innerHTML = html; chat.appendChild(el);
   el.scrollIntoView({behavior: 'smooth', block: 'start'}); return el;
 }
+// the conversation on screen survives a refresh: kept in this browser for a few hours, the last 6 turns
+let turns = [];
+function saveChat() {
+  store.set('dh-chat', turns.length ? {at: Date.now(), history, currentRequest, turns: turns.slice(-6)} : null);
+}
+function restoreChat() {
+  const c = store.get('dh-chat', null);
+  if (!c || !c.turns || !c.turns.length || Date.now() - c.at > 6 * 3600 * 1000) return;
+  turns = c.turns; history = c.history || []; currentRequest = c.currentRequest || ''; hero.hidden = true;
+  turns.forEach(x => {
+    add('u', esc(x.u));
+    const a = add('a', ''); a.dataset.turn = shown.length; shown.push(x.d); a.innerHTML = render(x.d, shown.length - 1);
+  });
+  chat.lastElementChild?.previousElementSibling?.scrollIntoView({block: 'start'});
+}
 async function send(text) {
   text = text.trim(); if (text.length < 2 || b.disabled) return;
   hero.hidden = true; q.value = '';
@@ -690,6 +706,7 @@ async function send(text) {
     if (d.action === 'search') currentRequest = d.request || currentRequest;
     history.push({role: 'assistant', text: said(d).slice(0, 1500)});
     a.dataset.turn = shown.length; shown.push(d);
+    turns.push({u: text, d}); saveChat();
     a.innerHTML = render(d, shown.length - 1);
   } catch (err) {
     history.pop();
@@ -697,6 +714,7 @@ async function send(text) {
   } finally { clearInterval(timer); b.disabled = false; q.focus(); }
 }
 function newChat() {
+  turns = []; saveChat();
   history = []; currentRequest = ''; shown.length = 0; chat.innerHTML = ''; hero.hidden = false; closeAll(); q.focus();
 }
 
@@ -886,6 +904,13 @@ document.addEventListener('click', async e => {  // "follow price" on a result
     btn.classList.toggle('on', p.watched); lbl.textContent = p.watched ? t('following') : t('follow');
   } catch (err) { lbl.textContent = err.detail && typeof err.detail === 'string' ? err.detail : t('error'); }
 });
+function drawGoogle() {  // Google's own button: dark in dark mode, only its round icon on phones (the header is narrow)
+  if (!window.google?.accounts?.id || me) return;
+  const small = matchMedia('(max-width:760px)').matches, theme = isDark() ? 'filled_black' : 'outline';
+  gbtn.innerHTML = '';
+  google.accounts.id.renderButton(gbtn, small ? {type: 'icon', shape: 'circle', size: 'large', theme}
+                                              : {type: 'standard', shape: 'pill', size: 'large', text: 'signin_with', locale: lang, theme});
+}
 (async function startAccounts() {
   try { cfg = await api('/api/config'); } catch (e) { return; }
   if (cfg.markets) { markets = cfg.markets; marketCode = cfg.market; drawRegion(); }
@@ -895,16 +920,14 @@ document.addEventListener('click', async e => {  // "follow price" on a result
   s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
   s.onload = () => {
     google.accounts.id.initialize({client_id: cfg.google_client_id, callback: onGoogle, ux_mode: 'popup', auto_select: false});
-    const small = matchMedia('(max-width:760px)').matches;  // on phones the header has room for Google's round icon only
-    google.accounts.id.renderButton(gbtn, small ? {type: 'icon', shape: 'circle', size: 'large'}
-                                                : {type: 'standard', shape: 'pill', size: 'large', text: 'signin_with', locale: lang});
+    drawGoogle();
   };
   document.head.appendChild(s);
   setInterval(() => { if (me && !document.hidden) api('/api/me').then(d => { if (d.user) { unseen = d.unseen; drawAcct(); } }).catch(() => {}); }, 120000);
 })();
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change', themeState);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { themeState(); drawGoogle(); });
 $('#year').textContent = new Date().getFullYear();
-applyLang(); themeState();
+restoreChat(); applyLang(); themeState();
 </script>
 </body>
 </html>
