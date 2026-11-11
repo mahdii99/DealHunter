@@ -1,11 +1,13 @@
 import asyncio
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from urllib.parse import urlparse
@@ -110,16 +112,32 @@ def privacy():
 
 
 @app.get("/api/search")
-async def search(q: str = Query(..., min_length=2, max_length=300)):
+async def search(request: Request, q: str = Query(..., min_length=2, max_length=300)):
+    """One-shot search (no chat). Same daily limit as the chat, or it would be a free way around it."""
     log.info("=" * 70)
     log.info("NEW SEARCH: %s", q)
+    client = client_id(request)
+    if DAILY_LIMIT and not await _db(db.cached_search, db.cache_key(q, market.current().code), CACHE_TTL):
+        if await _db(db.searches_today, client, default=0) >= DAILY_LIMIT:
+            raise HTTPException(429, LIMIT_TEXT.format(n=DAILY_LIMIT))
+        await _db(db.count_search, client)
     return await _search(q)
+
+
+async def _db(fn, *args, default=None):
+    """A database call off the event loop (a slow or reconnecting database must not freeze every other visitor).
+    Bookkeeping errors are logged, not shown: a search still works without the cache or price history."""
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except Exception:
+        log.exception("database call %s failed", fn.__name__)
+        return default
 
 
 async def _search(q: str, plan: dict | None = None, budget_text: str | None = None) -> dict:
     mk = market.current().code
     key = db.cache_key(q, mk)
-    if not DEMO and (hit := db.cached_search(key, CACHE_TTL)):
+    if not DEMO and (hit := await _db(db.cached_search, key, CACHE_TTL)):
         log.info("served from cache")
         log.info("=" * 70 + "\n")
         return {**hit, "cached": True}
@@ -127,16 +145,13 @@ async def _search(q: str, plan: dict | None = None, budget_text: str | None = No
     payload = await agent.run(q, plan=plan, budget_text=budget_text)
     log.info("DONE in %.1fs: %d results (%s)", time.monotonic() - t, len(payload["results"]), payload.get("source"))
     log.info("=" * 70 + "\n")
-    for r in payload["results"]:
-        if r.get("image"):
-            IMAGE_HOSTS.add(urlparse(r["image"]).hostname or "")
     payload.update(query=q, count=len(payload["results"]), cached=False, demo=DEMO, market=mk)
     if not DEMO and payload["results"]:
-        db.add_price_context(payload["results"])  # before saving today's prices: compare with what we saw earlier
-        db.record_prices(payload["results"], mk)
+        await _db(db.add_price_context, payload["results"])  # before saving today's prices
+        await _db(db.record_prices, payload["results"], mk)
         await _alert_followers(payload["results"])
         if payload["mode"] == "llm":
-            db.save_search(key, mk, payload)
+            await _db(db.save_search, key, mk, payload)
     return payload
 
 
@@ -253,8 +268,8 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         return {"action": "answer", "request": turn.request, "results": [], "demo": DEMO,
                 "answer": "معلش، الموديلات المجانية مشغولة دلوقتي فمقدرتش أرد على سؤالك. ابعته تاني كمان دقيقة."}
     request = plan["request"] if plan else " ".join(filter(None, [turn.request, newest]))  # no LLM: just append
-    if (client and limit and db.searches_today(client) >= limit
-            and not db.cached_search(db.cache_key(request, market.current().code), CACHE_TTL)):
+    if (client and limit and await _db(db.searches_today, client, default=0) >= limit
+            and not await _db(db.cached_search, db.cache_key(request, market.current().code), CACHE_TTL)):
         log.info("daily limit reached for %s", client)
         log.info("=" * 70 + "\n")
         return {"action": "answer", "limit": True, "answer": LIMIT_TEXT.format(n=limit),
@@ -265,9 +280,10 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         payload = await agent.run_rules(request, note=f"الـ LLM مردش ({failed})، فاستخدمنا الفهم البسيط.")
         payload.update(query=request, count=len(payload["results"]), cached=False, demo=DEMO)
     else:
+        cached = await _db(db.cached_search, db.cache_key(request, market.current().code), CACHE_TTL)
+        if client and not cached:  # counted before searching, so many searches sent at once can't pass the limit
+            await _db(db.count_search, client)
         payload = await _search(request, plan=plan, budget_text=said)
-        if client and not payload.get("cached"):
-            db.count_search(client)
     return {**payload, "action": "search"}
 
 
@@ -280,9 +296,25 @@ class Report(BaseModel):
     price: float | None = None
 
 
+# Reports and feedback messages per visitor per day: enough for any real shopper, and stops one script from filling
+# the database. Kept in memory (a restart forgets it, which is fine for this).
+SPAM_LIMITS = {"report": 60, "feedback": 20}
+_sent: dict[tuple[str, str, str], int] = {}
+
+
+def _too_many(kind: str, client: str) -> bool:
+    key = (time.strftime("%Y-%m-%d", time.gmtime()), kind, client)
+    if len(_sent) > 50_000:
+        _sent.clear()
+    _sent[key] = _sent.get(key, 0) + 1
+    return _sent[key] > SPAM_LIMITS[kind]
+
+
 @app.post("/api/report")
 def report(r: Report, request: Request):
     """The "this result is wrong" button: saved for review (python -m scripts.reports)."""
+    if _too_many("report", client_id(request)):
+        raise HTTPException(429, "too many reports today")
     db.add_report(r.reason, r.request, r.url, r.store, r.title, r.price, client_id(request))
     log.info("REPORT %s: %s @ %s (%s)", r.reason, r.title[:60], r.store, r.request[:60])
     return {"ok": True}
@@ -298,34 +330,81 @@ class Feedback(BaseModel):
 @app.post("/api/feedback")
 def feedback(f: Feedback, request: Request):
     """The complaints & suggestions box: saved for review (python -m scripts.feedback)."""
+    if _too_many("feedback", client_id(request)):
+        raise HTTPException(429, "too many messages today")
     db.add_feedback(f.kind, f.message.strip(), f.contact.strip(), f.lang, client_id(request))
     log.info("FEEDBACK %s: %s", f.kind, f.message[:80])
     return {"ok": True}
 
 
-# Some stores block their images when shown on another site, so the page loads them through us.
-# Only hosts of images that appeared in our own results are allowed, so it can't be used as an open proxy.
-IMAGE_HOSTS = {"media.btech.com", "eg.jumia.is"}
-_img_client = httpx.AsyncClient(timeout=10, follow_redirects=True)
+# Store images are loaded through us, shrunk to a thumbnail: some stores block their images on other sites, and the
+# originals can be 3000 px photos that make phones slow or even reload the page (each one takes ~30 MB to show).
+# Only public addresses are fetched (never this server's own network), and thumbnails are kept in memory for a while.
+THUMB_PX = 320
+MAX_IMAGE_BYTES = 8_000_000
+_img_client = httpx.AsyncClient(timeout=10, follow_redirects=False)
+_thumbs: "OrderedDict[str, tuple[bytes, str]]" = OrderedDict()
+
+
+async def _resolve(host: str) -> list:
+    return await asyncio.get_running_loop().getaddrinfo(host, 443)
+
+
+async def _public_host(host: str) -> bool:
+    try:
+        infos = await _resolve(host)
+    except OSError:
+        return False
+    return bool(infos) and all(ipaddress.ip_address(i[4][0]).is_global for i in infos)
+
+
+def _thumbnail(data: bytes) -> tuple[bytes, str]:
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = 50_000_000  # bigger than this is a decompression bomb, not a product photo
+    with Image.open(io.BytesIO(data)) as im:
+        im.draft("RGB", (THUMB_PX * 2, THUMB_PX * 2))  # JPEGs decode straight at a smaller size: much faster
+        im = im.convert("RGBA" if im.mode in ("RGBA", "LA", "P") else "RGB")
+        im.thumbnail((THUMB_PX, THUMB_PX))
+        out = io.BytesIO()
+        im.save(out, "WEBP", quality=78, method=4)
+    return out.getvalue(), "image/webp"
 
 
 @app.get("/img")
 async def image(u: str = Query(..., max_length=1000)):
-    host = urlparse(u).hostname or ""
-    if urlparse(u).scheme != "https" or host not in IMAGE_HOSTS:
-        raise HTTPException(400, "image host not allowed")
-    headers = {**HEADERS, "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
-               "Referer": f"https://{host.split('.', 1)[1]}/"}
-    try:
-        r = await _img_client.get(u, headers=headers)
-    except httpx.HTTPError as e:
-        log.warning("img %s failed: %s", u, type(e).__name__)
-        raise HTTPException(502, "image fetch failed")
+    if u in _thumbs:
+        _thumbs.move_to_end(u)
+        body, ctype = _thumbs[u]
+        return Response(body, media_type=ctype, headers={"Cache-Control": "public, max-age=604800"})
+    url = u
+    for _ in range(3):  # follow at most 2 redirects, each checked like the first address
+        host = urlparse(url).hostname or ""
+        if urlparse(url).scheme != "https" or not await _public_host(host):
+            raise HTTPException(400, "image address not allowed")
+        headers = {**HEADERS, "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+                   "Referer": f"https://{host.split('.', 1)[-1]}/"}
+        try:
+            r = await _img_client.get(url, headers=headers)
+        except httpx.HTTPError as e:
+            log.warning("img %s failed: %s", url, type(e).__name__)
+            raise HTTPException(502, "image fetch failed")
+        if r.is_redirect and r.headers.get("location"):
+            url = str(r.url.join(r.headers["location"]))
+            continue
+        break
     ctype = r.headers.get("content-type", "")
-    if r.status_code != 200 or not ctype.startswith("image/"):
-        log.warning("img %s -> %s %s", u, r.status_code, ctype)
+    if r.status_code != 200 or not ctype.startswith("image/") or len(r.content) > MAX_IMAGE_BYTES:
+        log.warning("img %s -> %s %s", url, r.status_code, ctype)
         raise HTTPException(404, "image not found")
-    return Response(r.content, media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
+    try:
+        body, ctype = await asyncio.to_thread(_thumbnail, r.content)
+    except Exception as e:  # SVG, a broken file, a format Pillow can't read: send it as it is
+        log.info("img %s not shrunk: %s", url, type(e).__name__)
+        body = r.content
+    _thumbs[u] = (body, ctype)
+    while len(_thumbs) > 400:
+        _thumbs.popitem(last=False)
+    return Response(body, media_type=ctype, headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/api/history")
@@ -430,7 +509,7 @@ def delete_me(request: Request, response: Response):
 
 
 class Watch(BaseModel):
-    url: str = Field(pattern="^https?://", max_length=1000)
+    url: str = Field(pattern="^https://", max_length=1000)
     title: str = Field(max_length=300)
     store: str = Field("", max_length=100)
     image: str = Field("", max_length=1000)
@@ -444,8 +523,14 @@ def watches(request: Request):
 
 
 @app.post("/api/watches")
-def add_watch(w: Watch, request: Request):
+async def add_watch(w: Watch, request: Request):
     """"تابع السعر" on a result: we tell the shopper when this product's price drops."""
+    if not await _public_host(urlparse(w.url).hostname or ""):  # we open this page later: never our own network
+        raise HTTPException(400, "not a store page")
+    return await asyncio.to_thread(_add_watch, w, request)
+
+
+def _add_watch(w: Watch, request: Request) -> dict:
     user = _need_user(request)
     try:
         mk = user["market"] if user["market"] in market.live() else market.current().code  # where it was found
@@ -513,6 +598,8 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100)):
     sem = asyncio.Semaphore(4)
     async with httpx.AsyncClient() as client:
         async def one(url: str):
+            if not url.startswith("https://") or not await _public_host(urlparse(url).hostname or ""):
+                return url, None, "address not allowed"
             try:
                 products, _ = await asyncio.wait_for(agent._fetch_page(client, sem, url), timeout=25)
             except Exception as e:  # a slow / blocked page: tried again next time

@@ -152,12 +152,40 @@ def test_llm_falls_back_to_groq_with_listed_model(monkeypatch):
     assert used == ["new-llama-x"]
 
 
-def test_image_proxy_rejects_other_hosts():
+def test_image_proxy_only_public_addresses_and_shrinks_big_photos(monkeypatch):
+    import io
     from fastapi.testclient import TestClient
-    from app.main import app
-    c = TestClient(app)
-    assert c.get("/img", params={"u": "https://evil.example.com/x.jpg"}).status_code == 400
-    assert c.get("/img", params={"u": "http://media.btech.com/x.jpg"}).status_code == 400
+    from PIL import Image
+    from app import main
+    ips = {"cdn.shop.com": "93.184.216.34", "inside.shop.com": "10.0.0.7", "metadata.local": "169.254.169.254"}
+
+    async def fake_resolve(host):
+        return [(0, 0, 0, "", (ips.get(host, "127.0.0.1"), 443))]
+
+    big = io.BytesIO()
+    Image.new("RGB", (3000, 2000), "red").save(big, "JPEG")
+    calls = []
+
+    async def fake_get(url, headers=None):
+        calls.append(url)
+        if url.endswith("/moved.jpg"):
+            return httpx.Response(302, headers={"location": "https://metadata.local/x"}, request=httpx.Request("GET", url))
+        return httpx.Response(200, content=big.getvalue(), headers={"content-type": "image/jpeg"},
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(main, "_resolve", fake_resolve)
+    monkeypatch.setattr(main._img_client, "get", fake_get)
+    main._thumbs.clear()
+    c = TestClient(main.app)
+    assert c.get("/img", params={"u": "https://inside.shop.com/x.jpg"}).status_code == 400   # private network
+    assert c.get("/img", params={"u": "http://cdn.shop.com/x.jpg"}).status_code == 400       # not https
+    assert c.get("/img", params={"u": "https://cdn.shop.com/moved.jpg"}).status_code == 400  # redirect inside
+    r = c.get("/img", params={"u": "https://cdn.shop.com/big.jpg"})
+    assert r.status_code == 200 and r.headers["content-type"] == "image/webp"
+    assert max(Image.open(io.BytesIO(r.content)).size) <= main.THUMB_PX
+    n = len(calls)
+    c.get("/img", params={"u": "https://cdn.shop.com/big.jpg"})
+    assert len(calls) == n  # the second time it's served from memory
 
 
 def test_agent_web_mode_finds_stores_itself(monkeypatch):
@@ -1308,3 +1336,22 @@ def test_feedback_box_is_saved_and_config_lists_markets():
     assert cfg["market"] == "EG" and {m["code"] for m in cfg["markets"]} == {"EG", "SA", "AE"}
     assert [m["code"] for m in cfg["markets"] if m["enabled"]] == ["EG"]
     assert c.get("/").status_code == 200 and c.get("/logo.svg").status_code == 200
+
+
+def test_one_shot_search_has_the_daily_limit_too_and_reports_are_capped(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+
+    async def fake_run(q, plan=None, budget_text=None):
+        return {"mode": "rules", "results": []}
+
+    monkeypatch.setattr(agent, "run", fake_run)
+    monkeypatch.setattr(main, "DAILY_LIMIT", 1)
+    monkeypatch.setitem(main.SPAM_LIMITS, "report", 2)
+    main._sent.clear()
+    c = TestClient(main.app)
+    ip = {"X-Forwarded-For": "5.5.5.5"}
+    assert c.get("/api/search", params={"q": "غسالة"}, headers=ip).status_code == 200
+    assert c.get("/api/search", params={"q": "تلاجة"}, headers=ip).status_code == 429
+    rep = {"reason": "other", "url": "https://s.com/x"}
+    assert [c.post("/api/report", json=rep, headers=ip).status_code for _ in range(3)] == [200, 200, 429]

@@ -27,3 +27,14 @@ def _debug_files_in_tmp(tmp_path, monkeypatch):
     from app import agent
     monkeypatch.setattr(agent, "DEBUG_DIR", tmp_path / "debug")
     monkeypatch.setattr(agent, "WEB_DEBUG", tmp_path / "debug" / "web")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dns(monkeypatch):
+    """Store addresses in tests are made up: treat every host as a public internet address (a test that checks
+    private addresses sets its own)."""
+    from app import main
+
+    async def public(host):
+        return [(0, 0, 0, "", ("93.184.216.34", 443))]
+    monkeypatch.setattr(main, "_resolve", public)

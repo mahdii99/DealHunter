@@ -301,7 +301,7 @@ async def send_email(client: httpx.AsyncClient, to: str, name: str, subject: str
     won't work there; an HTTP email API does."""
     if not email_enabled():
         return False
-    link = f'<p><a href="{url}">افتح صفحة المنتج</a></p>' if url else ""
+    link = f'<p><a href="{_esc(url)}">افتح صفحة المنتج</a></p>' if url.startswith(("https://", "http://")) else ""
     html = (f'<div dir="rtl" style="font-family:Tahoma,sans-serif"><p>أهلاً {_esc(name)}،</p>'
             f'<p>{_esc(text)}</p>{link}<p style="color:#888">DealHunter - تقدر تقفل إيميلات التنبيه من الإعدادات في الموقع.</p></div>')
     try:
