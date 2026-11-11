@@ -38,3 +38,11 @@ def _no_real_dns(monkeypatch):
     async def public(host):
         return [(0, 0, 0, "", ("93.184.216.34", 443))]
     monkeypatch.setattr(main, "_resolve", public)
+
+
+@pytest.fixture(autouse=True)
+def _no_result_page_check(monkeypatch):
+    """Opening every result's page again before showing it would make network calls in tests: off unless a test
+    checks that step itself."""
+    from app import agent
+    monkeypatch.setattr(agent, "VERIFY_PICKS", False)

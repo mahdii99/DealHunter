@@ -20,6 +20,8 @@ class Product:
     best_deal: bool = False
     unconfirmed: bool = False  # the judge couldn't confirm the exact variant/model from the listing
     in_stock: Optional[bool] = None  # False = the store says sold out; None = couldn't tell
+    verified: Optional[bool] = None  # True = its own page, opened just before showing it, says in stock at this
+    # price; False = that check couldn't confirm it; None = not checked
     condition: Optional[str] = None  # 'used' / 'refurbished' / 'open box' when the store data says so
     alternative: bool = False  # not an exact match, offered because nothing exact was found
     coupon_price: Optional[float] = None  # lower price after a store coupon applied at checkout

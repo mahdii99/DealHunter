@@ -1355,3 +1355,67 @@ def test_one_shot_search_has_the_daily_limit_too_and_reports_are_capped(monkeypa
     assert c.get("/api/search", params={"q": "تلاجة"}, headers=ip).status_code == 429
     rep = {"reason": "other", "url": "https://s.com/x"}
     assert [c.post("/api/report", json=rep, headers=ip).status_code for _ in range(3)] == [200, 200, 429]
+
+
+def _jsonld_page(name, price, availability):
+    return f"""<html><body><h1>{name}</h1><script type="application/ld+json">{{"@type": "Product", "name": "{name}",
+    "offers": {{"@type": "Offer", "price": "{price}", "priceCurrency": "EGP",
+    "availability": "https://schema.org/{availability}"}}}}</script></body></html>"""
+
+
+def test_results_are_checked_on_their_own_page_before_showing(monkeypatch):
+    """A listing can say "in stock" at an old price: each result's own page is opened just before showing it.
+    Sold out there = dropped; a new price there = the shown price; a page we can't open = shown, marked unchecked."""
+    from app import fetchers
+    from app.models import Product
+    pages = {"https://shop-a.com/p/olympic-hero-50": _jsonld_page("Olympic Hero 50L", 3849, "InStock"),
+             "https://shop-b.com/p/olympic-hero-50": _jsonld_page("Olympic Hero 50L", 3700, "OutOfStock")}
+
+    async def fake_fetch(client, sem, url):
+        if url not in pages:
+            raise httpx.ConnectError("blocked")
+        return agent._cheapest_variant(extract_products(pages[url], "x", url)), pages[url]
+
+    async def fake_read(client, urls, deadline=12):
+        return {u: "Olympic Hero 50L 3,999 EGP غير متوفر حاليا" for u in urls if "shop-c" in u}, {}
+
+    monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
+    monkeypatch.setattr(fetchers, "read_pages", fake_read)
+    picks = [Product("A", "Olympic Hero 50L", 3999, "https://shop-a.com/p/olympic-hero-50"),
+             Product("B", "Olympic Hero 50L", 3700, "https://shop-b.com/p/olympic-hero-50"),
+             Product("C", "Olympic Hero 50L", 3999, "https://shop-c.com/p/olympic-hero-50"),
+             Product("D", "Olympic Hero 50L", 4100, "https://shop-d.com/p/olympic-hero-50")]
+    kept, gone = asyncio.run(agent._verify_stock(picks))
+    assert gone == 2 and [p.store for p in kept] == ["A", "D"]
+    assert kept[0].price == 3849 and kept[0].verified is True and kept[0].in_stock is True
+    assert kept[1].verified is False  # couldn't open it: still shown, the page asks the shopper to check
+
+
+def test_store_the_shopper_names_is_searched_on_its_own(monkeypatch):
+    from app import websearch
+    searched = []
+
+    async def fake_search(client, query, max_results=8, exclude_domains=None, include_domains=None):
+        searched.append(tuple(include_domains or ()))
+        if include_domains == ["jumia.com.eg"]:
+            return [{"url": "https://www.jumia.com.eg/olympic-hero-50l-oye05061wn.html", "title": "", "snippet": ""}]
+        return [{"url": f"https://shop{len(searched)}.com/p/{i}", "title": "", "snippet": ""} for i in range(30)]
+
+    opened = []
+
+    async def fake_fetch(client, sem, url):
+        opened.append(url)
+        raise httpx.ConnectError("x")
+
+    async def no_read(client, urls, deadline=12):
+        return {}, {}
+
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
+    monkeypatch.setattr(agent.fetchers, "read_pages", no_read)
+    monkeypatch.setattr(agent, "_blocked_sites", lambda: asyncio.sleep(0, set()))
+    monkeypatch.setattr(agent, "_remember_sites", lambda *a: None)
+    assert agent._domains(["jumia.com.eg", "https://www.Noon.com/egypt-ar", "not a domain"]) == ["jumia.com.eg", "noon.com"]
+    asyncio.run(agent._web_find(["سخان اوليمبيك هيرو 50"], famous=["amazon.eg"], named=["jumia.com.eg"]))
+    assert ("jumia.com.eg",) in searched
+    assert opened[0] == "https://www.jumia.com.eg/olympic-hero-50l-oye05061wn.html"
