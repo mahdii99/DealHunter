@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -8,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -44,6 +46,28 @@ if DEMO:  # offline demo: stores read saved sample pages instead of the internet
 app = FastAPI(title="DealHunter")
 # Same request again within this time = answered from the price database (instant, saves the free quotas).
 CACHE_TTL = float(os.getenv("CACHE_HOURS", "6")) * 3600
+# New searches per visitor per day (each costs ~7 web searches and many LLM calls from the shared free quotas).
+# 0 = no limit (e.g. on your own PC). Searches answered from the cache don't count.
+DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "0"))
+LIMIT_TEXT = ("وصلت لحد البحث النهارده ({n} بحث). الموقع مجاني وبيشتغل على حصص محدودة، "
+              "فالحد بيرجع بكرة. تقدر لسه تسأل عن النتايج اللي ظهرتلك.")
+
+
+def _public_ip(text: str) -> bool:
+    try:
+        return ipaddress.ip_address(text).is_global
+    except ValueError:
+        return False
+
+
+def client_id(request: Request) -> str:
+    """Who is asking, for the daily limit and reports: a hash of the IP (the IP itself is never stored).
+    Behind hosting proxies the real IP is the last public one appended to X-Forwarded-For: entries further left
+    can be faked by the visitor, and the hosts' own internal hops are private addresses."""
+    forwarded = [x.strip() for x in request.headers.get("x-forwarded-for", "").split(",") if x.strip()]
+    public = [x for x in forwarded if _public_ip(x)]
+    ip = public[-1] if public else (request.client.host if request.client else "?")
+    return hashlib.sha256((os.getenv("CLIENT_SALT", "dealhunter") + ip).encode()).hexdigest()[:16]
 
 
 @app.get("/")
@@ -93,22 +117,23 @@ class ChatTurn(BaseModel):
 
 
 @app.post("/api/chat")
-async def chat(turn: ChatTurn):
+async def chat(turn: ChatTurn, request: Request):
     """A chat turn: the newest message is read together with the earlier ones, so a follow-up like
     'سامسونج بس' narrows the previous request instead of starting a new search."""
-    return await _chat_turn(turn)
+    return await _chat_turn(turn, client_id(request))
 
 
 @app.post("/api/chat/stream")
-async def chat_stream(turn: ChatTurn):
+async def chat_stream(turn: ChatTurn, request: Request):
     """Same as /api/chat, but sends progress lines while it works (NDJSON: one JSON object per line):
     {"type": "status", "text": ...} ... then {"type": "done", "data": <the /api/chat answer>}."""
     queue: asyncio.Queue = asyncio.Queue()
+    client = client_id(request)
 
     async def work():
         token = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
         try:
-            queue.put_nowait({"type": "done", "data": await _chat_turn(turn)})
+            queue.put_nowait({"type": "done", "data": await _chat_turn(turn, client)})
         except HTTPException as e:
             queue.put_nowait({"type": "error", "status": e.status_code})
         except Exception:  # the page shows a friendly error; the details are in the server log
@@ -132,7 +157,8 @@ async def chat_stream(turn: ChatTurn):
     return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache"})
 
 
-async def _chat_turn(turn: ChatTurn) -> dict:
+async def _chat_turn(turn: ChatTurn, client: str | None = None) -> dict:
+    """client = who is asking (None = no daily limit, e.g. scripts)."""
     messages = [m.model_dump() for m in turn.messages]
     said = " | ".join(m["text"] for m in messages if m["role"] == "user")
     newest = next((m["text"] for m in reversed(messages) if m["role"] == "user"), "").strip()
@@ -162,15 +188,40 @@ async def _chat_turn(turn: ChatTurn) -> dict:
         log.info("=" * 70 + "\n")
         return {"action": "answer", "request": turn.request, "results": [], "demo": DEMO,
                 "answer": "معلش، الموديلات المجانية مشغولة دلوقتي فمقدرتش أرد على سؤالك. ابعته تاني كمان دقيقة."}
+    request = plan["request"] if plan else " ".join(filter(None, [turn.request, newest]))  # no LLM: just append
+    if (client and DAILY_LIMIT and db.searches_today(client) >= DAILY_LIMIT
+            and not db.cached_search(db.cache_key(request, market.current().code), CACHE_TTL)):
+        log.info("daily limit reached for %s", client)
+        log.info("=" * 70 + "\n")
+        return {"action": "answer", "limit": True, "answer": LIMIT_TEXT.format(n=DAILY_LIMIT),
+                "request": turn.request, "results": [], "demo": DEMO}
     if plan and plan.get("understood"):
         agent._progress(plan["understood"])
-    request = plan["request"] if plan else " ".join(filter(None, [turn.request, newest]))  # no LLM: just append
     if failed:  # don't wait for the LLM a second time: simple rules for this turn
         payload = await agent.run_rules(request, note=f"الـ LLM مردش ({failed})، فاستخدمنا الفهم البسيط.")
         payload.update(query=request, count=len(payload["results"]), cached=False, demo=DEMO)
     else:
         payload = await _search(request, plan=plan, budget_text=said)
+        if client and not payload.get("cached"):
+            db.count_search(client)
     return {**payload, "action": "search"}
+
+
+class Report(BaseModel):
+    reason: str = Field(pattern="^(wrong_product|wrong_price|bad_store|sold_out|other)$")
+    request: str = Field("", max_length=600)
+    url: str = Field(max_length=1000)
+    store: str = Field("", max_length=100)
+    title: str = Field("", max_length=300)
+    price: float | None = None
+
+
+@app.post("/api/report")
+def report(r: Report, request: Request):
+    """The "this result is wrong" button: saved for review (python -m scripts.reports)."""
+    db.add_report(r.reason, r.request, r.url, r.store, r.title, r.price, client_id(request))
+    log.info("REPORT %s: %s @ %s (%s)", r.reason, r.title[:60], r.store, r.request[:60])
+    return {"ok": True}
 
 
 # Some stores block their images when shown on another site, so the page loads them through us.

@@ -40,6 +40,23 @@ CREATE TABLE IF NOT EXISTS blocked_sites (
     last_failed REAL NOT NULL,
     blocked INTEGER NOT NULL        -- 1 = skipped in new searches until unblocked (scripts/blocked_sites.py)
 );
+CREATE TABLE IF NOT EXISTS usage (
+    day TEXT NOT NULL,              -- YYYY-MM-DD (UTC)
+    client TEXT NOT NULL,           -- a hash of the visitor's IP, never the IP itself
+    searches INTEGER NOT NULL,
+    PRIMARY KEY (day, client)
+);
+CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY,
+    at REAL NOT NULL,
+    reason TEXT NOT NULL,           -- wrong_product / wrong_price / bad_store / sold_out / other
+    request TEXT NOT NULL,          -- what the shopper asked for
+    url TEXT NOT NULL,
+    store TEXT NOT NULL,
+    title TEXT NOT NULL,
+    price REAL,
+    client TEXT NOT NULL
+);
 """
 BLOCK_AFTER = 2  # failed searches in a row before a site is skipped (one failure can be a slow moment)
 _conn: sqlite3.Connection | None = None
@@ -156,3 +173,33 @@ def list_blocked() -> list[dict]:
 def unblock(domain: str) -> bool:
     with _LOCK, _db() as c:
         return c.execute("DELETE FROM blocked_sites WHERE domain = ?", (domain,)).rowcount > 0
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def searches_today(client: str) -> int:
+    with _LOCK:
+        row = _db().execute("SELECT searches FROM usage WHERE day = ? AND client = ?", (_today(), client)).fetchone()
+    return row[0] if row else 0
+
+
+def count_search(client: str) -> None:
+    with _LOCK, _db() as c:
+        c.execute("INSERT INTO usage (day, client, searches) VALUES (?, ?, 1) "
+                  "ON CONFLICT(day, client) DO UPDATE SET searches = searches + 1", (_today(), client))
+
+
+def add_report(reason: str, request: str, url: str, store: str, title: str, price: float | None, client: str) -> None:
+    """A shopper said a result is wrong: kept so we can see what to fix (scripts/reports.py lists them)."""
+    with _LOCK, _db() as c:
+        c.execute("INSERT INTO reports (at, reason, request, url, store, title, price, client) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  (time.time(), reason, request[:600], url[:1000], store[:100], title[:300], price, client))
+
+
+def list_reports(limit: int = 200) -> list[dict]:
+    with _LOCK:
+        rows = _db().execute("SELECT at, reason, request, store, price, title, url FROM reports "
+                             "ORDER BY at DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(zip(("at", "reason", "request", "store", "price", "title", "url"), r)) for r in rows]

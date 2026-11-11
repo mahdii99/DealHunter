@@ -25,7 +25,10 @@ pytest -q                           # الاختبارات
 من غير مفتاح Tavily بيرجع يدوّر في بي تك بس (احتياطي).
 
 ## نشر مجاني
-- **Hugging Face Spaces**: Space جديد من نوع Docker وارفع الملفات (البورت 7860 جاهز).
+- **Hugging Face Spaces** (مجاني من غير كارت): اعمل حساب، وخد توكن Write من huggingface.co/settings/tokens وحطه في `.env` باسم `HF_TOKEN`، وبعدين:
+  `pip install huggingface_hub` ثم `python -m scripts.deploy_hf`. السكربت بيعمل الـ Space وبيحط مفاتيحك كـ secrets مخفية وبيرفع الكود (من غير `.env` ولا الداتا). نفس الأمر بيحدّث الموقع بعد أي تعديل.
+- أونلاين كل زائر ليه `DAILY_LIMIT` بحث جديد في اليوم (5 افتراضيًا) عشان الحصص المجانية تكفي، والبحث المتكرر من الكاش مش بيتحسب.
+- زرار "النتيجة دي غلط؟" تحت كل نتيجة بيحفظ البلاغ، وتشوف البلاغات بـ `python -m scripts.reports`.
 - **Render**: Web Service من الريبو، Docker، الخطة Free.
 
 ## الملفات

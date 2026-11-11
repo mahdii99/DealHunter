@@ -1245,3 +1245,32 @@ def test_currency_block_needs_a_real_currency_and_spares_known_stores():
     agent._remember_sites(["https://www.samsung.com/in/x", "https://saudi-shop.com/p"], [],
                           {"samsung.com": "prices in INR", "saudi-shop.com": "prices in SAR"})
     assert "samsung.com" not in db.blocked_sites() and "saudi-shop.com" in db.blocked_sites()
+
+
+def test_daily_limit_per_visitor_and_wrong_result_reports(monkeypatch):
+    from app import db, main
+    runs = []
+
+    async def fake_run(q, plan=None, budget_text=None):
+        runs.append(q)
+        return {"mode": "rules", "results": [{"title": "t", "price": 10.0, "store": "s", "url": f"https://s.com/{q}"}]}
+
+    monkeypatch.setattr(llm, "available", lambda: False)
+    monkeypatch.setattr(agent, "run", fake_run)
+    monkeypatch.setattr(main, "DAILY_LIMIT", 1)
+    c = TestClient(main.app)
+    ask = lambda text, ip: c.post("/api/chat", json={"messages": [{"role": "user", "text": text}]},
+                                  headers={"X-Forwarded-For": ip}).json()
+    assert ask("سخان 50 لتر", "1.1.1.1")["action"] == "search"
+    blocked = ask("غسالة 8 كيلو", "1.1.1.1")
+    assert blocked["action"] == "answer" and blocked["limit"] and runs == ["سخان 50 لتر"]
+    assert ask("غسالة 8 كيلو", "2.2.2.2")["action"] == "search"  # another visitor has their own limit
+    # a faked left entry or the host's internal hops don't give a visitor a fresh limit
+    assert ask("غسالة 8 كيلو", "9.9.9.9, 1.1.1.1, 10.0.0.5")["action"] == "answer"
+    r = c.post("/api/report", json={"reason": "wrong_price", "request": "سخان", "url": "https://s.com/x",
+                                    "store": "s", "title": "t", "price": 10}, headers={"X-Forwarded-For": "1.1.1.1"})
+    assert r.json() == {"ok": True}
+    [rep] = db.list_reports()
+    assert rep["reason"] == "wrong_price" and rep["request"] == "سخان"
+    assert c.post("/api/report", json={"reason": "nonsense", "url": "u"}).status_code == 422
+    assert "1.1.1.1" not in str(db._db().execute("SELECT * FROM usage").fetchall())  # only a hash is stored
