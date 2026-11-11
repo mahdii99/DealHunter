@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -82,7 +82,10 @@ def current_user(request: Request) -> dict | None:
     async code."""
     if not accounts.enabled():
         return None
-    return accounts.get_user(accounts.read_session(request.cookies.get(accounts.COOKIE)))
+    try:
+        return accounts.get_user(accounts.read_session(request.cookies.get(accounts.COOKIE)))
+    except accounts.Unavailable:  # searching still works, as a visitor, while the accounts database is down
+        return None
 
 
 @app.get("/")
@@ -304,8 +307,14 @@ def price_history(url: str = Query(..., max_length=1000)):
 
 # ---------- accounts: Google sign-in, preferences, followed products, notifications ----------
 
+@app.exception_handler(accounts.Unavailable)
+def _accounts_down(request: Request, exc: accounts.Unavailable):
+    log.error("accounts request while the database is unreachable: %s", request.url.path)
+    return JSONResponse({"detail": "الحسابات مش متاحة دلوقتي، جرب كمان شوية."}, status_code=503)
+
+
 def _need_user(request: Request) -> dict:
-    user = current_user(request)
+    user = accounts.enabled() and accounts.get_user(accounts.read_session(request.cookies.get(accounts.COOKIE)))
     if not user:
         raise HTTPException(401, "sign in first")
     return user

@@ -176,3 +176,14 @@ def test_scheduled_check_finds_drop(monkeypatch):
     assert d == {"checked": 1, "prices": 1, "alerts": 1, "failed": {}}
     assert c.get("/api/watches").json()["watches"][0]["price"] == 850
     assert db.history(url)[-1]["price"] == 850
+
+
+def test_accounts_refuse_the_temporary_fallback_database(monkeypatch):
+    """DATABASE_URL set but Postgres down: db.py uses a local file for a while. Accounts must not be written
+    there (they'd be lost), so account requests fail and searching goes on as a visitor."""
+    c = _signed_in(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody@127.0.0.1:1/none")
+    monkeypatch.setattr(db._db, "_pg_down_until", time.time() + 60)
+    r = c.patch("/api/me", json={"market": "EG"})
+    assert r.status_code == 503 and "الحسابات" in r.json()["detail"]
+    assert c.get("/api/me").json()["user"] is None
