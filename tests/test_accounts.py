@@ -12,7 +12,6 @@ from app.models import Product
 
 @pytest.fixture(autouse=True)
 def _accounts_in_tmp(tmp_path, monkeypatch):
-    monkeypatch.setattr(accounts, "SQLITE_PATH", tmp_path / "accounts.db")
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "prices.db")
     for name in ("DATABASE_URL", "BREVO_API_KEY", "MAIL_FROM", "LIVE_MARKETS", "MARKET"):
         monkeypatch.delenv(name, raising=False)

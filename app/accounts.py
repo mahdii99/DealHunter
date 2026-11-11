@@ -1,9 +1,7 @@
 """Shopper accounts: Google sign-in, saved preferences and region, followed products, notifications.
 
-Where it's stored:
-  - DATABASE_URL set (a free Supabase Postgres): survives restarts and deploys. Needed on Render, whose free disk
-    is wiped on every restart.
-  - not set: a local SQLite file, data/accounts.db (your own PC, the tests).
+Stored with the prices (app/db.py): Postgres when DATABASE_URL is set (free Supabase, survives Render restarts),
+else the local SQLite file.
 
 Sign-in: the page shows Google's "Sign in with Google" button (GOOGLE_CLIENT_ID), Google gives it a signed ID token,
 we check that token with Google and keep the shopper signed in with a signed cookie (SESSION_SECRET). No passwords
@@ -18,16 +16,14 @@ import hmac
 import json
 import logging
 import os
-import sqlite3
-import threading
 import time
-from pathlib import Path
 
 import httpx
 
+from . import db
+
 log = logging.getLogger("uvicorn.error")
 
-SQLITE_PATH = Path(os.getenv("ACCOUNTS_DB", Path(__file__).resolve().parent.parent / "data" / "accounts.db"))
 COOKIE = "dh_session"
 SESSION_DAYS = 30
 MAX_WATCHES = 50          # followed products per shopper
@@ -37,105 +33,12 @@ PREFS = {
     "hide_unsure_shops": False,  # show only famous / trusted shops (trust 60+)
 }
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,                -- 'g:' + the Google account id (never changes, unlike the email)
-    email TEXT NOT NULL,
-    name TEXT NOT NULL,
-    picture TEXT NOT NULL,
-    market TEXT,                        -- EG / SA / AE, chosen at sign-up (NULL until chosen)
-    email_alerts INTEGER NOT NULL DEFAULT 1,
-    prefs TEXT NOT NULL DEFAULT '{{}}', -- JSON, see PREFS
-    created_at {FLOAT} NOT NULL,
-    last_login {FLOAT} NOT NULL
-);
-CREATE TABLE IF NOT EXISTS watches (
-    id {ID},
-    user_id TEXT NOT NULL,
-    url TEXT NOT NULL,                  -- the product page: one product at one store
-    title TEXT NOT NULL,
-    store TEXT NOT NULL,
-    image TEXT NOT NULL,
-    market TEXT NOT NULL,
-    first_price {FLOAT} NOT NULL,       -- when the shopper started following it
-    price {FLOAT} NOT NULL,             -- the last price we saw
-    target_price {FLOAT},               -- tell me only at or below this (NULL = any drop)
-    created_at {FLOAT} NOT NULL,
-    checked_at {FLOAT} NOT NULL,
-    UNIQUE (user_id, url)
-);
-CREATE INDEX IF NOT EXISTS watches_url ON watches (url);
-CREATE TABLE IF NOT EXISTS notifications (
-    id {ID},
-    user_id TEXT NOT NULL,
-    kind TEXT NOT NULL,                 -- price_drop / info
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    url TEXT NOT NULL,
-    created_at {FLOAT} NOT NULL,
-    seen INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, created_at);
-"""
-
-
-class _Store:
-    """The same few queries on SQLite or Postgres. Queries are written with ? placeholders."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._conn = None
-        self._key = None
-
-    def _connect(self):
-        url = os.getenv("DATABASE_URL", "")
-        key = url or str(SQLITE_PATH)
-        if self._conn is not None and self._key == key:
-            return self._conn
-        self.close()  # the database setting changed (tests): don't leave the old connection open
-        if url:
-            import psycopg  # only needed with Postgres
-            # prepare_threshold=None: Supabase's pooler can't keep prepared statements between connections
-            conn = psycopg.connect(url, autocommit=True, prepare_threshold=None, connect_timeout=10)
-            schema = _SCHEMA.format(ID="BIGSERIAL PRIMARY KEY", FLOAT="DOUBLE PRECISION")
-            for stmt in filter(str.strip, schema.split(";")):
-                conn.execute(stmt)
-        else:
-            SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(SQLITE_PATH, check_same_thread=False, isolation_level=None)
-            conn.executescript(_SCHEMA.format(ID="INTEGER PRIMARY KEY", FLOAT="REAL"))
-        self._conn, self._key, self.pg = conn, key, bool(url)
-        return conn
-
-    def run(self, sql: str, args: tuple = ()) -> list[tuple]:
-        with self._lock:
-            for attempt in (1, 2):
-                conn = self._connect()
-                try:
-                    cur = conn.execute(sql.replace("?", "%s") if self.pg else sql, args)
-                    return cur.fetchall() if cur.description else []
-                except sqlite3.Error:
-                    raise
-                except Exception as e:  # a Postgres connection dropped by the server: connect again once
-                    if attempt == 2 or not self.pg or "Operational" not in type(e).__name__:
-                        raise
-                    log.warning("accounts db: reconnecting after %s", type(e).__name__)
-                    self.close()
-        return []
-
-    def close(self):
-        if self._conn is not None:
-            try:
-                self._conn.close()
-            finally:
-                self._conn = None
-
-
-_db = _Store()
+# The tables (users, watches, notifications) live in the same database as the prices: see app/db.py.
+_db = db._db
 
 
 def close() -> None:
-    _db.close()
+    db.close()
 
 
 # ---------- sign-in ----------

@@ -112,7 +112,7 @@ don't count, and visitors are only stored as a salted hash of their IP.
    set `GOOGLE_CLIENT_ID`. Without it the site works as before, without accounts.
 2. **Database that survives restarts:** create a free [Supabase](https://supabase.com) project and set
    `DATABASE_URL` to its *Session pooler* connection string (the tables are created on first use). Without it
-   accounts live in `data/accounts.db`, which Render's free plan wipes on restart.
+   accounts live with the prices in `data/prices.db`, which Render's free plan wipes on restart.
 3. **Scheduled price checks:** set the same random `CRON_SECRET` on the server and as a GitHub repository secret,
    plus a `SITE_URL` secret; the workflow wakes the server every 6 hours.
 4. **Emails (optional):** a free [Brevo](https://www.brevo.com) key (`BREVO_API_KEY`, `MAIL_FROM`). Render's free
