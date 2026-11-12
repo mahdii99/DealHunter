@@ -90,9 +90,11 @@ _CALLS = {"tavily": _tavily, "exa": _exa, "firecrawl": _firecrawl, "brave": _bra
 
 
 async def search(client: httpx.AsyncClient, query: str, max_results: int = 8,
-                 exclude_domains: list[str] | None = None, include_domains: list[str] | None = None) -> list[dict]:
-    """Returns [{"url", "title", "snippet"}]. include_domains = only these sites; exclude_domains = never these."""
-    names = configured()
+                 exclude_domains: list[str] | None = None, include_domains: list[str] | None = None,
+                 only: list[str] | None = None) -> list[dict]:
+    """Returns [{"url", "title", "snippet"}]. include_domains = only these sites; exclude_domains = never these.
+    only = just these services (e.g. the ones that return page text)."""
+    names = [n for n in configured() if not only or n in only]
     if not names:
         raise SearchError("مفيش مفتاح بحث (TAVILY_API_KEY / EXA_API_KEY / FIRECRAWL_API_KEY) في .env")
     _turn[0] += 1  # take turns, so each free quota lasts longer

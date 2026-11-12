@@ -214,8 +214,8 @@ def test_scheduled_check_reads_pages_it_cant_open_through_the_search_service(mon
     async def blocked(client, sem, u):
         raise agent.RobotsDisallowed()
 
-    async def fake_search(client, query, max_results=8, include_domains=None, **kw):
-        assert query == "Puma Unisex Running Sneaker" and include_domains == ["amazon.eg"]
+    async def fake_search(client, query, max_results=8, include_domains=None, only=None, **kw):
+        assert query == "Puma Unisex Running Sneaker b0cjzy1ctp" and include_domains == ["amazon.eg"]
         return [{"url": "https://www.amazon.eg/dp/B0OTHER123", "content": "x" * 300},
                 {"url": "https://www.amazon.eg/Puma-Unisex-Running-Sneaker/dp/B0CJZY1CTP", "content": "Puma ... EGP2,385.00 " * 20}]
 
@@ -224,7 +224,7 @@ def test_scheduled_check_reads_pages_it_cant_open_through_the_search_service(mon
         return {"page": "shop", "currency": "EGP", "products": [
             {"title": "Puma Unisex Running Sneaker", "price": 2385, "old_price": 2739, "url": None, "in_stock": True}]}
     monkeypatch.setattr(agent, "_fetch_page", blocked)
-    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "configured", lambda: ["tavily"])
     monkeypatch.setattr(websearch, "search", fake_search)
     monkeypatch.setattr(llm, "available", lambda: True)
     monkeypatch.setattr(llm, "ask_json", fake_ask)
@@ -275,3 +275,29 @@ def test_only_the_newest_chats_are_kept(monkeypatch):
         accounts.save_chat("g:1", f"chat{i:08d}", f"t{i}", {})
         time.sleep(0.01)
     assert [x["title"] for x in accounts.list_chats("g:1")] == ["t4", "t3", "t2"]
+
+
+def test_followed_product_found_on_a_crawled_listing_page(monkeypatch):
+    from app import llm, websearch
+    url = "https://www.amazon.eg/-/en/Puma-Electron/dp/B0CJZY1CTP/ref=sr_1_46"
+
+    async def fake_search(client, query, max_results=8, include_domains=None, only=None, **kw):
+        return [{"url": "https://www.amazon.eg/dp/B0CJZY1CTP", "content": "", "snippet": "Puma sneaker"},
+                {"url": "https://www.amazon.eg/s?k=puma+sneaker", "content": "listing " * 200}]
+
+    async def fake_ask(prompt, **kw):
+        return {"page": "shop", "currency": "EGP", "products": [
+            {"title": "Other", "price": 999, "url": "/dp/B0OTHER999"},
+            {"title": "Puma Unisex Running Sneaker", "price": 2385, "url": "/-/en/Puma/dp/B0CJZY1CTP/ref=sr_1_3"}]}
+    monkeypatch.setattr(websearch, "configured", lambda: ["tavily"])
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    import asyncio
+    import httpx
+
+    async def go():
+        async with httpx.AsyncClient() as client:
+            return await agent.price_from_search(client, url, "Puma Unisex Running Sneaker")
+    p, why = asyncio.run(go())
+    assert why == "" and p.price == 2385 and p.url == url

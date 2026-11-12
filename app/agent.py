@@ -1064,23 +1064,61 @@ def _same_product_link(a: str, b: str) -> bool:
     return _page_id(a) == _page_id(b) or bool(_product_ids(a) & _product_ids(b))
 
 
-async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> Product | None:
+LISTING_READS = 2  # other pages of the store read while looking for a followed product
+WITH_PAGE_TEXT = ["exa", "tavily"]  # search services that return their copy of each page, not just a snippet
+
+
+async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> tuple[Product | None, str]:
     """A followed product whose page we may not open ourselves (robots.txt, bot wall, no price data in it): the
-    web search service's own fresh copy of that page, read by the LLM, the same way searches read such pages.
-    One search + one LLM read; None when the search doesn't return that page."""
-    if not (websearch.available() and llm.available() and title):
-        return None
-    hits = await websearch.search(client, title, max_results=5, include_domains=[trust.domain(url)])
-    hit = next((h for h in hits if _same_product_link(h["url"], url) and len(h.get("content") or "") >= 200), None)
-    if hit is None:
-        return None
-    products = await _llm_read_page(hit["url"], hit["content"], title)
-    same = [p for p in products if _same_product_link(p.url, url)] or (products if len(products) == 1 else [])
-    if not same:
-        return None
-    p = same[0]
-    p.url = url
-    return p
+    web search services' own copy of that page, read by the LLM, the same way searches read such pages.
+    Each service that returns page text is asked in turn (product number + title first, then the title alone)
+    until one has that page with a price; stores that keep their product pages from crawlers (Amazon) often show
+    the product on listing / search pages that are crawled, so up to LISTING_READS of those are read last.
+    At most 4 searches + 4 LLM reads for one product.
+    Returns (product, "") or (None, why)."""
+    services = [n for n in WITH_PAGE_TEXT if n in websearch.configured()]
+    if not (services and llm.available() and title):
+        return None, "no search service with page text / LLM key, or no title"
+    ids = sorted(_product_ids(url), key=len, reverse=True)[:1]
+    why: list[str] = []
+    listings: dict[str, str] = {}  # other pages of that store the searches returned, with their page text
+    for service in services:
+        for query in dict.fromkeys([" ".join([title] + ids), title]):
+            try:
+                hits = await websearch.search(client, query, max_results=6, include_domains=[trust.domain(url)],
+                                              only=[service])
+            except websearch.SearchError as e:
+                why.append(f"{service}: {str(e)[:60]}")
+                break
+            for h in hits:
+                if not _same_product_link(h["url"], url) and len(h.get("content") or "") >= MIN_CRAWLED_TEXT:
+                    listings.setdefault(h["url"], h["content"])
+            hit = next((h for h in hits if _same_product_link(h["url"], url)), None)
+            if hit is None:
+                why.append(f"{service}: not returned")
+                continue
+            text = hit.get("content") or hit.get("snippet") or ""
+            products = await _llm_read_page(hit["url"], text, title) if len(text) >= 40 else []
+            same = [p for p in products if _same_product_link(p.url, url)] or (products if len(products) == 1 else [])
+            if same:
+                p = same[0]
+                p.url = url
+                return p, ""
+            why.append(f"{service}: its copy has no price ({len(text)} chars)")
+            break  # this service has the page but not its price: ask the next one
+    # listing pages first (a search page shows many products, a product page mostly only its own)
+    pages = sorted(listings.items(), key=lambda x: bool(_product_ids(x[0])))[:LISTING_READS]
+    for page_url, text in pages:
+        try:
+            products = await _llm_read_page(page_url, text, title)
+        except (llm.LLMError, NotAStore):
+            continue
+        if p := next((p for p in products if _same_product_link(p.url, url)), None):
+            p.url = url
+            return p, ""
+    if pages:
+        why.append(f"not on {len(pages)} other pages of the store")
+    return None, "; ".join(why)[:300]
 
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")
