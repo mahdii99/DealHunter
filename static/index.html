@@ -578,7 +578,22 @@ let history = [], currentRequest = '';  // the chat so far + the standalone requ
 let markets = [{code: 'EG', name_ar: 'مصر', name_en: 'Egypt', currency_ar: 'ج.م', currency: 'EGP', enabled: true}], marketCode = 'EG';
 const cur = () => markets.find(m => m.code === marketCode) || markets[0];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const link = u => /^https?:\/\//i.test(u || '') ? esc(u) : '#';  // only web addresses become links (never javascript:)
+let affiliate = {};  // {store domain: {param: value}} from the server (AFFILIATE_TAGS): our code on store links
+function tagged(u) {
+  try {
+    const url = new URL(u), host = url.hostname.replace(/^www\./, '');
+    const d = Object.keys(affiliate).find(k => host === k || host.endsWith('.' + k));
+    if (d) for (const [k, v] of Object.entries(affiliate[d])) url.searchParams.set(k, v);
+    return url.href;
+  } catch (e) { return u; }
+}
+const link = u => /^https?:\/\//i.test(u || '') ? esc(tagged(u)) : '#';  // only web addresses become links (never javascript:)
+function beacon(data) {  // usage counting for the site owner (no cookies, nothing personal): never slows the page
+  try {
+    const body = new Blob([JSON.stringify(data)], {type: 'application/json'});
+    if (!navigator.sendBeacon || !navigator.sendBeacon('/api/event', body)) fetch('/api/event', {method: 'POST', body, keepalive: true}).catch(() => {});
+  } catch (e) {}
+}
 const fmt = n => lang === 'ar' ? new Intl.NumberFormat('ar-EG').format(n) + ' ' + cur().currency_ar
                                : cur().currency + ' ' + new Intl.NumberFormat('en-US').format(n);
 const pct = n => lang === 'ar' ? new Intl.NumberFormat('ar-EG').format(n) + '٪' : n + '%';
@@ -984,6 +999,11 @@ document.addEventListener('click', e => {
   }
   const w = el.closest('.wrap'); if (!w) return;
   const d = shown[+w.dataset.t], p = d.results[+w.dataset.i];
+  if (el.tagName === 'A') {  // the store link: counted, then the browser opens it as usual
+    const rank = [...w.parentNode.querySelectorAll('.wrap')].indexOf(w);
+    return beacon({kind: 'click', url: p.url, store: p.store || '', title: (p.title || '').slice(0, 300), price: p.price ?? null,
+                   request: (d.request || d.query || '').slice(0, 600), rank: rank >= 0 && rank <= 100 ? rank : null});
+  }
   if (el.classList.contains('save')) {
     saved = isSaved(p.url) ? saved.filter(s => s.url !== p.url)
                            : [{url: p.url, title: p.title, price: p.price, store: p.store, image: p.image || ''}, ...saved].slice(0, 30);
@@ -1130,6 +1150,7 @@ function drawGoogle() {  // Google's own button: dark in dark mode, only its rou
 (async function startAccounts() {
   try { cfg = await api('/api/config'); } catch (e) { return; }
   if (cfg.markets) { markets = cfg.markets; marketCode = cfg.market; drawRegion(); }
+  if (cfg.affiliate) affiliate = cfg.affiliate;
   if (!cfg.google_client_id) return;  // sign-in is off on this server
   signedIn(await api('/api/me').catch(() => ({user: null})));
   const s = document.createElement('script');
@@ -1144,6 +1165,11 @@ function drawGoogle() {  // Google's own button: dark in dark mode, only its rou
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { themeState(); drawGoogle(); });
 $('#year').textContent = new Date().getFullYear();
 restoreChat(); applyLang(); themeState();
+(function countVisit() {  // the site the visitor came from (its name only) and phone or computer
+  let source = '';
+  try { const r = new URL(document.referrer); if (r.hostname !== location.hostname) source = r.hostname; } catch (e) {}
+  beacon({kind: 'visit', source, mobile: matchMedia('(pointer: coarse)').matches});
+})();
 </script>
 </body>
 </html>

@@ -3,7 +3,8 @@
   - show a product's price history and the lowest price we've seen,
   - skip sites whose pages never open, count each visitor's searches, keep "this result is wrong" reports
     and the complaints & suggestions box,
-  - keep shopper accounts: Google sign-in, region, preferences, followed products, notifications (app/accounts.py).
+  - keep shopper accounts: Google sign-in, region, preferences, followed products, notifications (app/accounts.py),
+  - count how the site is used for the owner's /admin page: visits, chat turns, clicks on store links (events).
 
 Where it's stored:
   - DATABASE_URL set (a free Supabase Postgres): survives restarts and deploys. Needed on Render, whose free disk
@@ -120,7 +121,24 @@ CREATE TABLE IF NOT EXISTS chats (
     updated_at {FLOAT} NOT NULL,
     PRIMARY KEY (user_id, id)
 );
-CREATE INDEX IF NOT EXISTS chats_user ON chats (user_id, updated_at)
+CREATE INDEX IF NOT EXISTS chats_user ON chats (user_id, updated_at);
+-- site usage for the owner's /admin page (kept EVENTS_DAYS days)
+CREATE TABLE IF NOT EXISTS events (
+    id {ID},
+    at {FLOAT} NOT NULL,
+    kind TEXT NOT NULL,                 -- visit / turn (a chat message or search) / click (a store link opened)
+    client TEXT NOT NULL,               -- a hash of the visitor's IP, never the IP itself
+    member INTEGER NOT NULL,            -- 1 = signed in
+    detail TEXT NOT NULL,               -- visit: the site they came from, turn: their message, click: the page
+    request TEXT NOT NULL,              -- turn / click: the search request it was about
+    store TEXT NOT NULL,                -- click: the store
+    title TEXT NOT NULL,                -- click: the product
+    price {FLOAT},                      -- click: the price shown
+    action TEXT NOT NULL,               -- turn: search / ask / recommend / answer / limit, visit: mobile / desktop
+    results INTEGER,                    -- turn: results shown (search), click: its place in the list (0 = first)
+    cached INTEGER                      -- turn: 1 = answered from the price database
+);
+CREATE INDEX IF NOT EXISTS events_at ON events (kind, at)
 """
 PG_RETRY = 300  # seconds on the local file after Postgres couldn't be reached, before trying it again
 BLOCK_AFTER = 2  # failed searches in a row before a site is skipped (one failure can be a slow moment)
@@ -370,3 +388,87 @@ def list_reports(limit: int = 200) -> list[dict]:
     rows = _db.run("SELECT at, reason, request, store, price, title, url FROM reports ORDER BY at DESC LIMIT ?",
                    (limit,))
     return [dict(zip(("at", "reason", "request", "store", "price", "title", "url"), r)) for r in rows]
+
+
+EVENTS_DAYS = 180  # usage events older than this are deleted
+_EVENT_FIELDS = ("detail", "request", "store", "title", "price", "action", "results", "cached")
+_LIMITS = {"detail": 600, "request": 600, "store": 100, "title": 300, "action": 20}
+_pruned = [0.0]
+
+
+def add_event(kind: str, client: str, member: bool = False, **fields) -> None:
+    """One thing a visitor did (see the events table). Text is cut to its column's size; old events are deleted
+    about once an hour."""
+    now = time.time()
+    vals = []
+    for name in _EVENT_FIELDS:
+        v = fields.get(name)
+        if name in _LIMITS:
+            v = str(v or "")[:_LIMITS[name]]
+        elif name == "cached" and v is not None:
+            v = int(bool(v))
+        vals.append(v)
+    _db.run(f"INSERT INTO events (at, kind, client, member, {', '.join(_EVENT_FIELDS)}) "
+            f"VALUES (?, ?, ?, ?, {', '.join('?' * len(_EVENT_FIELDS))})", (now, kind, client, int(member), *vals))
+    if now - _pruned[0] > 3600:
+        _pruned[0] = now
+        _db.run("DELETE FROM events WHERE at < ?", (now - EVENTS_DAYS * 86400,))
+
+
+def _rows(sql: str, args: tuple, names: str) -> list[dict]:
+    return [dict(zip(names.split(), r)) for r in _db.run(sql, args)]
+
+
+def usage_stats(days: int, tz_minutes: int = 0, top: int = 25) -> dict:
+    """Everything the /admin page shows for the last `days` days. tz_minutes = the viewer's offset from UTC, so the
+    days in the chart start at their midnight (Cairo is +120 or +180)."""
+    now = time.time()
+    since, off = now - days * 86400, tz_minutes * 60
+    # whole days in the viewer's time: CAST(...)/86400 is integer division in both SQLite and Postgres
+    daily = _rows("SELECT CAST(at + ? AS BIGINT) / 86400 AS d, kind, COUNT(*), COUNT(DISTINCT client) FROM events "
+                  "WHERE at > ? GROUP BY d, kind ORDER BY d", (off, since), "day kind n people")
+    totals = _rows("SELECT kind, COUNT(*), COUNT(DISTINCT client), SUM(member) FROM events WHERE at > ? GROUP BY kind",
+                   (since,), "kind n people members")
+    turn = "FROM events WHERE kind = 'turn' AND at > ?"
+    actions = _rows(f"SELECT action, COUNT(*) {turn} GROUP BY action ORDER BY 2 DESC", (since,), "action n")
+    searches = _rows(f"SELECT LOWER(request), COUNT(*), COUNT(DISTINCT client), MAX(at), AVG(results), SUM(cached) "
+                     f"{turn} AND action = 'search' AND request <> '' GROUP BY LOWER(request) ORDER BY 2 DESC, 4 DESC "
+                     "LIMIT ?", (since, top), "request n people last avg_results cached")
+    empty = _rows(f"SELECT LOWER(request), COUNT(*), MAX(at) {turn} AND action = 'search' AND results = 0 "
+                  "GROUP BY LOWER(request) ORDER BY 2 DESC, 3 DESC LIMIT ?", (since, top), "request n last")
+    click = "FROM events WHERE kind = 'click' AND at > ?"
+    stores = _rows(f"SELECT store, COUNT(*), COUNT(DISTINCT client) {click} GROUP BY store ORDER BY 2 DESC LIMIT ?",
+                   (since, top), "store n people")
+    products = _rows(f"SELECT detail, MAX(title), MAX(store), MIN(price), COUNT(*), MAX(at) {click} "
+                     "GROUP BY detail ORDER BY 5 DESC, 6 DESC LIMIT ?", (since, top), "url title store price n last")
+    ranks = _rows(f"SELECT results, COUNT(*) {click} AND results IS NOT NULL GROUP BY results ORDER BY 1",
+                  (since,), "rank n")
+    sources = _rows("SELECT detail, COUNT(*), COUNT(DISTINCT client) FROM events WHERE kind = 'visit' AND at > ? "
+                    "GROUP BY detail ORDER BY 2 DESC LIMIT ?", (since, top), "source n people")
+    devices = _rows("SELECT action, COUNT(DISTINCT client) FROM events WHERE kind = 'visit' AND at > ? "
+                    "GROUP BY action", (since,), "device people")
+    recent = _rows("SELECT at, kind, client, member, detail, request, store, title, price, action, results, cached "
+                   "FROM events WHERE kind <> 'visit' AND at > ? ORDER BY at DESC LIMIT 80", (since,),
+                   "at kind client member detail request store title price action results cached")
+    for r in recent:
+        r["client"] = r["client"][:6]  # enough to tell visitors apart on the page
+    accounts = {
+        "users": _db.run("SELECT COUNT(*) FROM users")[0][0],
+        "new_users": _db.run("SELECT COUNT(*) FROM users WHERE created_at > ?", (since,))[0][0],
+        "active_users": _db.run("SELECT COUNT(*) FROM users WHERE last_login > ?", (since,))[0][0],
+        "watches": _db.run("SELECT COUNT(*) FROM watches")[0][0],
+        "alerts": _db.run("SELECT COUNT(*) FROM notifications WHERE kind = 'price_drop' AND created_at > ?",
+                          (since,))[0][0],
+        "saved_chats": _db.run("SELECT COUNT(*) FROM chats")[0][0],
+    }
+    feedback = _rows("SELECT at, kind, message, contact FROM feedback WHERE at > ? ORDER BY at DESC LIMIT 20",
+                     (since,), "at kind message contact")
+    reports = _rows("SELECT at, reason, request, store, title, price, url FROM reports WHERE at > ? "
+                    "ORDER BY at DESC LIMIT 20", (since,), "at reason request store title price url")
+    for r in searches:  # Postgres gives AVG as a Decimal, which JSON can't carry
+        r["avg_results"] = None if r["avg_results"] is None else round(float(r["avg_results"]), 1)
+    return {"days": days, "now": now, "tz_minutes": tz_minutes, "daily": daily, "totals": totals,
+            "actions": actions, "searches": searches, "empty_searches": empty, "stores": stores,
+            "products": products, "ranks": ranks, "sources": sources, "devices": devices, "recent": recent,
+            "accounts": accounts, "feedback": feedback, "reports": reports,
+            "blocked_sites": _db.run("SELECT COUNT(*) FROM blocked_sites WHERE blocked = 1")[0][0]}

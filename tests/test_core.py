@@ -27,7 +27,7 @@ def _llm_state_in_tmp(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)  # .env may point at the real database
     if pg := os.getenv("TEST_DATABASE_URL"):  # also run against a real Postgres (an empty test database!)
         monkeypatch.setenv("DATABASE_URL", pg)
-        for table in ("searches", "prices", "blocked_sites", "usage", "reports", "feedback"):
+        for table in ("searches", "prices", "blocked_sites", "usage", "reports", "feedback", "events"):
             db._db.run(f"DROP TABLE IF EXISTS {table}")
         db.close()
     yield
