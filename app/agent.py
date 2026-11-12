@@ -947,30 +947,42 @@ def _same_product_link(a: str, b: str) -> bool:
     return _page_id(a) == _page_id(b) or bool(_product_ids(a) & _product_ids(b))
 
 
+WITH_PAGE_TEXT = ["exa", "tavily"]  # search services that return their copy of each page, not just a snippet
+
+
 async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> tuple[Product | None, str]:
     """A followed product whose page we may not open ourselves (robots.txt, bot wall, no price data in it): the
-    web search service's own copy of that page, read by the LLM, the same way searches read such pages.
-    Up to 2 searches (with the product number first, then the title alone) + 1 LLM read.
-    Returns (product, "") or (None, why: what the search returned instead)."""
-    if not (websearch.available() and llm.available() and title):
-        return None, "no search/LLM key or title"
+    web search services' own copy of that page, read by the LLM, the same way searches read such pages.
+    Each service that returns page text is asked in turn (product number + title first, then the title alone)
+    until one has that page with a price: at most 4 searches + 2 LLM reads for one product.
+    Returns (product, "") or (None, why)."""
+    services = [n for n in WITH_PAGE_TEXT if n in websearch.configured()]
+    if not (services and llm.available() and title):
+        return None, "no search service with page text / LLM key, or no title"
     ids = sorted(_product_ids(url), key=len, reverse=True)[:1]
-    seen: list[str] = []
-    for query in dict.fromkeys([" ".join([title] + ids), title]):
-        hits = await websearch.search(client, query, max_results=6, include_domains=[trust.domain(url)])
-        seen += [_slug(h["url"])[:40] or h["url"][-40:] for h in hits]
-        for h in hits:
-            text = h.get("content") or h.get("snippet") or ""
-            if not _same_product_link(h["url"], url) or len(text) < 40:
+    why: list[str] = []
+    for service in services:
+        for query in dict.fromkeys([" ".join([title] + ids), title]):
+            try:
+                hits = await websearch.search(client, query, max_results=6, include_domains=[trust.domain(url)],
+                                              only=[service])
+            except websearch.SearchError as e:
+                why.append(f"{service}: {str(e)[:60]}")
+                break
+            hit = next((h for h in hits if _same_product_link(h["url"], url)), None)
+            if hit is None:
+                why.append(f"{service}: not returned")
                 continue
-            products = await _llm_read_page(h["url"], text, title)
+            text = hit.get("content") or hit.get("snippet") or ""
+            products = await _llm_read_page(hit["url"], text, title) if len(text) >= 40 else []
             same = [p for p in products if _same_product_link(p.url, url)] or (products if len(products) == 1 else [])
             if same:
                 p = same[0]
                 p.url = url
                 return p, ""
-            return None, f"its search copy has no price ({len(text)} chars)"
-    return None, "search didn't return it: " + ", ".join(dict.fromkeys(seen))[:300]
+            why.append(f"{service}: its copy has no price ({len(text)} chars)")
+            break  # this service has the page but not its price: ask the next one
+    return None, "; ".join(why)[:300]
 
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")
