@@ -614,6 +614,7 @@ async def _alert_followers(results: list[dict]) -> list[dict]:
     return made
 
 
+SEARCH_RECHECKS = 10  # followed pages per re-check read through the search service (each = 1 search + 1 LLM read)
 CHECK_HOURS = float(os.getenv("WATCH_CHECK_HOURS", "6"))  # how often each followed product page is re-checked
 
 
@@ -646,6 +647,18 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100)):
             p = same[0] if same else products[0] if len(products) == 1 else None
             return url, p, None if p else "no price on page"
         done = await asyncio.gather(*(one(u) for u in urls))
+        # pages we couldn't open or read: the search service's copy of them (robots.txt / bot walls, e.g. Amazon)
+        tries = [i for i, (url, p, err) in enumerate(done) if not p and err != "address not allowed"][:SEARCH_RECHECKS]
+
+        async def by_search(i):
+            url, _, err = done[i]
+            try:
+                p = await agent.price_from_search(client, url, await asyncio.to_thread(accounts.watch_title, url))
+            except Exception as e:
+                return url, None, f"{err} / search: {type(e).__name__}"
+            return url, p, None if p else f"{err} / not found by search"
+        for i, res in zip(tries, await asyncio.gather(*(by_search(i) for i in tries))):
+            done[i] = res
     seen = [{"url": url, "price": p.price, "title": p.title, "store": p.store, "in_stock": p.in_stock,
              "old_price": p.old_price} for url, p, _ in done if p]
     for url, p, err in done:

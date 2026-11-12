@@ -200,3 +200,42 @@ def test_logo_files():
     for path in ("/logo-120.png", "/logo-512.png", "/favicon.ico"):
         r = c.get(path)
         assert r.status_code == 200 and r.content[:4] == b"\x89PNG"
+
+
+def test_scheduled_check_reads_pages_it_cant_open_through_the_search_service(monkeypatch):
+    """Amazon's robots.txt keeps our own requests off its product pages: the price comes from the search
+    service's copy of that page instead (the same product, whatever the link's language part or tracking)."""
+    from app import llm, websearch
+    c = _signed_in(monkeypatch)
+    url = "https://www.amazon.eg/-/en/Puma-Electron-Running-Unisex-Silver/dp/B0CJZY1CTP/ref=sr_1_46"
+    c.post("/api/watches", json={"url": url, "title": "Puma Unisex Running Sneaker", "store": "Amazon.eg", "price": 2739})
+    monkeypatch.setattr(main, "CHECK_HOURS", 0)
+
+    async def blocked(client, sem, u):
+        raise agent.RobotsDisallowed()
+
+    async def fake_search(client, query, max_results=8, include_domains=None, **kw):
+        assert query == "Puma Unisex Running Sneaker" and include_domains == ["amazon.eg"]
+        return [{"url": "https://www.amazon.eg/dp/B0OTHER123", "content": "x" * 300},
+                {"url": "https://www.amazon.eg/Puma-Unisex-Running-Sneaker/dp/B0CJZY1CTP", "content": "Puma ... EGP2,385.00 " * 20}]
+
+    async def fake_ask(prompt, **kw):
+        assert "EGP2,385.00" in prompt
+        return {"page": "shop", "currency": "EGP", "products": [
+            {"title": "Puma Unisex Running Sneaker", "price": 2385, "old_price": 2739, "url": None, "in_stock": True}]}
+    monkeypatch.setattr(agent, "_fetch_page", blocked)
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    d = c.post("/api/cron/check-watches", headers={"X-Cron-Secret": "cron-secret"}).json()
+    assert d == {"checked": 1, "prices": 1, "alerts": 1, "failed": {}}
+    assert c.get("/api/watches").json()["watches"][0]["price"] == 2385
+    assert "2,385" in c.get("/api/notifications").json()["notifications"][0]["body"]
+
+
+def test_product_links_match_by_their_product_number():
+    assert agent._same_product_link("https://www.amazon.eg/-/en/Puma-SMASH/dp/B09YXNHF8N/ref=sr_1_33",
+                                    "https://www.amazon.eg/dp/B09YXNHF8N")
+    assert not agent._same_product_link("https://www.amazon.eg/dp/B09YXNHF8N", "https://www.amazon.eg/dp/B0CJZY1CTP")
+    assert not agent._same_product_link("https://www.amazon.eg/dp/B09YXNHF8N", "https://noon.com/dp/B09YXNHF8N")
