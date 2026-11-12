@@ -931,6 +931,19 @@ VERIFY_DEADLINE = 7    # opening the result pages ourselves
 VERIFY_READER_DEADLINE = 6  # pages we couldn't open, through the reader service
 
 
+_ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")
+
+
+def _price_moved(html: str, before: float, now: float) -> bool:
+    """Take the product page's price over the one we had only when the shopper can see it on the page and can't
+    see the old one: a page's data can hold another product's or another option's price (related items, the
+    cheapest size), and the price we had may be the right one."""
+    if not before / 2 <= now <= before * 2:
+        return False
+    seen = extract_mod._visible_numbers(html.translate(_ARABIC_DIGITS))
+    return now in seen and before not in seen
+
+
 async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
     """Before results are shown, open each one's own product page: drop it when the store now says sold out,
     take the page's current price when it changed, and mark it `verified` when the page confirmed it.
@@ -953,16 +966,19 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
                 continue
             products, html = res
             pid = _page_id(p.url)
-            same = [q for q in products if _page_id(q.url) == pid] or (products if len(products) == 1 else [])
+            by_link = [q for q in products if _page_id(q.url) == pid]
+            same = by_link or (products if len(products) == 1 else [])
             if same:
                 q = min(same, key=_paid)
                 if q.in_stock is False:
                     sold.add(id(p))
                     continue
-                if abs(q.price - p.price) >= 1 and p.price / 2 <= q.price <= p.price * 2:
+                if by_link and abs(q.price - p.price) >= 1 and _price_moved(html, p.price, q.price):
                     log.info("agent: %s price now %g (was %g)", p.store, q.price, p.price)
                     p.price, p.old_price, p.coupon_price = q.price, q.old_price, q.coupon_price
                     p.discount_pct = _discount(p)
+                elif abs(q.price - p.price) >= 1:
+                    log.info("agent: %s page data says %g, page shows %g: kept", p.store, q.price, p.price)
                 p.in_stock = True if q.in_stock is None else q.in_stock
                 p.verified = True
                 continue

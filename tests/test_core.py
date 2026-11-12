@@ -1368,7 +1368,11 @@ def test_results_are_checked_on_their_own_page_before_showing(monkeypatch):
     Sold out there = dropped; a new price there = the shown price; a page we can't open = shown, marked unchecked."""
     from app import fetchers
     from app.models import Product
-    pages = {"https://shop-a.com/p/olympic-hero-50": _jsonld_page("Olympic Hero 50L", 3849, "InStock"),
+    pages = {"https://shop-a.com/p/olympic-hero-50": _jsonld_page("Olympic Hero 50L", 3849, "InStock")
+             .replace("</h1>", "</h1><p>٣٬٨٤٩ جنيه</p>"),
+             # the page's data says 3599 (another option), but the page shows the price we had: keep 4699
+             "https://shop-e.com/p/olympic-hero-50": _jsonld_page("Olympic Hero 50L", 3599, "InStock")
+             .replace("</h1>", "</h1><p>4,699 EGP</p><p>هيرو 3,599</p>"),
              "https://shop-b.com/p/olympic-hero-50": _jsonld_page("Olympic Hero 50L", 3700, "OutOfStock")}
 
     async def fake_fetch(client, sem, url):
@@ -1384,9 +1388,11 @@ def test_results_are_checked_on_their_own_page_before_showing(monkeypatch):
     picks = [Product("A", "Olympic Hero 50L", 3999, "https://shop-a.com/p/olympic-hero-50"),
              Product("B", "Olympic Hero 50L", 3700, "https://shop-b.com/p/olympic-hero-50"),
              Product("C", "Olympic Hero 50L", 3999, "https://shop-c.com/p/olympic-hero-50"),
-             Product("D", "Olympic Hero 50L", 4100, "https://shop-d.com/p/olympic-hero-50")]
+             Product("D", "Olympic Hero 50L", 4100, "https://shop-d.com/p/olympic-hero-50"),
+             Product("E", "Olympic Hero 50L", 4699, "https://shop-e.com/p/olympic-hero-50")]
     kept, gone = asyncio.run(agent._verify_stock(picks))
-    assert gone == 2 and [p.store for p in kept] == ["A", "D"]
+    assert gone == 2 and [p.store for p in kept] == ["A", "D", "E"]
+    assert kept[2].price == 4699 and kept[2].verified is True
     assert kept[0].price == 3849 and kept[0].verified is True and kept[0].in_stock is True
     assert kept[1].verified is False  # couldn't open it: still shown, the page asks the shopper to check
 
