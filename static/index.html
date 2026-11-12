@@ -920,6 +920,15 @@ function drawGoogle() {  // Google's own button: dark in dark mode, only its rou
   google.accounts.id.renderButton(gbtn, small ? {type: 'icon', shape: 'circle', size: 'large', theme}
                                               : {type: 'standard', shape: 'pill', size: 'large', text: 'signin_with', locale: lang, theme});
 }
+(async function trendingIdeas() {  // the examples under the search box: what's trending now (server makes them twice a day)
+  try {
+    const d = await api('/api/suggestions');
+    if (!d.ar || d.ar.length < 3) return;
+    T.ar.sugs = d.ar;
+    if (d.en && d.en.length === d.ar.length) T.en.sugs = d.en;
+    $('#sugs').innerHTML = t('sugs').map(s => `<button class="sug" type="button">${esc(s)}</button>`).join('');
+  } catch (e) { /* keep the built-in examples */ }
+})();
 (async function startAccounts() {
   try { cfg = await api('/api/config'); } catch (e) { return; }
   if (cfg.markets) { markets = cfg.markets; marketCode = cfg.market; drawRegion(); }

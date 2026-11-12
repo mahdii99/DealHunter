@@ -1419,3 +1419,45 @@ def test_store_the_shopper_names_is_searched_on_its_own(monkeypatch):
     asyncio.run(agent._web_find(["سخان اوليمبيك هيرو 50"], famous=["amazon.eg"], named=["jumia.com.eg"]))
     assert ("jumia.com.eg",) in searched
     assert opened[0] == "https://www.jumia.com.eg/olympic-hero-50l-oye05061wn.html"
+
+
+def test_search_box_ideas_follow_what_is_searched_and_trending(monkeypatch):
+    """The examples under the search box come from the site's recent searches + the web's trends (one LLM call,
+    kept for 12 hours); with no LLM or a bad answer the page keeps its built-in ones."""
+    from app import db, main, trending, websearch
+    monkeypatch.setattr(main, "DEMO", False)
+    monkeypatch.setattr(trending, "_memory", {})
+    db.save_search(db.cache_key("سخان كهربا 50 لتر", "EG"), "EG", {"results": []})
+    db.save_search(db.cache_key("ايفون 15", "EG"), "EG", {"results": []})
+    prompts = []
+
+    async def fake_ask(prompt, **kw):
+        prompts.append(prompt)
+        return {"ar": ["عروض الجمعة البيضاء على الموبايلات", "سخان ٥٠ لتر رخيص", "x" * 80, "دفاية كهربا للشتا"],
+                "en": ["Black Friday phone deals", "Cheap 50L water heater", "x", "Electric heater for winter"]}
+
+    async def fake_search(client, query, max_results=8, **kw):
+        return [{"url": "https://news.example/x", "title": "الأكثر مبيعا: دفايات", "snippet": "الشتا"}]
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "search", fake_search)
+    assert db.recent_requests("EG") == ["ايفون 15", "سخان كهربا 50 لتر"]
+    with TestClient(main.app) as c:
+        d = c.get("/api/suggestions").json()
+        assert d["ar"] == ["عروض الجمعة البيضاء على الموبايلات", "سخان ٥٠ لتر رخيص", "دفاية كهربا للشتا"]
+        assert d["en"] == ["Black Friday phone deals", "Cheap 50L water heater", "Electric heater for winter"]
+        assert "ايفون 15" in prompts[0] and "الأكثر مبيعا: دفايات" in prompts[0]
+        assert c.get("/api/suggestions").json() == d and len(prompts) == 1  # kept, not made again
+    assert db.cache_key(db.TRENDING_KEY, "EG").removeprefix("EG:") not in db.recent_requests("EG")
+    monkeypatch.setattr(trending, "_memory", {})  # after a restart: read back from the database
+    monkeypatch.setattr(llm, "available", lambda: False)
+    assert asyncio.run(trending.suggestions())["ar"][0] == "عروض الجمعة البيضاء على الموبايلات"
+
+
+def test_search_box_ideas_drop_english_when_it_does_not_line_up():
+    from app import trending
+    assert trending._pairs(["هدية لأمي", "سماعة"], ["Gift for mom"]) == (["هدية لأمي", "سماعة"], [])
+    assert trending._pairs(["هدية لأمي", "سماعة"], ["Gift for mom", ""]) == (["هدية لأمي", "سماعة"], [])
+    assert trending._pairs("x", None) == ([], [])

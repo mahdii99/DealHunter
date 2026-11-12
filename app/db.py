@@ -217,6 +217,17 @@ def cached_search(key: str, max_age: float) -> dict | None:
     return None
 
 
+TRENDING_KEY = "__trending__"  # the request ideas under the search box are kept in `searches` under this request
+
+
+def recent_requests(market: str, days: int = 14, limit: int = 80) -> list[str]:
+    """What shoppers searched lately (one row per distinct request), newest first."""
+    rows = _db.run("SELECT key FROM searches WHERE market = ? AND saved_at > ? ORDER BY saved_at DESC LIMIT ?",
+                   (market, time.time() - days * 86400, limit + 1))
+    prefix = f"{market}:"
+    return [k.removeprefix(prefix) for (k,) in rows if k != cache_key(TRENDING_KEY, market)][:limit]
+
+
 def save_search(key: str, market: str, payload: dict) -> None:
     _db.run("INSERT INTO searches (key, market, saved_at, payload) VALUES (?, ?, ?, ?) ON CONFLICT (key) "
             "DO UPDATE SET market = excluded.market, saved_at = excluded.saved_at, payload = excluded.payload",
