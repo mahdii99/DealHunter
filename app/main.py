@@ -31,7 +31,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, agent, db, market  # noqa: E402  (after .env is loaded)
+from . import accounts, agent, db, market, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -427,6 +427,14 @@ def _need_user(request: Request) -> dict:
     if not user:
         raise HTTPException(401, "sign in first")
     return user
+
+
+@app.get("/api/suggestions")
+async def suggestions():
+    """Request ideas for the empty page, made from what's trending now ({} = the page keeps its own examples)."""
+    if DEMO:
+        return {}
+    return await trending.suggestions()
 
 
 @app.get("/api/config")
