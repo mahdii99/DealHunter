@@ -1474,3 +1474,22 @@ def test_search_engines_can_find_and_verify_the_site(monkeypatch):
         assert c.get("/google1a2b3c.html").text == "google-site-verification: google1a2b3c.html"
         assert c.get("/googlezzz.html").status_code == 404
         assert "Easy Found" in c.get("/").text
+
+
+def test_more_stores_reach_the_judge_and_deals_come_first():
+    from app.models import Product
+
+    def P(store, price, old=None):
+        p = Product(store, f"{store} {price}", price, f"https://{store}.com/p/{price}", old_price=old)
+        p.discount_pct = agent._discount(p)
+        return p
+    big = [P("big", 100 + i) for i in range(60)]  # one store's long listing page, all cheaper
+    others = [P("small", 300), P("mid", 400), P("mid", 900, old=1200)]
+    pool = agent._candidates(big + others)
+    assert len(pool) == agent.MAX_CANDIDATES and {"small", "mid"} <= {p.store for p in pool}
+    assert any(p.price == 900 for p in pool)  # discounted: always gets a place
+    assert agent._candidates([P("only", 100 + i) for i in range(10)])[-1].price == 109  # one store: all of it
+    shown = agent._show_order([P("a", 100), P("a", 101), P("a", 102), P("a", 103), P("b", 106), P("c", 108, old=150)])
+    assert shown[0].price == 100  # the cheapest stays first
+    assert shown[1].store == "c"  # a discount comes before slightly cheaper offers
+    assert [p.store for p in shown[2:5]] != ["a", "a", "a"]  # another store breaks a run of one store's offers
