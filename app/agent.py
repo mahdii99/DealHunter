@@ -282,52 +282,104 @@ Web search results from Egyptian online stores (product | title | snippet | url)
 
 For each suggested product, find its current price for a NEW, genuine unit of THAT exact model (not a case, not a
 different generation, not a monthly installment) in these results. Use only prices written in the results; null if
-none is shown. keep = false only when the price you found is clearly outside the shopper's budget.
-Reply JSON: {{"prices": [{{"i": <number of the product>, "price": number or null, "store": "store name or null",
-"keep": true|false}}]}}"""
+none is shown.
+Reply JSON: {{"prices": [{{"i": <number of the product>, "price": number or null, "store": "store name or null"}}]}}"""
 RECS_PRICE_RESULTS = 5  # search results per suggested product
+RECS_MAX_SEARCHES = 4   # web searches per recommendation at most: the rest use what we know, or show no price
+RECS_PRICE_TTL = 24 * 3600  # a suggested product's price found today is reused for this long (no new search)
+RECS_KNOWN_DAYS = 3     # prices from our own past searches younger than this count as known
+_MODEL_WORD = re.compile(r"[A-Za-z]*\d[A-Za-z\d-]*")
+
+
+def _model_word(name: str) -> str:
+    """The most specific word of a product name, the model number ('Anker Soundcore R50i NC' -> 'r50i'), to find it in
+    titles we saved. '' when the name has none (then only a web search can price it)."""
+    words = [w for w in _MODEL_WORD.findall(name) if len(w) >= 3 and not w.isdigit()]
+    return max(words, key=len).lower() if words else ""
+
+
+def _rec_key(name: str) -> str:
+    return "__recprice__:" + db.cache_key(name, market.current().code)
 
 
 async def price_recommendations(plan: dict, lo: float | None = None, hi: float | None = None) -> None:
-    """Today's price of each suggested product, from one web search each on the well-known stores: shown on the
-    card ("حوالي X في Amazon"), and a product that is clearly over the shopper's budget is taken out. The LLM's own
-    knowledge of prices is often old, so it never decides the price itself. Changes plan["recommendations"]."""
+    """Today's price of each suggested product, shown on the card ("حوالي X في Amazon"); a product that is clearly
+    over the shopper's budget is taken out. The LLM's own idea of prices is often old, so it never sets the price itself.
+    Free quotas are kept: a price found in the last day is reused, prices from our own recent searches are read before
+    any web search, and at most RECS_MAX_SEARCHES products get a web search (one each, on the well-known stores).
+    Changes plan["recommendations"]."""
     recs = plan.get("recommendations") or []
-    if not recs or not websearch.available():
+    if not recs:
         return
-    _progress("بشوف أسعارهم النهارده في المتاجر...")
-    sites = _famous_sites(plan)
-    async with httpx.AsyncClient(timeout=10) as client:
-        found = await asyncio.gather(*(websearch.search(client, f"{r['name']} سعر", max_results=RECS_PRICE_RESULTS,
-                                                        include_domains=sites) for r in recs), return_exceptions=True)
-    hits = [f"{i} | {str(h.get('title', ''))[:120]} | {str(h.get('snippet', ''))[:220]} | {h.get('url', '')[:120]}"
-            for i, res in enumerate(found) if not isinstance(res, BaseException) for h in res]
-    if not hits:
-        log.info("agent: no search results to price the suggestions")
-        return
-    budget = price_range_text(lo, hi) or (f"under {plan['max_price']:g}" if isinstance(plan.get("max_price"), (int, float))
-                                          else "not given")
-    try:
-        out = await llm.ask_json(RECS_PRICE_PROMPT.format(
-            request=plan.get("request", ""), budget=budget,
-            recs="\n".join(f"{i}. {r['name']}" for i, r in enumerate(recs)), hits="\n".join(hits)),
-            timeout=12, budget=15, prefer="strong", step="recs_price")
-    except llm.LLMError as e:
-        log.warning("agent: pricing the suggestions failed: %s", e)
-        return
-    by_i = {x["i"]: x for x in out.get("prices") or [] if isinstance(x, dict) and isinstance(x.get("i"), int)}
-    kept, dropped = [], []
+    mk = market.current().code
+    todo, hits, searched = [], [], 0
     for i, r in enumerate(recs):
-        x = by_i.get(i) or {}
-        if isinstance(x.get("price"), (int, float)) and x["price"] > 0:
-            r["price"] = float(x["price"])
-            r["store"] = str(x.get("store") or "")[:60] or None
-        (dropped if x.get("keep") is False and r.get("price") else kept).append(r)
+        if (hit := await asyncio.to_thread(_db_safe, db.cached_search, _rec_key(r["name"]), RECS_PRICE_TTL)) is not None:
+            r.update({k: hit.get(k) for k in ("price", "store") if hit.get(k)})
+            r["_known"] = True
+            continue
+        word = _model_word(r["name"])
+        known = await asyncio.to_thread(_db_safe, db.recent_prices_like, word, mk,
+                                        time.time() - RECS_KNOWN_DAYS * 86400) if word else None
+        if known:
+            hits += [f"{i} | {k['title'][:120]} | {k['price']:g} {market.current().currency} at {k['store']} "
+                     f"(seen in our searches) | {k['url'][:120]}" for k in known]
+        else:
+            todo.append(i)
+    sites = _famous_sites(plan)
+    ask = [i for i in todo][:RECS_MAX_SEARCHES] if websearch.available() else []
+    if ask:
+        _progress("بشوف أسعارهم النهارده في المتاجر...")
+        async with httpx.AsyncClient(timeout=10) as client:
+            found = await asyncio.gather(*(websearch.search(client, f"{recs[i]['name']} سعر",
+                                                            max_results=RECS_PRICE_RESULTS, include_domains=sites)
+                                           for i in ask), return_exceptions=True)
+        searched = len(ask)
+        hits += [f"{i} | {str(h.get('title', ''))[:120]} | {str(h.get('snippet', ''))[:220]} | {h.get('url', '')[:120]}"
+                 for i, res in zip(ask, found) if not isinstance(res, BaseException) for h in res]
+    if hits:
+        budget = price_range_text(lo, hi) or (f"under {plan['max_price']:g}"
+                                              if isinstance(plan.get("max_price"), (int, float)) else "not given")
+        try:
+            out = await llm.ask_json(RECS_PRICE_PROMPT.format(
+                request=plan.get("request", ""), budget=budget,
+                recs="\n".join(f"{i}. {r['name']}" for i, r in enumerate(recs)), hits="\n".join(hits)),
+                timeout=12, budget=15, prefer="strong", step="recs_price")
+        except llm.LLMError as e:
+            log.warning("agent: pricing the suggestions failed: %s", e)
+            out = {}
+        for x in out.get("prices") or []:
+            if isinstance(x, dict) and isinstance(x.get("i"), int) and 0 <= x["i"] < len(recs) \
+                    and isinstance(x.get("price"), (int, float)) and x["price"] > 0 and not recs[x["i"]].get("_known"):
+                r = recs[x["i"]]
+                r["price"], r["store"] = float(x["price"]), str(x.get("store") or "")[:60] or None
+                await asyncio.to_thread(_db_safe, db.save_search, _rec_key(r["name"]), mk,
+                                        {"price": r["price"], "store": r["store"]})
+    # over the budget = a price we found that is clearly outside the range (5% slack: prices move a little)
+    if not hi and isinstance(plan.get("max_price"), (int, float)):  # a budget the shopper said in words
+        hi = plan["max_price"]
+
+    def out_of(p: float) -> bool:
+        return bool((hi and p > hi * 1.05) or (lo and p < lo * 0.95))
+    kept = [r for r in recs if not (r.get("price") and out_of(r["price"]))]
+    dropped = [r for r in recs if r not in kept]
     if not kept:  # nothing fits: show them anyway, with their prices, rather than an empty answer
         kept, dropped = recs, []
+    for r in recs:
+        r.pop("_known", None)
     plan["recommendations"] = kept
     plan["over_budget"] = [r["name"] for r in dropped]
-    log.info("agent: priced %d suggestions, %d over budget", sum(1 for r in recs if r.get("price")), len(dropped))
+    log.info("agent: priced %d of %d suggestions (%d web searches), %d over budget",
+             sum(1 for r in recs if r.get("price")), len(recs), searched, len(dropped))
+
+
+def _db_safe(fn, *args):
+    """A database read/write for a nice-to-have: if the database fails, carry on without it."""
+    try:
+        return fn(*args)
+    except Exception as e:
+        log.warning("agent: db %s failed: %s", getattr(fn, "__name__", "?"), type(e).__name__)
+        return None
 
 
 CHECK_PROMPT = """You plan searches for a price-comparison agent for shoppers in Egypt.

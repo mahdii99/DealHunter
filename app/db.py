@@ -243,6 +243,14 @@ def save_search(key: str, market: str, payload: dict) -> None:
             (key, market, time.time(), json.dumps(payload, ensure_ascii=False)))
 
 
+def recent_prices_like(word: str, market: str, since: float, limit: int = 6) -> list[dict]:
+    """Prices we saw lately (in anyone's search) on pages whose title has this word, e.g. a model number: what we
+    already know for free before spending a web search on it. Newest first."""
+    rows = _db.run("SELECT title, store, price, url FROM prices WHERE market = ? AND seen_at > ? AND LOWER(title) LIKE ? "
+                   "ORDER BY seen_at DESC LIMIT ?", (market, since, f"%{word.lower()}%", limit))
+    return [{"title": t, "store": s, "price": p, "url": u} for t, s, p, u in rows]
+
+
 def _last_prices(urls: list[str]) -> dict[str, tuple]:
     """{url: (price, seen_at)} of the latest saved price of each page, in one query (the database may be far away)."""
     if not urls:

@@ -1748,3 +1748,49 @@ def test_llm_sends_the_temperature_asked_for(monkeypatch):
     assert asyncio.run(llm.ask_json("x", temperature=0.5)) == {"ok": 1}
     assert asyncio.run(llm.ask_json("x")) == {"ok": 1}
     assert [b["temperature"] for b in bodies] == [0.5, 0]
+
+
+def test_suggestion_prices_spend_few_web_searches(monkeypatch):
+    """Free search quotas: a product priced today is not searched again, one we saw in our own recent searches is
+    priced from those, and at most RECS_MAX_SEARCHES products get a web search."""
+    from app import db, market, websearch
+    from app.models import Product
+    db.record_prices([Product(store="B.TECH", title="ايربودز انكر ساوندكور R50i NC اسود", price=1113,
+                              url="https://btech.com/r50i").to_dict()], market.current().code)
+    searched, prompts = [], []
+
+    async def fake_search(client, query, max_results=8, include_domains=None, **kw):
+        searched.append(query)
+        return [{"url": "https://amazon.eg/x", "title": query, "snippet": "EGP 999"}]
+
+    async def fake_ask(prompt, **kw):
+        prompts.append(prompt)
+        lines = prompt.split("(product | title | snippet | url):")[1]
+        return {"prices": [{"i": i, "price": 900 + i, "store": "Amazon"} for i in range(1, 7) if f"\n{i} | " in lines]}
+
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    names = ["Anker Soundcore R50i NC", "Sony WF-C510", "JBL Wave Beam", "Samsung Galaxy Buds FE",
+             "Xiaomi Redmi Buds 6", "Huawei FreeBuds SE 3", "Oraimo FreePods 4"]
+
+    def plan():
+        return {"request": "ايربودز", "recommendations": [{"name": n, "why": ""} for n in names]}
+
+    p = plan()
+    asyncio.run(agent.price_recommendations(p, None, 2000))
+    assert len(searched) == agent.RECS_MAX_SEARCHES and not any("R50i" in q for q in searched)  # known: no search
+    assert "1113 EGP at B.TECH (seen in our searches)" in prompts[0]
+    assert [r.get("price") for r in p["recommendations"]][:5] == [None, 901, 902, 903, 904]
+    searched.clear()
+    p = plan()
+    asyncio.run(agent.price_recommendations(p, None, 2000))
+    assert not any(n in q for q in searched for n in names[1:5])  # priced today: reused, not searched again
+    assert [r.get("price") for r in p["recommendations"]][1:5] == [901, 902, 903, 904]
+    assert len(searched) == 2  # the two that didn't get a search the first time
+
+
+def test_model_word_is_the_model_number():
+    assert agent._model_word("Anker Soundcore R50i NC") == "r50i"
+    assert agent._model_word("Sony WF-C510") == "c510"
+    assert agent._model_word("JBL Wave Beam") == "" and agent._model_word("iPhone 16") == ""
