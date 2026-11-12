@@ -303,11 +303,11 @@ async def send_email(client: httpx.AsyncClient, to: str, name: str, subject: str
         return False
     link = f'<p><a href="{_esc(url)}">افتح صفحة المنتج</a></p>' if url.startswith(("https://", "http://")) else ""
     html = (f'<div dir="rtl" style="font-family:Tahoma,sans-serif"><p>أهلاً {_esc(name)}،</p>'
-            f'<p>{_esc(text)}</p>{link}<p style="color:#888">DealHunter - تقدر تقفل إيميلات التنبيه من الإعدادات في الموقع.</p></div>')
+            f'<p>{_esc(text)}</p>{link}<p style="color:#888">Easy Found - تقدر تقفل إيميلات التنبيه من الإعدادات في الموقع.</p></div>')
     try:
         r = await client.post("https://api.brevo.com/v3/smtp/email", timeout=15,
                               headers={"api-key": os.environ["BREVO_API_KEY"], "accept": "application/json"},
-                              json={"sender": {"name": "DealHunter", "email": os.environ["MAIL_FROM"]},
+                              json={"sender": {"name": "Easy Found", "email": os.environ["MAIL_FROM"]},
                                     "to": [{"email": to, "name": name}], "subject": subject, "htmlContent": html})
     except httpx.HTTPError as e:
         log.warning("email to user failed: %s", type(e).__name__)
