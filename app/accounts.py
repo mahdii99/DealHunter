@@ -27,6 +27,7 @@ log = logging.getLogger("uvicorn.error")
 COOKIE = "dh_session"
 SESSION_DAYS = 30
 MAX_WATCHES = 50          # followed products per shopper
+MAX_CHATS = 30            # saved conversations per shopper: the oldest goes when a new one is saved
 REGIONS = ("EG", "SA", "AE")
 # Preferences a shopper can save, with their defaults. Unknown keys sent by the page are ignored.
 PREFS = {
@@ -173,8 +174,42 @@ def update_user(user_id: str, market: str | None = None, email_alerts: bool | No
 
 def delete_user(user_id: str) -> None:
     """Everything we keep about a shopper goes (the "delete my account" button)."""
-    for table, col in (("notifications", "user_id"), ("watches", "user_id"), ("users", "id")):
+    for table, col in (("notifications", "user_id"), ("watches", "user_id"), ("chats", "user_id"), ("users", "id")):
         _db.run(f"DELETE FROM {table} WHERE {col} = ?", (user_id,))
+
+
+# ---------- saved conversations ----------
+
+def save_chat(user_id: str, chat_id: str, title: str, data: dict) -> None:
+    now = time.time()
+    _db.run("INSERT INTO chats (id, user_id, title, data, updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (user_id, id) DO UPDATE SET title = excluded.title, data = excluded.data, "
+            "updated_at = excluded.updated_at",
+            (chat_id, user_id, title[:200], json.dumps(data, ensure_ascii=False), now))
+    old = _db.run("SELECT id FROM chats WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1000 OFFSET ?",
+                  (user_id, MAX_CHATS))
+    for (cid,) in old:
+        _db.run("DELETE FROM chats WHERE user_id = ? AND id = ?", (user_id, cid))
+
+
+def list_chats(user_id: str) -> list[dict]:
+    """Newest first, without the conversations themselves (the sidebar list)."""
+    return [{"id": i, "title": t, "updated_at": u} for i, t, u in
+            _db.run("SELECT id, title, updated_at FROM chats WHERE user_id = ? ORDER BY updated_at DESC", (user_id,))]
+
+
+def get_chat(user_id: str, chat_id: str) -> dict | None:
+    rows = _db.run("SELECT id, title, data, updated_at FROM chats WHERE user_id = ? AND id = ?", (user_id, chat_id))
+    if not rows:
+        return None
+    i, t, d, u = rows[0]
+    return {"id": i, "title": t, "data": json.loads(d), "updated_at": u}
+
+
+def delete_chat(user_id: str, chat_id: str) -> bool:
+    found = _db.run("SELECT id FROM chats WHERE user_id = ? AND id = ?", (user_id, chat_id))
+    _db.run("DELETE FROM chats WHERE user_id = ? AND id = ?", (user_id, chat_id))
+    return bool(found)
 
 
 # ---------- followed products ----------

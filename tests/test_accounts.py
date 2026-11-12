@@ -17,7 +17,7 @@ def _accounts_in_tmp(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     if pg := os.getenv("TEST_DATABASE_URL"):  # also run these against a real Postgres (an empty test database!)
         monkeypatch.setenv("DATABASE_URL", pg)
-        for table in ("notifications", "watches", "users"):
+        for table in ("notifications", "watches", "chats", "users"):
             accounts._db.run(f"DROP TABLE IF EXISTS {table}")
         accounts.close()
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")
@@ -239,6 +239,42 @@ def test_product_links_match_by_their_product_number():
                                     "https://www.amazon.eg/dp/B09YXNHF8N")
     assert not agent._same_product_link("https://www.amazon.eg/dp/B09YXNHF8N", "https://www.amazon.eg/dp/B0CJZY1CTP")
     assert not agent._same_product_link("https://www.amazon.eg/dp/B09YXNHF8N", "https://noon.com/dp/B09YXNHF8N")
+
+
+def test_saved_chats_follow_the_shopper(monkeypatch):
+    c = _signed_in(monkeypatch)
+    data = {"history": [{"role": "user", "text": "سخان 50 لتر"}], "currentRequest": "سخان 50 لتر",
+            "turns": [{"u": "سخان 50 لتر", "d": {"action": "search", "results": []}}]}
+    assert c.put("/api/chats/abcdef123456", json={"title": "سخان 50 لتر", "data": data}).json() == {"ok": True}
+    assert c.put("/api/chats/zzzz9999yyyy", json={"title": "غسالة", "data": {"turns": []}}).status_code == 200
+    chats = c.get("/api/chats").json()["chats"]
+    assert [x["title"] for x in chats] == ["غسالة", "سخان 50 لتر"]  # newest first, without the conversations
+    assert "data" not in chats[0]
+    got = c.get("/api/chats/abcdef123456").json()
+    assert got["data"] == data and got["title"] == "سخان 50 لتر"
+    # saving again updates the same chat
+    c.put("/api/chats/abcdef123456", json={"title": "سخان 50 لتر", "data": {**data, "currentRequest": "سخان 80 لتر"}})
+    assert c.get("/api/chats/abcdef123456").json()["data"]["currentRequest"] == "سخان 80 لتر"
+    assert len(c.get("/api/chats").json()["chats"]) == 2
+    # someone else can't read it, bad ids and huge chats are refused
+    other = _signed_in(monkeypatch, sub="999", email="x@gmail.com")
+    assert other.get("/api/chats/abcdef123456").status_code == 404 and other.get("/api/chats").json()["chats"] == []
+    assert c.get("/api/chats/../../etc").status_code == 404 and c.put("/api/chats/short", json={"title": "x", "data": {}}).status_code == 422
+    assert c.put("/api/chats/abcdef123456", json={"title": "x", "data": {"s": "x" * 500_000}}).status_code == 413
+    assert TestClient(main.app).get("/api/chats").status_code == 401
+    assert c.delete("/api/chats/abcdef123456").json() == {"ok": True}
+    assert c.get("/api/chats/abcdef123456").status_code == 404 and c.delete("/api/chats/abcdef123456").status_code == 404
+    c.delete("/api/me")
+    assert accounts.list_chats("g:123") == []
+
+
+def test_only_the_newest_chats_are_kept(monkeypatch):
+    monkeypatch.setattr(accounts, "MAX_CHATS", 3)
+    accounts.upsert_user({"id": "g:1", "email": "a@b.c", "name": "A", "picture": ""})
+    for i in range(5):
+        accounts.save_chat("g:1", f"chat{i:08d}", f"t{i}", {})
+        time.sleep(0.01)
+    assert [x["title"] for x in accounts.list_chats("g:1")] == ["t4", "t3", "t2"]
 
 
 def test_followed_product_found_on_a_crawled_listing_page(monkeypatch):

@@ -111,7 +111,16 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at {FLOAT} NOT NULL,
     seen INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, created_at)
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, created_at);
+CREATE TABLE IF NOT EXISTS chats (
+    id TEXT NOT NULL,                   -- made by the page (random), so it can save before the server answers
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,                -- the shopper's first message
+    data TEXT NOT NULL,                 -- JSON: the conversation and the answers shown, as the page keeps them
+    updated_at {FLOAT} NOT NULL,
+    PRIMARY KEY (user_id, id)
+);
+CREATE INDEX IF NOT EXISTS chats_user ON chats (user_id, updated_at)
 """
 PG_RETRY = 300  # seconds on the local file after Postgres couldn't be reached, before trying it again
 BLOCK_AFTER = 2  # failed searches in a row before a site is skipped (one failure can be a slow moment)

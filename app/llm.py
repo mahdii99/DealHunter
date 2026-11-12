@@ -259,7 +259,7 @@ async def _gemini(client: httpx.AsyncClient, model: str, prompt: str) -> httpx.R
     return r
 
 
-async def _compat(provider: str, client: httpx.AsyncClient, model: str, prompt: str) -> httpx.Response:
+async def _compat(provider: str, client: httpx.AsyncClient, model: str, prompt: str, on_text=None) -> httpx.Response:
     url = _base(provider) + "/chat/completions"
     headers = {"Authorization": f"Bearer {os.environ[COMPAT[provider][1]]}"}
     body = {"model": model, "temperature": 0,
@@ -268,6 +268,11 @@ async def _compat(provider: str, client: httpx.AsyncClient, model: str, prompt: 
         body["response_format"] = {"type": "json_object"}
     if provider == "cloudflare":  # its default is 256 tokens: a reasoning model (gpt-oss) uses them up thinking and
         body["max_tokens"] = 4096  # returns no answer at all
+    if on_text:
+        r = await _stream(client, url, headers, body, on_text)
+        if r.status_code not in (400, 422):
+            return r
+        # this model can't stream (or not with these settings): one normal request instead
     r = await client.post(url, headers=headers, json=body)
     if r.status_code in (400, 422) and "response_format" in body:  # model without JSON mode: ask in the prompt only
         body.pop("response_format")
@@ -275,16 +280,43 @@ async def _compat(provider: str, client: httpx.AsyncClient, model: str, prompt: 
     return r
 
 
-async def _groq(client: httpx.AsyncClient, model: str, prompt: str) -> httpx.Response:
-    return await _compat("groq", client, model, prompt)
+async def _stream(client: httpx.AsyncClient, url: str, headers: dict, body: dict, on_text) -> httpx.Response:
+    """The same request, with the answer sent piece by piece (server-sent events): on_text(text so far) is called
+    as it grows, so the page can show the reply while it's written. JSON mode is left out because some providers
+    (Groq) can't stream with it; the prompt asks for JSON anyway. Returns a normal-looking response with the whole
+    answer, so the caller doesn't care that it streamed."""
+    body = {k: v for k, v in body.items() if k != "response_format"}
+    body.update(stream=True, stream_options={"include_usage": True})
+    text, usage = "", None
+    async with client.stream("POST", url, headers=headers, json=body) as r:
+        if r.status_code != 200:
+            return httpx.Response(r.status_code, headers=r.headers, content=await r.aread())
+        async for line in r.aiter_lines():
+            if not line.startswith("data:") or (data := line[5:].strip()) == "[DONE]":
+                continue
+            try:
+                event = json.loads(data)
+            except ValueError:
+                continue
+            usage = event.get("usage") or (event.get("x_groq") or {}).get("usage") or usage
+            for choice in event.get("choices") or []:
+                piece = (choice.get("delta") or {}).get("content")
+                if piece:
+                    text += piece
+                    on_text(text)
+    return httpx.Response(200, json={"choices": [{"message": {"content": text}}], "usage": usage or {}})
+
+
+async def _groq(client: httpx.AsyncClient, model: str, prompt: str, on_text=None) -> httpx.Response:
+    return await _compat("groq", client, model, prompt, on_text)
 
 
 def _caller(provider: str):
     if provider == "groq":
         return _groq
 
-    async def call(client, model, prompt):
-        return await _compat(provider, client, model, prompt)
+    async def call(client, model, prompt, on_text=None):
+        return await _compat(provider, client, model, prompt, on_text)
     return call
 
 
@@ -307,13 +339,14 @@ def _text(provider: str, r: httpx.Response) -> str:
 
 
 async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, spread: int = 0,
-                   budget: float | None = None, step: str = "other") -> dict:
+                   budget: float | None = None, step: str = "other", on_text=None) -> dict:
     """prefer="bulk": try the fast non-Gemini providers' smaller models first (bulk work like reading pages, so the
     strong models' daily quota is kept for understanding the request and judging the results);
     prefer="strong": the strongest models first (the judge), never just whichever model answered last;
     prefer="groq" etc.: that provider.
     spread=n: start from the n-th model of that provider, so calls running at the same time go to different
-    models (each model has its own per-minute limit)."""
+    models (each model has its own per-minute limit).
+    on_text(text so far): called while the answer arrives (OpenAI-style providers stream it; Gemini answers at once)."""
     if not available():
         raise LLMError("مفيش مفتاح LLM في ملف .env")
     errors, start = [], time.monotonic()
@@ -392,7 +425,8 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
             tries[model] = tries.get(model, 0) + 1
             t = time.monotonic()
             try:
-                r = await asyncio.wait_for(call(client, model, prompt), timeout=min(timeout, left))
+                r = await asyncio.wait_for(call(client, model, prompt, on_text) if on_text and provider != "gemini"
+                                           else call(client, model, prompt), timeout=min(timeout, left))
             except (httpx.HTTPError, asyncio.TimeoutError) as e:
                 errors.append(f"{model}: {type(e).__name__}")
                 log.warning("LLM %s failed after %.1fs: %s (skipping it for %ds)",
