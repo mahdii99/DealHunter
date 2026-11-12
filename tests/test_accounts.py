@@ -239,3 +239,29 @@ def test_product_links_match_by_their_product_number():
                                     "https://www.amazon.eg/dp/B09YXNHF8N")
     assert not agent._same_product_link("https://www.amazon.eg/dp/B09YXNHF8N", "https://www.amazon.eg/dp/B0CJZY1CTP")
     assert not agent._same_product_link("https://www.amazon.eg/dp/B09YXNHF8N", "https://noon.com/dp/B09YXNHF8N")
+
+
+def test_followed_product_found_on_a_crawled_listing_page(monkeypatch):
+    from app import llm, websearch
+    url = "https://www.amazon.eg/-/en/Puma-Electron/dp/B0CJZY1CTP/ref=sr_1_46"
+
+    async def fake_search(client, query, max_results=8, include_domains=None, only=None, **kw):
+        return [{"url": "https://www.amazon.eg/dp/B0CJZY1CTP", "content": "", "snippet": "Puma sneaker"},
+                {"url": "https://www.amazon.eg/s?k=puma+sneaker", "content": "listing " * 200}]
+
+    async def fake_ask(prompt, **kw):
+        return {"page": "shop", "currency": "EGP", "products": [
+            {"title": "Other", "price": 999, "url": "/dp/B0OTHER999"},
+            {"title": "Puma Unisex Running Sneaker", "price": 2385, "url": "/-/en/Puma/dp/B0CJZY1CTP/ref=sr_1_3"}]}
+    monkeypatch.setattr(websearch, "configured", lambda: ["tavily"])
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    import asyncio
+    import httpx
+
+    async def go():
+        async with httpx.AsyncClient() as client:
+            return await agent.price_from_search(client, url, "Puma Unisex Running Sneaker")
+    p, why = asyncio.run(go())
+    assert why == "" and p.price == 2385 and p.url == url
