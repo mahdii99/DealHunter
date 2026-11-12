@@ -38,10 +38,31 @@ MAX_PER_PAGE = 15       # products kept from one page (listing pages can have ma
 FAMOUS_RESULTS = 15     # search results for the well-known stores group (one search shared by 5-10 big stores)
 WEB_DEBUG = DEBUG_DIR / "web"
 
-UNDERSTAND_PROMPT = """You are the shopping assistant and search planner of a price-comparison agent for shoppers in Egypt.
+UNDERSTAND_PROMPT = """You are the salesperson of a price-comparison agent for shoppers in Egypt: like a smart, friendly
+salesperson standing in a shop, except you stand in every online store at once. Talk like one, in short, warm
+Egyptian Arabic (English if the shopper writes English). Your job is to find out what the shopper really needs and get
+them the right product at the best price, not just to run a search for the words they typed.
+
 Shoppers often don't know the product's name or how stores list it: they describe what they need
 ("تيشرت راوند بيزك اسود", "موبايل مش غالي وبطاريته تكمل يومين"). Understand what they really want and turn it
 into concrete specs and searches that find it in Egyptian online stores.
+
+Choose ONE action for the newest message, the way a good salesperson would:
+- "search": the shopper named a specific product/model, asked for prices/offers, picked one of your suggestions, or
+  you already know enough to find good matches. Don't make a shopper who knows what they want answer questions.
+- "ask": the request is too open to pick good products and ONE answer would change what you'd recommend a lot (who
+  it's for, what they'll use it for, budget, size...). Ask one short question with 2-4 tap answers. Don't repeat
+  a question already asked, and after two questions in a row stop asking: recommend or search.
+- "recommend": the shopper described a need, or asked what to buy ("أنهي موبايل أحسن في حدود 8000؟", "عايز لابتوب
+  للبرمجة"): suggest 2-4 specific products sold in Egypt now that fit, each with one line on why it fits them, from
+  your own knowledge and WITHOUT prices (you don't know today's prices) and without searching. The shopper then picks
+  one, or asks you to find prices for all of them (that is a "search" for those products).
+- "answer": a QUESTION about results already shown or buying advice ("أول نتيجة دي أصلية؟", "الفرق بين الاتنين إيه؟",
+  "أنهي أحسن؟", "عليها ضمان؟", "السعر ده كويس؟") that doesn't ask for different products: reply from the shown results
+  (their stores, prices, discounts, trust, price history) and your knowledge, without a new search. To compare 2-4
+  products or offers, also fill "table". Be honest: if a price looks too low for that product, say it may be a
+  mistake, a different variant or a used/refurbished listing and how to check on the store page; if a store is
+  unverified, say so.
 
 The chat is a conversation. A new message usually CHANGES THE CURRENT REQUEST instead of starting over:
 "سامسونج بس" / "عايزه أرخص" / "بلاش الأحمر" / "مقاس XL" / "تحت 5000" -> keep everything from the current request
@@ -55,22 +76,25 @@ Quality words are real requirements, never drop them: "ماركة نضيفة / �
 quality brands, so name those brands in suggested_products and add a requirement like "well-known brand (e.g. ...)",
 so no-name products don't count as a match. The web queries must then NAME the brands (e.g. 'تيشيرت بيزك ديفاكتو',
 'LC Waikiki basic t-shirt'), never generic words like "ماركة مشهورة" or "brand": those find no-name shops.
-Ask a question ONLY if no sensible search is possible (e.g. "عايز هدية"); otherwise search and state assumptions.
-If the newest message is a QUESTION about results already shown or about buying advice ("أول نتيجة دي أصلية؟",
-"الفرق بين الاتنين إيه؟", "أنهي أحسن؟", "عليها ضمان؟") and does not ask for different products, use "answer":
-reply from the conversation and your knowledge, without a new search. Be honest: if a price looks too low for that
-product, say it may be a mistake, a different variant or a used/refurbished listing and how to check on the store page.
+The search fields (need_based and everything after "request") are needed ONLY for "search": leave them empty
+for the other actions.
 
 {chat}
-Reply JSON:
+Reply JSON (put "reply" first):
 {
-  "action": "search" or "ask" or "answer",
-  "answer": "if answer: 1-4 short Egyptian Arabic sentences answering the shopper's question, else null",
-  "question": "if ask: one short Egyptian Arabic question, else null",
+  "reply": "what you say to the shopper now, as a salesperson: for ask the question itself; for recommend one short
+            intro line; for answer 1-5 short sentences answering; for search one short line saying what you'll look
+            for (mention the change if a follow-up)",
+  "action": "search" or "ask" or "recommend" or "answer",
   "options": ["if ask: 2-4 short quick answers the shopper can tap, else []"],
+  "recommendations": [{"name": "if recommend: a specific product, e.g. 'Samsung Galaxy A16'", "why": "one short
+     Egyptian Arabic line on why it fits THIS shopper"}],
+  "table": null or, for an answer that compares: {"columns": ["", "product 1", "product 2"],
+           "rows": [["السعر", "...", "..."], ["الضمان", "...", "..."]]} (2-6 short rows),
+  "suggestions": ["2-4 short Egyptian Arabic next messages the shopper may want to tap, written as the shopper
+     would say them (e.g. 'أرخص من كده', 'سامسونج بس', 'إيه الفرق بينهم؟', 'دوّرلي على أسعارهم'); [] for ask"],
   "request": "the full standalone request in Egyptian Arabic built from the whole conversation, e.g.
               'موبايل سامسونج سعره مش غالي وبطاريته كبيرة تكمل يومين'",
-  "understood": "one short Egyptian Arabic sentence saying what you'll look for (mention the change if a follow-up)",
   "need_based": true if the shopper described a need/use rather than naming a specific product,
   "suggested_products": ["if need_based: 3-6 specific products sold in Egypt now that fit the need, with the
      spec that makes them fit, e.g. 'Samsung Galaxy A16 (5000 mAh)', 'Xiaomi Redmi 14C (5160 mAh)'. Names and
@@ -102,29 +126,117 @@ _PRICE_TAIL = re.compile(r"\s*[-–—:,(]*\s*(?:EGP|LE|ج\.?م|جنيه)?\s*\d[
                          r"|\s*[-–—:,(]+\s*(?:EGP|LE)\s*\d[\d,.]*\)?\s*$", re.I)
 
 
-def _chat_block(messages: list[dict], current: str) -> str:
+MAX_SHOWN = 10  # results of the last search the planner sees (to answer and compare)
+
+
+def _money(n) -> str:
+    return f"{n:g}" if isinstance(n, (int, float)) else "?"
+
+
+def _shown_block(shown: list[dict]) -> str:
+    """The results on screen, with what the shopper can't see at a glance: trust, stock check, price history."""
+    lines = []
+    for i, r in enumerate(shown[:MAX_SHOWN], 1):
+        bits = [f"{i}) {str(r.get('title', ''))[:140]}", f"{_money(r.get('price'))} {market.current().currency}",
+                f"store {r.get('store', '?')}"]
+        if isinstance(r.get("old_price"), (int, float)) and r["old_price"] > (r.get("price") or 0):
+            bits.append(f"was {_money(r['old_price'])}" + (f" (-{r['discount_pct']}%)" if r.get("discount_pct") else ""))
+        if r.get("trusted"):
+            bits.append("well-known store")
+        elif r.get("trust_score") is not None:
+            bits.append(f"store trust {r['trust_score']}/100")
+        if r.get("verified") is True:
+            bits.append("in stock (page checked now)")
+        elif r.get("verified") is False:
+            bits.append("stock not checked")
+        if r.get("condition"):
+            bits.append(f"CONDITION {r['condition']}")
+        if r.get("unconfirmed"):
+            bits.append("exact model not confirmed")
+        if isinstance(r.get("lowest_seen"), (int, float)):
+            bits.append(f"lowest price we've seen {_money(r['lowest_seen'])}")
+        if isinstance(r.get("previous_price"), (int, float)):
+            bits.append(f"last time {_money(r['previous_price'])}")
+        if r.get("note"):
+            bits.append(f"note: {str(r['note'])[:120]}")
+        lines.append(" | ".join(bits))
+    return ("Results shown to the shopper now (cheapest first):\n" + "\n".join(lines) + "\n") if lines else ""
+
+
+def _chat_block(messages: list[dict], current: str, shown: list[dict] | None = None) -> str:
     lines = [("Shopper: " if m.get("role") == "user" else "Assistant: ") + str(m.get("text", ""))[:800]
              for m in messages[-MAX_HISTORY:]]
-    return ("Current request (from the previous search): " + (current or "none") + "\n"
-            "Conversation (oldest first, the last line is the newest message):\n" + "\n".join(lines) + "\n")
+    return ("Current request (from the previous search): " + (current or "none") + "\n" + _shown_block(shown or [])
+            + "Conversation (oldest first, the last line is the newest message):\n" + "\n".join(lines) + "\n")
 
 
-async def plan_turn(messages: list[dict], current: str = "") -> dict:
-    """One LLM call: understand the newest message in the context of the chat, merge it into the request,
-    and plan the searches. Raises llm.LLMError when no model answers."""
-    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current)), timeout=12,
-                              prefer="strong", step="plan")  # gpt-oss-120b on Groq first: strong, answers in ~1 s
+_REPLY_SO_FAR = re.compile(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)')
+
+
+def reply_so_far(text: str) -> str:
+    """The "reply" field of a JSON answer that is still arriving, so the shopper can read it while it's written."""
+    m = _REPLY_SO_FAR.search(text)
+    if not m:
+        return ""
+    raw = re.sub(r"\\(u[0-9a-fA-F]{0,3})?$", "", m.group(1))  # a cut-off escape at the end waits for the next part
+    try:
+        return json.loads('"' + raw + '"')
+    except ValueError:
+        return raw.replace("\\n", "\n").replace('\\"', '"')
+
+
+REPLY: contextvars.ContextVar = contextvars.ContextVar("reply", default=None)  # (text so far) -> shown live
+
+
+def _strs(xs, n: int, size: int = 120) -> list[str]:
+    return [x.strip()[:size] for x in xs or [] if isinstance(x, str) and x.strip()][:n]
+
+
+def _table(t) -> dict | None:
+    """A comparison table from the LLM, only when it has the right shape (a header and 1-8 rows of short cells)."""
+    if not isinstance(t, dict) or not isinstance(t.get("columns"), list) or not isinstance(t.get("rows"), list):
+        return None
+    cols = [str(c)[:60] for c in t["columns"][:5]]
+    rows = [[str(c)[:120] for c in r[:len(cols)]] + [""] * (len(cols) - len(r[:len(cols)]))
+            for r in t["rows"][:8] if isinstance(r, list) and r]
+    return {"columns": cols, "rows": rows} if len(cols) >= 2 and rows else None
+
+
+async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] | None = None) -> dict:
+    """One LLM call: understand the newest message in the context of the chat (and the results on screen), decide
+    what a good salesperson does now (search / ask / recommend / answer), and plan the searches.
+    Raises llm.LLMError when no model answers."""
+    live = REPLY.get()
+    on_text = (lambda text: live(t) if (t := reply_so_far(text)) else None) if live else None
+    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current, shown)), timeout=12,
+                              prefer="strong", step="plan", on_text=on_text)  # gpt-oss-120b on Groq first: ~1 s
     last = next((m.get("text", "") for m in reversed(messages) if m.get("role") == "user"), "")
     # names only: a price the LLM guessed would mislead the shopper and the judge
     plan["suggested_products"] = [_PRICE_TAIL.sub("", x).strip() for x in plan.get("suggested_products") or []
                                   if isinstance(x, str) and x.strip()]
+    reply = plan.get("reply") if isinstance(plan.get("reply"), str) else ""
+    reply = reply.strip() or str(plan.get("question") or plan.get("answer") or "").strip()  # older field names
+    plan["reply"] = reply
+    plan["suggestions"] = _strs(plan.get("suggestions"), 4, 60)
     if not isinstance(plan.get("request"), str) or not plan["request"].strip():
         plan["request"] = last
-    if plan.get("action") == "answer" and isinstance(plan.get("answer"), str) and plan["answer"].strip():
+    recs = [{"name": str(r["name"]).strip()[:120], "why": str(r.get("why") or "").strip()[:200]}
+            for r in plan.get("recommendations") or [] if isinstance(r, dict) and str(r.get("name") or "").strip()]
+    action = plan.get("action")
+    if action == "answer" and reply:
+        plan["answer"] = reply
+        plan["table"] = _table(plan.get("table"))
         plan["request"] = current or plan["request"]  # a question about the results keeps the current request
-    elif plan.get("action") != "ask" or not plan.get("question"):
+    elif action == "recommend" and recs:
+        plan["recommendations"] = [{**r, "name": _PRICE_TAIL.sub("", r["name"]).strip()} for r in recs[:4]]
+        plan["request"] = current or plan["request"]
+    elif action == "ask" and reply:
+        plan["question"] = reply
+        plan["options"] = _strs(plan.get("options"), 4, 60)
+    else:
         plan["action"] = "search"
-    log.info("agent: plan %s -> %r", plan["action"], plan.get("question") or plan.get("answer") or plan["request"])
+        plan["understood"] = str(plan.get("understood") or reply).strip()
+    log.info("agent: plan %s -> %r", plan["action"], reply if plan["action"] != "search" else plan["request"])
     return plan
 
 
@@ -262,7 +374,10 @@ asked for them. Real discounts are a plus. Reply JSON:
   "best_deal_id": <id of the best value-for-money pick: low price + real discount + trustworthy shop, or null>,
   "summary": "1-2 Egyptian Arabic sentences: the best cheap option from a trusted store and any useful advice
               (name stores and prices, never the candidate ids; if the cheapest offer looks too cheap to be genuine,
-              say so)"}}"""
+              say so)",
+  "suggestions": ["2-4 short Egyptian Arabic next messages the shopper may want to tap after seeing these results,
+                   written as the shopper would say them, e.g. 'أرخص من كده', 'من متجر مشهور بس', 'إيه الفرق بين أول
+                   اتنين؟', 'فيه لون تاني؟'"]}}"""
 
 
 PAGE_READ_PROMPT = """This is the text of a web page found while searching Egyptian online stores (links shown as
@@ -848,7 +963,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         p.discount_pct = _discount(p)
     pool = _candidates(pool)
 
-    picks, summary, typical = [], "", None
+    picks, summary, typical, follow_ups = [], "", None, []
     if pool:
         items = "\n".join(
             f"{i}. [{p.store}] trust {p.trust_score if p.trust_score is not None else '?'}"
@@ -873,6 +988,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             log.info("agent: judge kept %d of %d (model %s)", len(verdict.get("matches") or []), len(pool),
                      llm.last_model())
             summary = verdict.get("summary", "")
+            follow_ups = _strs(verdict.get("suggestions"), 4, 60)
             if isinstance(verdict.get("typical_price"), (int, float)) and verdict["typical_price"] > 0:
                 typical = float(verdict["typical_price"])
             best = verdict.get("best_deal_id")
@@ -918,6 +1034,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "requirements": plan.get("requirements", []),
         "max_price": maxp, "min_price": minp,
         "summary": summary,
+        "suggestions": follow_ups,
         "candidates_checked": len(pool),
         "sold_out_dropped": gone,
         "results": [p.to_dict() for p in picks],

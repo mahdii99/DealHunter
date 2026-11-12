@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import time
 from pathlib import Path
@@ -7,7 +8,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import agent, llm
+from app import agent, llm, main
 from app.extract import extract_products
 from app.query import parse_query
 from app.ranking import rank
@@ -1499,3 +1500,166 @@ def test_more_stores_reach_the_judge_and_deals_come_first():
     assert shown[0].price == 100  # the cheapest stays first
     assert shown[1].store == "c"  # a discount comes before slightly cheaper offers
     assert [p.store for p in shown[2:5]] != ["a", "a", "a"]  # another store breaks a run of one store's offers
+
+
+# ---------- the salesperson chat: ask, recommend, compare, next steps, reply typed live ----------
+
+def test_chat_recommends_products_before_searching(monkeypatch):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
+        return {"reply": "دول أحسن اختيارات للبرمجة في الميزانية دي:", "action": "recommend",
+                "recommendations": [{"name": "Lenovo IdeaPad Slim 3 (16GB) - 25,000 EGP", "why": "رامات كفاية"},
+                                    {"name": "ASUS Vivobook 15", "why": "شاشة كويسة"}, {"why": "no name"}, "junk"],
+                "suggestions": ["دوّرلي على أسعارهم", "عايز أخف", 5]}
+
+    async def no_search(*a, **k):
+        raise AssertionError("a recommendation comes from the LLM's knowledge, no search")
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(agent, "run", no_search)
+    d = TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "عايز لابتوب للبرمجة"}]}).json()
+    assert d["action"] == "recommend" and d["answer"].startswith("دول أحسن")
+    assert d["recommendations"] == [{"name": "Lenovo IdeaPad Slim 3 (16GB)", "why": "رامات كفاية"},  # never a price
+                                    {"name": "ASUS Vivobook 15", "why": "شاشة كويسة"}]
+    assert d["suggestions"] == ["دوّرلي على أسعارهم", "عايز أخف"] and d["results"] == []
+
+
+def test_recommend_without_products_becomes_a_search(monkeypatch):
+    replies = iter([{"reply": "هدورلك", "action": "recommend", "recommendations": [], "request": "سخان 50 لتر",
+                     "queries": ["heater"], "requirements": [], "avoid": []},
+                    {"matches": [], "summary": ""}])
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
+        return next(replies)
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    plan = asyncio.run(agent.plan_turn([{"role": "user", "text": "سخان 50 لتر"}]))
+    assert plan["action"] == "search" and plan["understood"] == "هدورلك"
+
+
+def test_question_sees_the_shown_results_and_gets_a_comparison(monkeypatch):
+    prompts = []
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
+        prompts.append(prompt)
+        return {"reply": "التانية أحسن: من متجر مشهور وسعرها أقل حاجة شفناها.", "action": "answer",
+                "table": {"columns": ["", "الأولى", "التانية"], "rows": [["السعر", "649", "1120"], "bad", []]},
+                "suggestions": ["فيه أرخص؟"]}
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    d = TestClient(main.app).post("/api/chat", json={
+        "request": "سماعة انكر R50i NC",
+        "shown": [{"title": "Anker R50i NC", "price": 649, "store": "shop.eg", "trust_score": 45, "verified": False},
+                  {"title": "Anker R50i NC Black", "price": 1120, "old_price": 1400, "discount_pct": 20,
+                   "store": "Amazon", "trusted": True, "verified": True, "lowest_seen": 1100}],
+        "messages": [{"role": "user", "text": "anker r50i nc"},
+                     {"role": "user", "text": "أنهي أحسن فيهم؟"}]}).json()
+    assert d["action"] == "answer" and d["suggestions"] == ["فيه أرخص؟"]
+    assert d["table"] == {"columns": ["", "الأولى", "التانية"], "rows": [["السعر", "649", "1120"]]}
+    p = prompts[0]
+    assert "1) Anker R50i NC | 649 EGP | store shop.eg | store trust 45/100 | stock not checked" in p
+    assert "was 1400 (-20%)" in p and "well-known store" in p and "lowest price we've seen 1100" in p
+
+
+def test_ask_gets_tap_answers_and_the_reply_field(monkeypatch):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
+        return {"reply": "هتستخدمه في إيه أكتر؟", "action": "ask", "options": ["ألعاب", "مذاكرة", "", 3, "شغل", "تصوير", "x"]}
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    d = TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "عايز موبايل"}]}).json()
+    assert d["action"] == "ask" and d["question"] == "هتستخدمه في إيه أكتر؟"
+    assert d["options"] == ["ألعاب", "مذاكرة", "شغل", "تصوير"]
+
+
+def test_search_answer_carries_next_steps(monkeypatch):
+    page = (FIX / "btech.html").read_text(encoding="utf-8")
+    store = agent.ALL_STORES[0]
+
+    async def fake_search(client, text):
+        return store.parse(page)
+
+    replies = iter([
+        {"reply": "هدورلك على باور بانك", "action": "search", "request": "باور بانك 10000", "queries": ["power bank"],
+         "requirements": [], "avoid": [], "suggestions": ["انكر بس"]},
+        {"matches": [{"id": 0, "note": "ok"}], "summary": "s", "suggestions": ["أرخص من كده", "من متجر مشهور بس"]},
+    ])
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
+        return next(replies)
+
+    monkeypatch.setattr(store, "search", fake_search)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    from app import websearch
+    monkeypatch.setattr(websearch, "available", lambda: False)
+    d = TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "باور بانك 10000"}]}).json()
+    assert d["action"] == "search" and d["understood"] == "هدورلك على باور بانك"
+    assert d["suggestions"] == ["أرخص من كده", "من متجر مشهور بس"]  # the judge's, made from the results
+
+
+def test_reply_so_far_reads_a_json_answer_that_is_still_arriving():
+    assert agent.reply_so_far('{"reply": "تمام، هدو') == "تمام، هدو"
+    assert agent.reply_so_far('{"reply": "قال \\"لا\\" وبعدين\\n') == 'قال "لا" وبعدين\n'
+    assert agent.reply_so_far('{"reply": "abc\\u06') == "abc"  # a cut-off escape waits for the rest
+    assert agent.reply_so_far('{"reply": "abc\\') == "abc"
+    assert agent.reply_so_far('{"action": "search"') == ""
+
+
+def test_llm_streams_the_answer_piece_by_piece(monkeypatch):
+    pieces = ['{"reply": "أهلاً', ' بيك", ', '"action": "answer"}']
+
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        assert body["stream"] is True and "response_format" not in body
+        sse = "".join(f"data: {json.dumps({'choices': [{'delta': {'content': p}}]})}\n\n" for p in pieces)
+        sse += 'data: {"choices": [], "usage": {"total_tokens": 42}}\n\ndata: [DONE]\n\n'
+        return httpx.Response(200, text=sse, headers={"content-type": "text/event-stream"})
+
+    seen = []
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await llm._compat("groq", client, "openai/gpt-oss-120b", "hi", on_text=seen.append)
+
+    r = asyncio.run(go())
+    assert r.status_code == 200 and json.loads(llm._text("groq", r)) == {"reply": "أهلاً بيك", "action": "answer"}
+    assert seen[0] == pieces[0] and seen[-1] == "".join(pieces) and r.json()["usage"]["total_tokens"] == 42
+    assert [agent.reply_so_far(x) for x in seen] == ["أهلاً", "أهلاً بيك", "أهلاً بيك"]
+
+
+def test_llm_stream_falls_back_to_a_normal_request(monkeypatch):
+    calls = []
+
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        calls.append(bool(body.get("stream")))
+        if body.get("stream"):
+            return httpx.Response(400, json={"error": "stream not supported"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"reply": "ok"}'}}]})
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await llm._compat("groq", client, "m", "hi", on_text=lambda t: None)
+
+    r = asyncio.run(go())
+    assert r.status_code == 200 and calls == [True, False]
+
+
+def test_chat_stream_sends_the_reply_while_it_is_written(monkeypatch):
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, on_text=None, **kw):
+        for part in ('{"reply": "سؤال', '{"reply": "سؤال حلو"'):
+            on_text(part)
+        return {"reply": "سؤال حلو", "action": "answer"}
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    r = TestClient(main.app).post("/api/chat/stream", json={"request": "x", "messages": [{"role": "user", "text": "ده كويس؟"}]})
+    events = [json.loads(line) for line in r.text.splitlines() if line.strip()]
+    assert [e["text"] for e in events if e["type"] == "reply"] == ["سؤال", "سؤال حلو"]
+    assert events[-1]["type"] == "done" and events[-1]["data"]["answer"] == "سؤال حلو"

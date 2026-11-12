@@ -19,7 +19,8 @@ The project runs entirely on free tiers: no paid API is needed.
 
 ## What it does
 
-- **Chat-style search.** Follow-ups refine the previous request ("Samsung only", "cheaper", "in black") instead of starting over. Vague requests get one clarifying question with quick answers.
+- **A salesperson, not a search box.** The agent talks like a good salesperson standing in every online store: it asks a short question when the request is too open, recommends products that fit a need before searching (then finds prices for the one you pick), answers questions about the results with a comparison table (using store trust, stock checks and price history), and offers next steps to tap. Follow-ups refine the previous request ("Samsung only", "cheaper", "in black") instead of starting over. Replies appear while they are written.
+- **Saved chats and voice.** Signed-in shoppers find their past conversations on any device; a mic button lets you speak your request (the browser's own speech recognition, free).
 - **Need-based search.** "A phone whose battery lasts two days" becomes concrete specs (5000 mAh+) and suggested models to look for.
 - **Finds stores by itself.** No hand-picked store list. Each query is searched twice, on well-known retailers and on everyone else, so smaller (often cheaper) shops compete fairly.
 - **Prices come from the store, not the LLM.** Products are extracted from each page's own data (JSON-LD, Next.js data, embedded JSON). The LLM only reads a page when it has no structured data.
@@ -42,7 +43,7 @@ request ──► understand (LLM) ──► web search ──► open store pag
 
 | Stage | Where | Notes |
 | --- | --- | --- |
-| Understand the chat | `app/agent.py` `plan_turn` | One LLM call: merges follow-ups, plans an Arabic and an English query (with model numbers) |
+| Understand the chat | `app/agent.py` `plan_turn` | One LLM call: decides to search / ask / recommend / answer, merges follow-ups, plans an Arabic and an English query (with model numbers) |
 | Web search | `app/websearch.py` | Tavily, Exa and Firecrawl, rotated to share free quotas, with automatic fallback |
 | Open pages | `app/agent.py` `_web_find` | Parallel, with per-stage deadlines so one slow site can't hold up the answer |
 | Pages we can't open | `app/fetchers.py` | Retried through a reader service (Tavily Extract, then Jina Reader), only where the site's robots.txt allows it |
@@ -84,8 +85,9 @@ average request from 55 s to 40 s while the average number of matching results w
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/api/chat` | One chat turn: `{messages: [{role, text}], request}` → results or a clarifying question |
-| `POST` | `/api/chat/stream` | Same, as NDJSON: progress lines, then the answer |
+| `POST` | `/api/chat` | One chat turn: `{messages: [{role, text}], request, shown}` → results, a question, recommendations or an answer |
+| `POST` | `/api/chat/stream` | Same, as NDJSON: progress lines and the reply while it's written, then the answer |
+| `GET` `PUT` `DELETE` | `/api/chats[/{id}]` | A signed-in shopper's saved conversations |
 | `GET` | `/api/search?q=` | One-shot search |
 | `GET` | `/api/history?url=` | Saved price history of a product page |
 | `GET` | `/api/config` | Is Google sign-in on, regions a shopper can pick |
