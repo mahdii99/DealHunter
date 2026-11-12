@@ -223,6 +223,11 @@ def urls_to_check(older_than: float, limit: int) -> list[str]:
     return [r[0] for r in rows]
 
 
+def watch_title(url: str) -> str:
+    row = next(iter(_db.run("SELECT title FROM watches WHERE url = ? LIMIT 1", (url,))), None)
+    return row[0] if row else ""
+
+
 def _money(n: float, mk: str) -> str:
     cur = {"EG": "ج.م", "SA": "ر.س", "AE": "د.إ"}.get(mk, "")
     return f"{n:,.0f} {cur}".strip()

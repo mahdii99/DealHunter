@@ -931,6 +931,41 @@ VERIFY_DEADLINE = 7    # opening the result pages ourselves
 VERIFY_READER_DEADLINE = 6  # pages we couldn't open, through the reader service
 
 
+_PRODUCT_ID = re.compile(r"[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*")
+
+
+def _product_ids(url: str) -> set[str]:
+    """Path parts that look like a product number (8+ letters/digits with a digit, e.g. B09YXNHF8N, 945105411):
+    the same product's link differs between a search and a store page (language part, tracking), its number not."""
+    parts = re.split(r"[/.?&=]", urlparse(url).path)
+    return {x.lower() for x in parts if len(x) >= 8 and _PRODUCT_ID.fullmatch(x) and not x.startswith("ref")}
+
+
+def _same_product_link(a: str, b: str) -> bool:
+    if trust.domain(a) != trust.domain(b):
+        return False
+    return _page_id(a) == _page_id(b) or bool(_product_ids(a) & _product_ids(b))
+
+
+async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> Product | None:
+    """A followed product whose page we may not open ourselves (robots.txt, bot wall, no price data in it): the
+    web search service's own fresh copy of that page, read by the LLM, the same way searches read such pages.
+    One search + one LLM read; None when the search doesn't return that page."""
+    if not (websearch.available() and llm.available() and title):
+        return None
+    hits = await websearch.search(client, title, max_results=5, include_domains=[trust.domain(url)])
+    hit = next((h for h in hits if _same_product_link(h["url"], url) and len(h.get("content") or "") >= 200), None)
+    if hit is None:
+        return None
+    products = await _llm_read_page(hit["url"], hit["content"], title)
+    same = [p for p in products if _same_product_link(p.url, url)] or (products if len(products) == 1 else [])
+    if not same:
+        return None
+    p = same[0]
+    p.url = url
+    return p
+
+
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")
 
 
