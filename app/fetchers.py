@@ -1,7 +1,7 @@
 """Second way to read a store page when our own request fails (blocked, timed out, server error, or a page
 that only renders with JavaScript).
 
-It works like the page reader Claude uses: a reader service fetches the page from its own infrastructure and
+It works like the page readers AI assistants use: a reader service fetches the page from its own infrastructure and
 returns the readable text, which the LLM then reads for products and prices.
   1. Tavily Extract (same TAVILY_API_KEY as search; free credits, 5 pages = 1 credit)
   2. Jina Reader (https://r.jina.ai, free, no key needed; JINA_API_KEY optional for higher limits)
