@@ -139,6 +139,7 @@
   .item .t { font-size:15px; font-weight:500; line-height:1.45; overflow-wrap:anywhere; }
   .item:hover .t { color:var(--ink); text-decoration:underline; }
   .item .p { font:700 20px "Readex Pro","IBM Plex Sans Arabic",sans-serif; color:var(--ink); margin-top:2px; }
+  .item .save { display:inline-block; width:fit-content; font-size:13px; font-weight:600; color:var(--deal); background:var(--deal-soft); padding:1px 8px; border-radius:6px; }
   .item .old { text-decoration:line-through; color:var(--muted); font:400 13px "IBM Plex Sans Arabic",sans-serif; margin-inline-start:8px; }
   .coupon { font-size:13px; color:var(--deal); }
   .note { font-size:13px; color:var(--muted); }
@@ -601,12 +602,13 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
         <span class="info">
           <span class="t" dir="auto">${esc(p.title)}</span>
           ${p.note ? `<span class="note">${esc(p.note)}</span>` : ''}
-          <span class="p">${fmt(p.price)}${p.old_price && p.old_price > p.price ? `<span class="old">${fmt(p.old_price)}</span>` : ''}</span>
+          <span class="p">${fmt(p.price)}${p.old_price && p.old_price > p.price ? `<span class="old" title="${L('السعر قبل الخصم', 'Price before the discount')}">${fmt(p.old_price)}</span>` : ''}</span>
+          ${p.old_price && p.old_price > p.price ? `<span class="save">${L(`وفّر ${fmt(p.old_price - p.price)}`, `Save ${fmt(p.old_price - p.price)}`)}${p.discount_pct ? ` · ${L('خصم ' + pct(p.discount_pct), pct(p.discount_pct) + ' off')}` : ''}</span>` : ''}
           ${p.coupon_price ? `<span class="coupon">${L(`${fmt(p.coupon_price)} بعد كوبون ${fmt(p.price - p.coupon_price)} عند الدفع`, `${fmt(p.coupon_price)} after a ${fmt(p.price - p.coupon_price)} coupon at checkout`)}</span>` : ''}
           <span class="badges">
             <span class="badge store">${esc(p.store)}</span>
             ${i === 0 ? `<span class="badge ok">${t('cheap')}</span>` : ''}
-            ${p.discount_pct ? `<span class="badge deal">${L('خصم ' + pct(p.discount_pct), pct(p.discount_pct) + ' off')}</span>` : ''}
+            ${p.discount_pct && !(p.old_price > p.price) ? `<span class="badge deal">${L('خصم ' + pct(p.discount_pct), pct(p.discount_pct) + ' off')}</span>` : ''}
             ${p.best_deal ? `<span class="badge deal">${L('أحسن عرض', 'Best deal')}</span>` : ''}
             ${p.condition ? `<span class="badge warn">${esc((COND[p.condition] || [p.condition, p.condition])[lang === 'ar' ? 0 : 1])}</span>` : ''}
             ${trustBadge(p)}

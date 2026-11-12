@@ -30,7 +30,8 @@ from .stores import ALL_STORES
 from .stores.base import DEBUG_DIR, HEADERS
 
 log = logging.getLogger("uvicorn.error")
-MAX_CANDIDATES = 45  # cheapest first; the judge reads every line, so more = more tokens per search
+MAX_CANDIDATES = 50  # cheapest first; the judge reads every line, so more = more tokens per search
+PER_STORE_FIRST = 8  # candidates from one store before other stores get their turn (more stores reach the judge)
 JUDGE_DOWN_RESULTS = 12  # no model could judge: the cheapest candidates, all marked "check it"
 MAX_PAGES = 20          # store pages opened per search
 MAX_PER_PAGE = 15       # products kept from one page (listing pages can have many)
@@ -229,7 +230,8 @@ Candidates (id, store, store trust 0-100 with the signals found on its site, con
 price EGP, discount, title, product link path (often holds the model number):
 {items}
 
-Return EVERY candidate that fits (often 5-20), not just the best few: the shopper wants to compare. Check each
+Return EVERY candidate that fits (often 10-25), not just the best few: the shopper wants to compare offers from
+as many different stores as have it (but never add a wrong product just to have another store). Check each
 candidate against EVERY requirement one by one (brand, quality, size, type, spec): if its title shows it misses
 one, drop it (e.g. a no-name item when the shopper wants well-known brands).
 A candidate fits when it (1) is what the shopper asked for. When the shopper described a need (e.g. "battery lasts
@@ -270,6 +272,7 @@ Reply JSON: {{"page": "shop" (a store's product or listing page, where you can b
 guide, price list or specs page: it only talks about products),
 "currency": "currency of the prices on the page, e.g. EGP, USD, SAR",
 "products": [{{"title": "...", "price": number (current price as shown, no old price),
+"old_price": number or null (the crossed-out price before the discount, only if the page shows one),
 "url": "the product link from the text or null", "condition": "new" | "used" | "refurbished",
 "in_stock": true | false | null (false if the page shows out of stock / sold out / غير متوفر / نفذت الكمية)}}]}}
 At most 12 products. Use only prices written on the page; never guess. Empty list if none, if the page is an
@@ -384,7 +387,9 @@ async def _llm_read_page(url: str, html: str, query: str, spread: int = 0, focus
         if not trust.is_shop_candidate(link):  # e.g. a link to another country's store
             continue
         cond = x.get("condition")
+        old = x.get("old_price")
         out.append(Product(store=trust.store_name(link), title=str(x["title"])[:200], price=float(price), url=link,
+                           old_price=float(old) if isinstance(old, (int, float)) and price < old <= price * 10 else None,
                            trusted=trust.is_known(link), condition=cond if cond in ("used", "refurbished") else None,
                            in_stock=x.get("in_stock") if isinstance(x.get("in_stock"), bool) else None))
     score, signals = trust.page_signals(html, url, False)
@@ -747,6 +752,43 @@ def _paid(p: Product) -> float:
     return p.coupon_price or p.price
 
 
+def _candidates(pool: list[Product]) -> list[Product]:
+    """What the judge sees, cheapest first: each store's PER_STORE_FIRST cheapest and every discounted offer get
+    in before the remaining places go to the cheapest of the rest. One store's long listing page then can't fill
+    every place, and a product that only one store sells still gets all the places it needs."""
+    pool = sorted(pool, key=_paid)
+    first, per = [], {}
+    for p in pool:
+        if p.discount_pct or per.get(p.store, 0) < PER_STORE_FIRST:
+            per[p.store] = per.get(p.store, 0) + 1
+            first.append(p)
+    first = first[:MAX_CANDIDATES]
+    taken = {id(p) for p in first}
+    rest = [p for p in pool if id(p) not in taken][:MAX_CANDIDATES - len(first)]
+    return sorted(first + rest, key=_paid)
+
+
+DEAL_WEIGHT = 0.92  # a discounted offer is shown before others up to ~8% cheaper than it
+
+
+def _show_order(picks: list[Product]) -> list[Product]:
+    """The cheapest offer first; after it, discounted offers move ahead of slightly cheaper ones, and a run of
+    one store's offers lets in another store's offer of about the same price (never a much dearer one)."""
+    picks = sorted(picks, key=_paid)
+    if len(picks) < 3:
+        return picks
+    rest = sorted(picks[1:], key=lambda p: _paid(p) * (DEAL_WEIGHT if p.discount_pct else 1))
+    out = [picks[0]]
+    while rest:
+        p = rest[0]
+        if len(out) >= 2 and out[-1].store == out[-2].store == p.store:
+            other = next((q for q in rest[1:4] if q.store != p.store and _paid(q) <= _paid(p) * 1.1), None)
+            p = other or p
+        rest.remove(p)
+        out.append(p)
+    return out
+
+
 def _discount(p: Product) -> int | None:
     """Real discount in %: against the store's own old price, or the checkout coupon."""
     ref = p.old_price if p.old_price and p.old_price > p.price else p.price
@@ -804,8 +846,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         pool = [p for p in pool if not any(p is q for q in shady)]
     for p in pool:
         p.discount_pct = _discount(p)
-    pool.sort(key=_paid)
-    pool = pool[:MAX_CANDIDATES]
+    pool = _candidates(pool)
 
     picks, summary, typical = [], "", None
     if pool:
@@ -866,7 +907,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             summary = (summary + " " if summary else "") + (
                 f"(شلت {gone} عرض لقيته خلصان لما فتحت صفحته." + ("" if picks else " ومفيش عرض تاني متوفر دلوقتي.") + ")")
     _flag_price_outliers(picks, typical)
-    picks.sort(key=_paid)
+    picks = _show_order(picks)
     return {
         "mode": "llm", "source": source, "timings": dict(TIMES),
         "llm_usage": {"calls": llm.USAGE["calls"], "tokens": llm.USAGE["tokens"], "by_step": dict(llm.USAGE["by_step"])},
