@@ -1074,7 +1074,7 @@ async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> 
     Each service that returns page text is asked in turn (product number + title first, then the title alone)
     until one has that page with a price; stores that keep their product pages from crawlers (Amazon) often show
     the product on listing / search pages that are crawled, so up to LISTING_READS of those are read last.
-    At most 4 searches + 4 LLM reads for one product.
+    At most 6 searches + 4 LLM reads for one product.
     Returns (product, "") or (None, why)."""
     services = [n for n in WITH_PAGE_TEXT if n in websearch.configured()]
     if not (services and llm.available() and title):
@@ -1083,7 +1083,7 @@ async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> 
     why: list[str] = []
     listings: dict[str, str] = {}  # other pages of that store the searches returned, with their page text
     for service in services:
-        for query in dict.fromkeys([" ".join([title] + ids), title]):
+        for query in dict.fromkeys([" ".join([title] + ids), *ids, title]):
             try:
                 hits = await websearch.search(client, query, max_results=6, include_domains=[trust.domain(url)],
                                               only=[service])
@@ -1106,8 +1106,9 @@ async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> 
                 return p, ""
             why.append(f"{service}: its copy has no price ({len(text)} chars)")
             break  # this service has the page but not its price: ask the next one
-    # listing pages first (a search page shows many products, a product page mostly only its own)
-    pages = sorted(listings.items(), key=lambda x: bool(_product_ids(x[0])))[:LISTING_READS]
+    # pages that mention the product number first, then listing pages (a search page shows many products)
+    pages = sorted(listings.items(), key=lambda x: (not any(i in x[1].lower() for i in ids),
+                                                    bool(_product_ids(x[0]))))[:LISTING_READS]
     for page_url, text in pages:
         try:
             products = await _llm_read_page(page_url, text, title)
