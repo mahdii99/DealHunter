@@ -214,7 +214,7 @@ def test_scheduled_check_reads_pages_it_cant_open_through_the_search_service(mon
     async def blocked(client, sem, u):
         raise agent.RobotsDisallowed()
 
-    async def fake_search(client, query, max_results=8, include_domains=None, **kw):
+    async def fake_search(client, query, max_results=8, include_domains=None, only=None, **kw):
         assert query == "Puma Unisex Running Sneaker b0cjzy1ctp" and include_domains == ["amazon.eg"]
         return [{"url": "https://www.amazon.eg/dp/B0OTHER123", "content": "x" * 300},
                 {"url": "https://www.amazon.eg/Puma-Unisex-Running-Sneaker/dp/B0CJZY1CTP", "content": "Puma ... EGP2,385.00 " * 20}]
@@ -224,7 +224,7 @@ def test_scheduled_check_reads_pages_it_cant_open_through_the_search_service(mon
         return {"page": "shop", "currency": "EGP", "products": [
             {"title": "Puma Unisex Running Sneaker", "price": 2385, "old_price": 2739, "url": None, "in_stock": True}]}
     monkeypatch.setattr(agent, "_fetch_page", blocked)
-    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "configured", lambda: ["tavily"])
     monkeypatch.setattr(websearch, "search", fake_search)
     monkeypatch.setattr(llm, "available", lambda: True)
     monkeypatch.setattr(llm, "ask_json", fake_ask)
