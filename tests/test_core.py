@@ -1519,8 +1519,8 @@ def test_chat_recommends_products_before_searching(monkeypatch):
     monkeypatch.setattr(agent, "run", no_search)
     d = TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "عايز لابتوب للبرمجة"}]}).json()
     assert d["action"] == "recommend" and d["answer"].startswith("دول أحسن")
-    assert d["recommendations"] == [{"name": "Lenovo IdeaPad Slim 3 (16GB)", "why": "رامات كفاية"},  # never a price
-                                    {"name": "ASUS Vivobook 15", "why": "شاشة كويسة"}]
+    assert d["recommendations"] == [{"name": "Lenovo IdeaPad Slim 3 (16GB)", "why": "رامات كفاية", "tier": ""},
+                                    {"name": "ASUS Vivobook 15", "why": "شاشة كويسة", "tier": ""}]  # never its price
     assert d["suggestions"] == ["دوّرلي على أسعارهم", "عايز أخف"] and d["results"] == []
 
 
@@ -1663,3 +1663,88 @@ def test_chat_stream_sends_the_reply_while_it_is_written(monkeypatch):
     events = [json.loads(line) for line in r.text.splitlines() if line.strip()]
     assert [e["text"] for e in events if e["type"] == "reply"] == ["سؤال", "سؤال حلو"]
     assert events[-1]["type"] == "done" and events[-1]["data"]["answer"] == "سؤال حلو"
+
+
+def test_suggestions_get_todays_prices_and_over_budget_ones_go(monkeypatch):
+    """The LLM's idea of prices is old: each suggestion is looked up on the well-known stores, the card shows the price
+    found, and one that costs more than the shopper's budget today is taken out (Liberty 3 Pro for a 2000 budget)."""
+    from app import websearch
+    asks, searched = [], []
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, step="", **kw):
+        asks.append((step, prompt))
+        if step == "plan":
+            return {"reply": "دي أحسن اختيارات في ميزانيتك:", "action": "recommend", "stores": ["btech.com"],
+                    "recommendations": [{"name": "Anker Soundcore R50i NC", "tier": "الأوفر", "why": "عزل كويس"},
+                                        {"name": "Anker Liberty 3 Pro", "tier": "الأعلى جودة", "why": "صوت ممتاز"},
+                                        {"name": "Sony WF-C510", "tier": "أحسن قيمة", "why": "بطارية طويلة"}]}
+        return {"prices": [{"i": 0, "price": 1113, "store": "B.TECH", "keep": True},
+                           {"i": 1, "price": 6500, "store": "Amazon", "keep": False},
+                           {"i": 2, "price": None, "store": None, "keep": True}]}
+
+    async def fake_search(client, query, max_results=8, include_domains=None, **kw):
+        searched.append((query, include_domains))
+        return [{"url": "https://btech.com/p", "title": query, "snippet": "1,113 ج.م"}]
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "search", fake_search)
+    d = TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "عايز ايربودز حلوة"}],
+                                                     "price_max": 2000}).json()
+    assert d["action"] == "recommend" and [r["name"] for r in d["recommendations"]] == [
+        "Anker Soundcore R50i NC", "Sony WF-C510"]
+    assert d["recommendations"][0]["price"] == 1113 and d["recommendations"][0]["store"] == "B.TECH"
+    assert "price" not in d["recommendations"][1] and d["over_budget"] == ["Anker Liberty 3 Pro"]
+    assert len(searched) == 3 and "btech.com" in searched[0][1] and "amazon.eg" in searched[0][1]
+    plan_prompt = asks[0][1]
+    assert "Price range the shopper set in the search box: السعر تحت 2000" in plan_prompt
+    assert "never ask about budget" in plan_prompt and "تحت 2000" in asks[1][1]
+
+
+def test_price_range_from_the_box_is_the_search_budget(monkeypatch):
+    seen = {}
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, step="", **kw):
+        return {"reply": "هدورلك", "action": "search", "request": "سماعة انكر", "max_price": 9000, "queries": ["anker"]}
+
+    async def fake_search(q, plan=None, budget_text=None):
+        seen.update(q=q, maxp=plan["max_price"], minp=plan["min_price"], said=budget_text)
+        return {"results": [], "request": q, "count": 0}
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(main, "_search", fake_search)
+    TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "سماعة انكر"}],
+                                                 "price_min": 2000, "price_max": 1000})
+    assert seen["maxp"] == 2000 and seen["minp"] == 1000  # swapped: the shopper typed them the other way round
+    assert seen["q"] == "سماعة انكر (السعر من 1000 لحد 2000 ج.م)" and agent._states_budget(seen["said"])
+
+
+def test_planner_talks_with_a_bit_of_variety(monkeypatch):
+    temps = {}
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, step="", temperature=0, **kw):
+        temps[step] = temperature
+        return {"reply": "هتستخدمها في إيه؟", "action": "ask", "options": ["جيم", "مكالمات"]}
+
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    asyncio.run(agent.plan_turn([{"role": "user", "text": "ايربودز"}]))
+    assert 0 < temps["plan"] <= 0.7
+
+
+def test_llm_sends_the_temperature_asked_for(monkeypatch):
+    bodies = []
+
+    def handler(request: httpx.Request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}]})
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setattr(llm, "_list_models", lambda client, provider: asyncio.sleep(0, ["openai/gpt-oss-120b"]))
+    real = httpx.AsyncClient
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    llm._COOLDOWN.clear()
+    assert asyncio.run(llm.ask_json("x", temperature=0.5)) == {"ok": 1}
+    assert asyncio.run(llm.ask_json("x")) == {"ok": 1}
+    assert [b["temperature"] for b in bodies] == [0.5, 0]
