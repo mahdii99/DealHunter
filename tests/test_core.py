@@ -1833,3 +1833,13 @@ def test_planner_checks_todays_market_prices_before_offering_ranges(monkeypatch)
     assert live == ["اللابات اللي تنفع"]  # the first, uninformed reply was never shown
     asyncio.run(agent.plan_turn(msgs))
     assert len(searched) == 1  # the same check today: from the database, no new search
+
+
+def test_placeholder_prices_are_dropped():
+    """Live chat 2026-11-12: nine RTX 3060 laptops at 100 EGP from one store (a placeholder on call-for-price pages);
+    a genuine one costs ~38,000. They all share the price, so only the judge's typical price shows it's not real."""
+    from app.models import Product
+    picks = [Product("CompuMarts", f"ASUS ROG Strix G15 RTX 3060 #{i}", 100, f"u{i}") for i in range(5)] + [
+        Product("deppsi.com", "Lenovo Legion 5 RTX 3060", 29000, "u9")]
+    agent._flag_price_outliers(picks, typical=38000)
+    assert [p.price for p in picks] == [29000]

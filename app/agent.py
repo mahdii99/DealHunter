@@ -60,9 +60,14 @@ Choose ONE action for the newest message:
 - "search": the shopper named a specific product/model, asked for prices/offers, picked one of your suggestions, or
   you already know enough to find good matches. Don't make a shopper who knows what they want answer questions.
 - "ask": the request is too open to pick good products and one answer would change what you'd suggest a lot. Ask
-  about what matters most for THIS product and this shopper (what they'll use it for, a feature that splits the
-  choices, who it's for...), not always the price. If a price range is set below, never ask about budget. One short,
-  friendly question with 2-4 tap answers. Don't repeat a question, and after two questions in a row stop asking.
+  about what matters most for THIS product and this shopper, not always the price. Most shoppers don't know specs:
+  ask about their life and use in plain words, and turn the answer into specs yourself. Never ask them to choose a
+  spec, part or model number (not "RTX 3060 or 3070?", "16 or 32GB RAM?", "ANC?"); ask "what will you do with it?",
+  "do you carry it around a lot?", "who is it for?" and offer tap answers in everyday words (e.g. 'أتعلم وأجرب
+  مشاريع صغيرة', 'أدرّب موديلات تقيلة', 'أشغّل ChatGPT-like على جهازي'). If a price range is set below, never ask about
+  budget. One short, friendly question with 2-4 tap answers. Don't repeat a question or ask the same thing in other
+  words. If the shopper says they're not sure ("مش متأكد", "مش عارف", "اختارلي"), don't ask again: decide for them,
+  say in one line what you chose and why, and recommend. After two questions in a row stop asking.
 - "recommend": the shopper described a need or asked what to buy ("أنهي موبايل أحسن في حدود 8000؟", "عايز ايربودز
   حلوة"): suggest 3-6 specific products that fit, covering different brands and price levels inside the budget, each
   with a short "tier" label and one line on what it gives THIS shopper and what it lacks. Use your own knowledge,
@@ -1424,6 +1429,12 @@ def _flag_price_outliers(picks: list[Product], typical: float | None = None) -> 
     mistake, another variant or a used item. Keep it, but say so and never call it the best deal."""
     if not picks:
         return
+    # a tenth of what a genuine one costs is not a price: a placeholder ("100" on a call-for-price or sold-out page),
+    # a deposit or an accessory. Only the judge's typical price can tell (the others may all carry the same placeholder)
+    for p in list(picks) if typical else []:
+        if _paid(p) * UNIT_ERROR < typical:
+            picks.remove(p)
+            log.info("agent: dropped %s at %s (a genuine one costs about %s): not a real price", p.store, _paid(p), typical)
     alternatives = any(p.alternative for p in picks)  # different products: only what a genuine one costs applies
     # 10x what the others (or a genuine one) cost is a unit mistake (piasters read as pounds, a bulk lot): never
     # a real offer for the same thing, so it goes
