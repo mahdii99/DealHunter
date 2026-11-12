@@ -1794,3 +1794,42 @@ def test_model_word_is_the_model_number():
     assert agent._model_word("Anker Soundcore R50i NC") == "r50i"
     assert agent._model_word("Sony WF-C510") == "c510"
     assert agent._model_word("JBL Wave Beam") == "" and agent._model_word("iPhone 16") == ""
+
+
+def test_planner_checks_todays_market_prices_before_offering_ranges(monkeypatch):
+    """'لاب استيراد للشغل ai': the planner knows the need (a strong GPU) but not today's prices, so it asks for one web
+    search; the second call sees the prices and offers ranges that can buy it. The same check is reused for a day."""
+    from app import websearch
+    prompts, searched, live = [], [], []
+
+    async def fake_ask(prompt, step="", on_text=None, **kw):
+        prompts.append((step, prompt))
+        if "Market check (" not in prompt:
+            if on_text:
+                on_text('{"need_specs": ["RTX 4060+"], "market_query": "سعر لابتوب RTX 4070 استيراد", "reply": "ميز')
+            return {"need_specs": ["RTX 4060+"], "market_query": "سعر لابتوب RTX 4070 استيراد", "reply": "ميزانيتك؟",
+                    "action": "ask", "options": ["أقل من 15000"]}
+        if on_text:
+            on_text('{"need_specs": [], "market_query": null, "reply": "اللابات اللي تنفع')
+        return {"reply": "اللابات اللي تنفع للـ AI بتبدأ من حوالي 30 ألف، ميزانيتك قد إيه؟", "action": "ask",
+                "options": ["30-40 ألف", "40-55 ألف", "أكتر من 55 ألف"], "market_query": None}
+
+    async def fake_search(client, query, max_results=8, include_domains=None, **kw):
+        searched.append(query)
+        return [{"url": "https://import-shop.com/p", "title": "Lenovo Legion RTX 4070 استيراد", "snippet": "38,500 جنيه"}]
+
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "search", fake_search)
+    msgs = [{"role": "user", "text": "عايز لاب استيراد للشغل ai ومش عارف أجيب إيه"}]
+    token = agent.REPLY.set(live.append)
+    try:
+        plan = asyncio.run(agent.plan_turn(msgs))
+    finally:
+        agent.REPLY.reset(token)
+    assert plan["action"] == "ask" and plan["options"][0] == "30-40 ألف" and plan["market_checked"]
+    assert searched == ["سعر لابتوب RTX 4070 استيراد"]
+    assert "38,500 جنيه | import-shop.com" in prompts[1][1] and prompts[1][0] == "plan_market"
+    assert live == ["اللابات اللي تنفع"]  # the first, uninformed reply was never shown
+    asyncio.run(agent.plan_turn(msgs))
+    assert len(searched) == 1  # the same check today: from the database, no new search

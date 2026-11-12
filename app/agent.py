@@ -74,6 +74,16 @@ Choose ONE action for the newest message:
   honest pick. To compare 2-4 products or offers, also fill "table". If a price looks too low for that product, say it
   may be a mistake, a different variant or a used/refurbished listing and how to check; if a store is unverified, say so.
 
+Understand the need before you offer anything. Work out what this use really requires (e.g. local AI work needs a
+strong NVIDIA GPU with plenty of VRAM and RAM; a gym earbud needs a secure fit and sweat resistance; a gift needs to
+know who it's for), and what products that meet it cost in Egypt TODAY (new or imported, as the shopper says). Price
+ranges you offer as tap answers and products you suggest must come from that: a range nobody can buy the needed
+product in is useless. Prices in Egypt change fast and your memory of them is often old: when your answer depends on
+today's prices (budget ranges, what a budget can buy, which models are in reach) and the "Market check" below is
+missing, set market_query to ONE short web search, in the words Egyptian stores and shoppers use, that shows those
+prices (e.g. 'سعر لابتوب RTX 4070 استيراد', 'اسعار سماعات بلوتوث عزل ضوضاء'); we run it and ask you again with the
+results. When a Market check is given, base the prices on it and set market_query to null.
+
 A budget the shopper gave anywhere in the chat (or the price range set below) stays for every later search and
 recommendation until they change it: put it in max_price/min_price again each time.
 
@@ -93,8 +103,11 @@ The search fields (need_based and everything after "request") are needed ONLY fo
 for the other actions.
 
 {chat}
-Reply JSON (put "reply" first):
+Reply JSON (in this order):
 {
+  "need_specs": ["what this shopper's use really requires, in short English, e.g. 'NVIDIA RTX GPU 8GB+ VRAM',
+                 '32GB RAM'; [] when they named an exact product"],
+  "market_query": "one short web search for today's prices in Egypt, or null (see above)",
   "reply": "what you say to the shopper now, as a salesperson: for ask the question itself; for recommend one short
             intro line; for answer 1-5 short sentences answering; for search one short line saying what you'll look
             for (mention the change if a follow-up)",
@@ -230,16 +243,56 @@ def _table(t) -> dict | None:
     return {"columns": cols, "rows": rows} if len(cols) >= 2 and rows else None
 
 
+MARKET_HITS = 8           # search results the planner reads to learn today's prices
+MARKET_TTL = 24 * 3600    # the same market check is reused for a day (prices don't move that fast)
+_MARKET_ASKED = re.compile(r'"market_query"\s*:\s*"[^"]')  # the planner wants a market check first
+
+
+async def _market_check(query: str, plan: dict) -> str:
+    """One web search for what the needed products cost today (any shop: imported goods are often sold outside
+    the big stores), kept for a day so popular needs cost nothing. '' when it can't be done."""
+    key = "__market__:" + db.cache_key(query, market.current().code)
+    hit = await asyncio.to_thread(_db_safe, db.cached_search, key, MARKET_TTL)
+    if hit is not None:
+        return hit.get("text", "")
+    if not websearch.available():
+        return ""
+    _progress("بشوف أسعار السوق النهارده عشان أرشحلك صح...")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await websearch.search(client, query, max_results=MARKET_HITS)
+    except (websearch.SearchError, httpx.HTTPError) as e:
+        log.warning("agent: market check failed: %s", e)
+        return ""
+    text = "\n".join(f"- {str(h.get('title', ''))[:120]} | {str(h.get('snippet', ''))[:240]} | {trust.domain(h.get('url', ''))}"
+                     for h in res)
+    if text:
+        await asyncio.to_thread(_db_safe, db.save_search, key, market.current().code, {"text": text})
+    return text
+
+
 async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] | None = None,
                     price: tuple[float | None, float | None] = (None, None)) -> dict:
-    """One LLM call: understand the newest message in the context of the chat (and the results on screen), decide
-    what a good salesperson does now (search / ask / recommend / answer), and plan the searches.
+    """Understand the newest message in the context of the chat (and the results on screen), decide what a good
+    salesperson does now (search / ask / recommend / answer), and plan the searches. Usually one LLM call; when the
+    answer depends on today's prices it doesn't know (market_query), one web search and a second call that sees them.
     Raises llm.LLMError when no model answers."""
     live = REPLY.get()
-    on_text = (lambda text: live(t) if (t := reply_so_far(text)) else None) if live else None
-    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current, shown, price)), timeout=12,
-                              prefer="strong", step="plan", on_text=on_text,
-                              temperature=0.5)  # a little variety: a salesperson, not a template  # gpt-oss-120b on Groq first: ~1 s
+
+    def on_text(text: str) -> None:  # the reply is shown while it's written, unless a market check comes first
+        if live and not _MARKET_ASKED.search(text) and (t := reply_so_far(text)):
+            live(t)
+    block = _chat_block(messages, current, shown, price)
+    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", block), timeout=12, prefer="strong", step="plan",
+                              on_text=on_text if live else None,
+                              temperature=0.5)  # a little variety: a salesperson, not a template
+    query = plan.get("market_query")
+    if isinstance(query, str) and query.strip() and (found := await _market_check(query.strip()[:150], plan)):
+        log.info("agent: market check %r before answering", query)
+        block += f"Market check (web search '{query.strip()[:150]}', today's prices in Egypt):\n{found}\n"
+        plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", block), timeout=12, prefer="strong",
+                                  step="plan_market", on_text=on_text if live else None, temperature=0.5)
+        plan["market_checked"] = query.strip()[:150]
     last = next((m.get("text", "") for m in reversed(messages) if m.get("role") == "user"), "")
     # names only: a price the LLM guessed would mislead the shopper and the judge
     plan["suggested_products"] = [_PRICE_TAIL.sub("", x).strip() for x in plan.get("suggested_products") or []
