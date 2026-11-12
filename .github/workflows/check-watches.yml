@@ -6,7 +6,7 @@ name: check followed prices
 on:
   schedule:
     - cron: "17 */6 * * *"   # every 6 hours
-  workflow_dispatch:
+  workflow_dispatch:   # Actions -> check followed prices -> Run workflow: checks every followed product now
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -15,8 +15,9 @@ jobs:
         env:
           SITE_URL: ${{ secrets.SITE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          EVERY: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
         run: |
           if [ -z "$SITE_URL" ] || [ -z "$CRON_SECRET" ]; then echo "SITE_URL / CRON_SECRET secrets not set, skipping"; exit 0; fi
           # the free server sleeps: the first request wakes it (up to a minute), so retry a few times
           curl -fsS --retry 5 --retry-delay 20 --retry-all-errors --max-time 180 -X POST \
-            -H "X-Cron-Secret: $CRON_SECRET" "$SITE_URL/api/cron/check-watches"
+            -H "X-Cron-Secret: $CRON_SECRET" "$SITE_URL/api/cron/check-watches?every=$EVERY"
