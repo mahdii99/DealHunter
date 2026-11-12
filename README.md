@@ -1,4 +1,4 @@
-# DealHunter
+# Easy Found (DealHunter)
 
 [![tests](https://github.com/mahdii99/DealHunter/actions/workflows/tests.yml/badge.svg)](https://github.com/mahdii99/DealHunter/actions/workflows/tests.yml)
 
