@@ -215,7 +215,7 @@ def test_scheduled_check_reads_pages_it_cant_open_through_the_search_service(mon
         raise agent.RobotsDisallowed()
 
     async def fake_search(client, query, max_results=8, include_domains=None, **kw):
-        assert query == "Puma Unisex Running Sneaker" and include_domains == ["amazon.eg"]
+        assert query == "Puma Unisex Running Sneaker b0cjzy1ctp" and include_domains == ["amazon.eg"]
         return [{"url": "https://www.amazon.eg/dp/B0OTHER123", "content": "x" * 300},
                 {"url": "https://www.amazon.eg/Puma-Unisex-Running-Sneaker/dp/B0CJZY1CTP", "content": "Puma ... EGP2,385.00 " * 20}]
 
