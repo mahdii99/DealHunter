@@ -125,7 +125,31 @@
   .sort { min-height:38px; padding:0 14px; border-radius:20px; border:1px solid var(--border); background:var(--card); font-size:13px; font-weight:500; }
   .sort[aria-pressed="true"] { background:var(--text); color:var(--bg); border-color:var(--text); }
   .sum { padding:14px 16px; border-radius:14px; background:var(--soft); display:flex; gap:10px; align-items:flex-start; }
-  .sum svg { color:var(--ink); margin-top:3px; }
+  .sum svg { color:var(--ink); margin-top:3px; flex-shrink:0; }
+  .sum > div { display:grid; gap:10px; min-width:0; white-space:pre-wrap; }
+  .typing::after { content:""; display:inline-block; width:2px; height:1em; margin-inline-start:2px; vertical-align:-2px; background:currentColor;
+                   animation:pulse .8s steps(1) infinite; }
+  .cmp-wrap { overflow-x:auto; }
+  .cmp { border-collapse:collapse; font-size:13px; white-space:normal; min-width:100%; }
+  .cmp th, .cmp td { padding:7px 10px; border-bottom:1px solid var(--border); text-align:start; vertical-align:top; }
+  .cmp th { font-weight:600; color:var(--ink); }
+  .cmp td:first-child { color:var(--muted); font-weight:500; }
+  .recs { display:grid; gap:10px; }
+  .rec { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:12px 14px; display:flex; gap:12px; align-items:center; }
+  .rec > span { flex:1; min-width:0; display:grid; gap:3px; }
+  .rec b { font-size:15px; overflow-wrap:anywhere; }
+  .rec small { font-size:13px; color:var(--muted); }
+  .rec button { flex-shrink:0; min-height:40px; padding:0 14px; border-radius:10px; border:1px solid var(--accent); background:transparent; color:var(--ink); font-size:13px; font-weight:600; }
+  .chip.next { border-color:var(--border2); }
+  .chats-box[hidden] { display:none; }
+  .chat-row { display:flex; align-items:center; gap:2px; }
+  .chat-row .hist { flex:1; min-width:0; }
+  .chat-row .del { width:36px; height:36px; flex-shrink:0; border:0; border-radius:8px; background:transparent; color:var(--muted); display:inline-flex; align-items:center; justify-content:center; }
+  .chat-row .del:hover { background:var(--card2); color:var(--warn); }
+  .composer .mic { width:44px; height:44px; flex-shrink:0; border-radius:12px; border:0; background:transparent; color:var(--muted);
+                   display:inline-flex; align-items:center; justify-content:center; }
+  .composer .mic[hidden] { display:none; }
+  .composer .mic[aria-pressed="true"] { color:var(--on-accent); background:var(--warn); animation:pulse 1.2s ease-in-out infinite; }
   .err { color:var(--warn); font-size:13px; }
   .grid { display:flex; flex-direction:column; gap:12px; }
   .wrap { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:16px; display:flex; flex-direction:column; gap:10px; }
@@ -315,6 +339,10 @@
 
 <div class="layout">
   <aside class="desktop-only">
+    <section class="panel chats-box" hidden>
+      <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12z"/></svg><span data-t="chatsTitle"></span></h2>
+      <div class="chats-list" style="display:grid;gap:2px"></div>
+    </section>
     <section class="panel">
       <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span data-t="historyTitle"></span></h2>
       <div class="history-list" style="display:grid;gap:2px"></div>
@@ -342,6 +370,8 @@
       <label class="sr" for="q" data-t="askLabel"></label>
       <div class="box">
         <input id="q" autocomplete="off" required minlength="2" maxlength="300" data-t-ph="placeholder">
+        <button class="mic" id="mic" type="button" hidden aria-pressed="false" data-t-aria="voice">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
         <button class="send" id="b"><span class="lbl-send" data-t="send"></span>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
       </div>
@@ -365,6 +395,8 @@
       <button class="x" type="button" data-act="close" data-t-aria="close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
     <div class="sheet-items">
       <button class="sheet-item primary" type="button" data-act="new"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span data-t="newChat"></span></button>
+      <div class="chats-box" hidden><div class="sheet-label" data-t="chatsTitle"></div>
+        <div class="chats-list" style="display:grid;gap:2px"></div></div>
       <div class="sheet-label" data-t="historyTitle"></div>
       <div class="history-list" style="display:grid;gap:2px"></div>
       <div class="sheet-label" style="display:flex"><span data-t="saved"></span><span class="count saved-count"></span></div>
@@ -464,6 +496,9 @@ const T = {
     cancelWatch: 'إلغاء', nowAt: 'دلوقتي', was: 'كان', yourRegion: 'بلدك', onlyTrusted: 'وريني المتاجر المشهورة والموثوقة بس',
     logout: 'تسجيل خروج', deleteMe: 'امسح حسابي وكل بياناتي', sureDelete: 'متأكد؟ هنمسح حسابك والمنتجات اللي بتتابعها والإشعارات.',
     signInFailed: 'معرفناش نسجلك دخول، جرب تاني.',
+    chatsTitle: 'محادثاتك', delChat: 'امسح المحادثة', voice: 'اتكلم بدل ما تكتب', listening: 'سامعك... اتكلم',
+    noMic: 'مقدرناش نسمعك، اسمح للموقع يستخدم المايك وجرب تاني.', searchNow: 'دوّرلي على طول', priceOf: 'شوف سعره',
+    findAll: 'دوّرلي على أسعارهم كلهم', findAllMsg: names => 'دوّرلي على أسعار ' + names.join(' و'), findOneMsg: n => 'دوّرلي على سعر ' + n,
     now: 'دلوقتي', minAgo: n => `من ${n} دقيقة`, hrAgo: n => `من ${n} ساعة`, dayAgo: n => n === 1 ? 'امبارح' : `من ${n} أيام` },
   en: { tagline: 'The lowest price across stores', tools: 'Site tools', newChat: 'New search', region: 'Region',
     regionHint: 'Stores and currency change by region', soon: 'Soon', language: 'Language', switchLang: 'العربية', darkMode: 'Dark mode',
@@ -491,6 +526,9 @@ const T = {
     cancelWatch: 'Remove', nowAt: 'now', was: 'was', yourRegion: 'Your country', onlyTrusted: 'Show only well-known and trusted stores',
     logout: 'Sign out', deleteMe: 'Delete my account and all my data', sureDelete: 'Sure? This deletes your account, followed products and notifications.',
     signInFailed: 'We couldn’t sign you in, try again.',
+    chatsTitle: 'Your chats', delChat: 'Delete chat', voice: 'Speak instead of typing', listening: 'Listening... speak now',
+    noMic: 'We couldn’t hear you. Allow the microphone for this site and try again.', searchNow: 'Just search now', priceOf: 'See prices',
+    findAll: 'Find prices for all of them', findAllMsg: names => 'Find prices for ' + names.join(', '), findOneMsg: n => 'Find the price of ' + n,
     now: 'Just now', minAgo: n => `${n} min ago`, hrAgo: n => `${n} h ago`, dayAgo: n => n === 1 ? 'Yesterday' : `${n} days ago` }
 };
 const REASONS = {wrong_product: ['منتج تاني مش اللي طلبته', 'Different product'], wrong_price: ['السعر غلط', 'Wrong price'],
@@ -520,7 +558,7 @@ function applyLang() {
   $$('[data-t-aria]').forEach(el => { el.setAttribute('aria-label', t(el.dataset.tAria)); });
   $$('[data-lang]').forEach(el => el.setAttribute('aria-checked', String(el.dataset.lang === lang)));
   $('#sugs').innerHTML = t('sugs').map(s => `<button class="sug" type="button">${esc(s)}</button>`).join('');
-  drawRegion(); drawSide(); fbCount();
+  drawRegion(); drawSide(); fbCount(); if (me) drawChats();
   shown.forEach((d, i) => { const el = chat.querySelector(`.a[data-turn="${i}"]`); if (el) el.innerHTML = render(d, i); });
 }
 function isDark() {
@@ -640,11 +678,27 @@ function ordered(d) {  // the results as the chosen sort shows them, each with i
   if (d.sort === 'deals') return list.filter(x => x.p.discount_pct || (x.p.old_price && x.p.old_price > x.p.price));
   return list;
 }
+// quick next messages under an answer: tapping one sends it, like typing it
+const nexts = list => list && list.length ? `<div class="chips">${list.map(o => `<button class="chip next" type="button">${esc(o)}</button>`).join('')}</div>` : '';
+function table(tb) {  // a comparison from the agent (columns: "", product 1, product 2...)
+  if (!tb || !tb.columns || !tb.rows) return '';
+  return `<div class="cmp-wrap"><table class="cmp"><thead><tr>${tb.columns.map(c => `<th scope="col">${esc(c)}</th>`).join('')}</tr></thead>` +
+    `<tbody>${tb.rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
 function render(d, turn) {  // one assistant turn
-  if (d.action === 'answer') return `<div class="sum">${SPARK}<span>${esc(d.answer)}</span></div>`;
+  if (d.action === 'answer') return `<div class="sum">${SPARK}<div><span>${esc(d.answer)}</span>${table(d.table)}</div></div>` + nexts(d.suggestions);
+  if (d.action === 'recommend') {  // like a salesperson: products that fit, then the shopper picks what to price
+    const recs = d.recommendations || [];
+    return `<div class="sum">${SPARK}<div><span>${esc(d.answer)}</span></div></div>` +
+      `<div class="recs">${recs.map(r => `<div class="rec"><span><b dir="auto">${esc(r.name)}</b>${r.why ? `<small>${esc(r.why)}</small>` : ''}</span>` +
+        `<button type="button" data-say="${esc(t('findOneMsg')(r.name))}">${t('priceOf')}</button></div>`).join('')}</div>` +
+      `<div class="chips">${recs.length > 1 ? `<button class="chip" type="button" data-say="${esc(t('findAllMsg')(recs.map(r => r.name)))}">${t('findAll')}</button>` : ''}` +
+      `${(d.suggestions || []).map(o => `<button class="chip next" type="button">${esc(o)}</button>`).join('')}</div>`;
+  }
   if (d.action === 'ask') {
     return `<div class="und">${esc(d.question)}</div>` +
-      `<div class="chips">${(d.options || []).map(o => `<button class="chip" type="button">${esc(o)}</button>`).join('')}</div>`;
+      `<div class="chips">${(d.options || []).map(o => `<button class="chip" type="button">${esc(o)}</button>`).join('')}` +
+      `<button class="chip next" type="button">${t('searchNow')}</button></div>`;
   }
   // pages we couldn't open: only shown with ?debug=1 in the address (kept out of the normal page)
   const errs = new URLSearchParams(location.search).has('debug') ? Object.keys(d.store_errors || {}) : [];
@@ -661,11 +715,13 @@ function render(d, turn) {  // one assistant turn
     (errs.length ? `<div class="err">${L('صفحات مقدرناش نفتحها: ', 'Pages we couldn’t open: ')}${errs.map(k => esc(k) + ' (' + esc(d.store_errors[k]).slice(0, 60) + ')').join('، ')}</div>` : '') +
     (alt ? `<div class="err">${L('مالقيناش المطلوب بالظبط، ودي أقرب بدائل من متاجر حقيقية:', 'We didn’t find exactly that; these are the closest alternatives from real stores:')}</div>` : '') +
     `<div class="grid">${list.length ? list.map((x, rank) => card(x.p, x.i, rank, turn)).join('') : `<div class="hint-line">${t('noDeals')}</div>`}</div>` +
-    (d.results.length ? `<div class="hint-line">${L('عايز تغيّر حاجة؟ اكتبها تحت، مثلاً: ماركة معينة، أرخص، لون تاني.', 'Want to change something? Type it below, e.g. a brand, cheaper, another color.')}</div>` : '');
+    (d.suggestions && d.suggestions.length ? nexts(d.suggestions)
+      : d.results.length ? `<div class="hint-line">${L('عايز تغيّر حاجة؟ اكتبها تحت، مثلاً: ماركة معينة، أرخص، لون تاني.', 'Want to change something? Type it below, e.g. a brand, cheaper, another color.')}</div>` : '');
 }
 function said(d) {  // what the assistant "said", so the next message is understood in context
   if (d.action === 'ask') return d.question;
-  if (d.action === 'answer') return d.answer;
+  if (d.action === 'answer') return d.answer + (d.table ? ' ' + d.table.rows.map(r => r.join(': ')).join('; ') : '');
+  if (d.action === 'recommend') return d.answer + ' Suggested: ' + (d.recommendations || []).map(r => r.name).join('; ');
   const top = d.results.slice(0, 5).map((p, i) => `${i + 1}) ${p.title} - ${p.price} ${d.market || 'EGP'} (${p.store})`).join('; ');
   return [d.understood, d.summary, top && 'Shown: ' + top].filter(Boolean).join(' ');
 }
@@ -673,20 +729,59 @@ function add(cls, html) {
   const el = document.createElement('div'); el.className = cls; el.innerHTML = html; chat.appendChild(el);
   el.scrollIntoView({behavior: 'smooth', block: 'start'}); return el;
 }
-// the conversation on screen survives a refresh: kept in this browser for a few hours, the last 6 turns
-let turns = [];
-function saveChat() {
-  store.set('dh-chat', turns.length ? {at: Date.now(), history, currentRequest, turns: turns.slice(-6)} : null);
+// the conversation on screen survives a refresh: kept in this browser for a few hours, the last 6 turns.
+// A signed-in shopper's conversations are also saved on the server, so they can go back to them on any device.
+let turns = [], chatId = null;
+const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), x => x.toString(16).padStart(2, '0')).join('');
+const SLIM = ['timings', 'llm_usage', 'store_errors', 'queries', 'requirements', 'sold_out_dropped', 'source', 'mode'];
+const slim = d => Object.fromEntries(Object.entries(d).filter(([k]) => !SLIM.includes(k)));
+let syncT;
+function saveChat(localOnly) {
+  store.set('dh-chat', turns.length ? {at: Date.now(), id: chatId, history, currentRequest, turns: turns.slice(-6)} : null);
+  if (localOnly || !me || !turns.length) return;
+  clearTimeout(syncT);
+  syncT = setTimeout(() => {
+    const data = {history: history.slice(-16), currentRequest, turns: turns.slice(-8).map(x => ({u: x.u, d: slim(x.d)}))};
+    api('/api/chats/' + chatId, {method: 'PUT', body: JSON.stringify({title: turns[0].u.slice(0, 200), data})})
+      .then(drawChats).catch(() => {});
+  }, 800);
 }
-function restoreChat() {
-  const c = store.get('dh-chat', null);
-  if (!c || !c.turns || !c.turns.length || Date.now() - c.at > 6 * 3600 * 1000) return;
+function showTurns(c) {
   turns = c.turns; history = c.history || []; currentRequest = c.currentRequest || ''; hero.hidden = true;
+  shown.length = 0; chat.innerHTML = '';
   turns.forEach(x => {
     add('u', esc(x.u));
     const a = add('a', ''); a.dataset.turn = shown.length; shown.push(x.d); a.innerHTML = render(x.d, shown.length - 1);
   });
   chat.lastElementChild?.previousElementSibling?.scrollIntoView({block: 'start'});
+}
+function restoreChat() {
+  const c = store.get('dh-chat', null);
+  if (!c || !c.turns || !c.turns.length || Date.now() - c.at > 6 * 3600 * 1000) { chatId = newId(); return; }
+  chatId = c.id || newId(); showTurns(c);
+}
+async function drawChats() {  // the "your chats" list (signed-in shoppers only)
+  $$('.chats-box').forEach(el => { el.hidden = !me; });
+  if (!me) return;
+  let list = [];
+  try { list = (await api('/api/chats')).chats; } catch (e) { return; }
+  const html = list.length ? list.map(c => `<div class="chat-row"><button class="hist" type="button" data-chat="${esc(c.id)}"><span dir="auto">${esc(c.title)}</span><small>${agoSec(c.updated_at)}</small></button>` +
+      `<button class="del" type="button" data-delchat="${esc(c.id)}" aria-label="${t('delChat')}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`).join('')
+    : `<div class="empty">${t('noHistory')}</div>`;
+  $$('.chats-list').forEach(el => { el.innerHTML = html; });
+}
+async function openChat(id) {
+  if (b.disabled) return;
+  try {
+    const c = await api('/api/chats/' + id);
+    chatId = c.id; closeAll(); showTurns(c.data); saveChat(true);  // opening it doesn't make it newer
+  } catch (e) { toast(t('error')); }
+}
+function lastResults() {  // the results on screen now, so a question about them ("أنهي أحسن؟") gets a real answer
+  const d = [...shown].reverse().find(x => x.action === 'search' && x.results && x.results.length);
+  return d ? d.results.slice(0, 12).map(p => ({title: p.title, price: p.price, old_price: p.old_price ?? null, discount_pct: p.discount_pct ?? null,
+    store: p.store || '', trusted: !!p.trusted, trust_score: p.trust_score ?? null, verified: p.verified ?? null, condition: p.condition || null,
+    unconfirmed: !!p.unconfirmed, lowest_seen: p.lowest_seen ?? null, previous_price: p.previous_price ?? null, note: p.note || null})) : [];
 }
 async function send(text) {
   text = text.trim(); if (text.length < 2 || b.disabled) return;
@@ -694,14 +789,17 @@ async function send(text) {
   add('u', esc(text));
   if (!history.length) remember(text);
   history.push({role: 'user', text});
-  const a = add('a', `<div class="meta live"><span class="step">${t('understanding')}</span> <span class="secs"></span></div>`);
+  const a = add('a', `<div class="sum" hidden>${SPARK}<div><span class="typing"></span></div></div>` +
+                     `<div class="meta live"><span class="step">${t('understanding')}</span> <span class="secs"></span></div>`);
   const step = a.querySelector('.step'), secs = a.querySelector('.secs'), t0 = Date.now();
+  const live = a.querySelector('.sum'), liveText = live.querySelector('span');
   const timer = setInterval(() => { secs.textContent = Math.round((Date.now() - t0) / 1000) + ' ' + t('sec'); }, 1000);
   b.disabled = true;
   try {
-    // progress arrives line by line (what the agent is doing now), the answer comes in the last line
+    // progress arrives line by line (what the agent is doing now, and its reply while it's written),
+    // the whole answer comes in the last line
     const r = await fetch('/api/chat/stream', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                              body: JSON.stringify({messages: history.slice(-12), request: currentRequest})});
+                                              body: JSON.stringify({messages: history.slice(-12), request: currentRequest, shown: lastResults()})});
     if (!r.ok || !r.body) throw new Error(r.status);
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = '', d = null;
@@ -715,6 +813,7 @@ async function send(text) {
         if (!line) continue;
         const ev = JSON.parse(line);
         if (ev.type === 'status') step.textContent = ev.text;
+        else if (ev.type === 'reply') { live.hidden = false; liveText.textContent = ev.text; }
         else if (ev.type === 'done') d = ev.data;
         else if (ev.type === 'error') throw new Error(ev.status);
       }
@@ -723,6 +822,7 @@ async function send(text) {
     if (d.action === 'search') currentRequest = d.request || currentRequest;
     history.push({role: 'assistant', text: said(d).slice(0, 1500)});
     a.dataset.turn = shown.length; shown.push(d);
+    if (!turns.length) chatId = newId();
     turns.push({u: text, d}); saveChat();
     a.innerHTML = render(d, shown.length - 1);
   } catch (err) {
@@ -731,8 +831,32 @@ async function send(text) {
   } finally { clearInterval(timer); b.disabled = false; q.focus(); }
 }
 function newChat() {
-  turns = []; saveChat();
+  turns = []; chatId = newId(); saveChat();
   history = []; currentRequest = ''; shown.length = 0; chat.innerHTML = ''; hero.hidden = false; closeAll(); q.focus();
+}
+
+// ---------- voice: the browser's own speech recognition (free; Chrome, Edge, Safari) ----------
+const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+const mic = $('#mic');
+let rec = null;
+if (Speech) {
+  mic.hidden = false;
+  mic.addEventListener('click', () => {
+    if (rec) { rec.stop(); return; }
+    rec = new Speech();
+    rec.lang = lang === 'ar' ? 'ar-EG' : 'en-US'; rec.interimResults = true; rec.continuous = false;
+    const before = q.placeholder;
+    let heard = '', failed = false;
+    rec.onresult = e => { heard = Array.from(e.results, x => x[0].transcript).join(''); q.value = heard; };
+    rec.onerror = e => { failed = e.error !== 'no-speech' && e.error !== 'aborted'; };
+    rec.onend = () => {
+      rec = null; mic.setAttribute('aria-pressed', 'false'); q.placeholder = before;
+      if (failed && !heard) toast(t('noMic'));
+      else if (heard.trim().length >= 2) send(heard);
+    };
+    mic.setAttribute('aria-pressed', 'true'); q.placeholder = t('listening');
+    try { rec.start(); } catch (e) { rec = null; mic.setAttribute('aria-pressed', 'false'); q.placeholder = before; }
+  });
 }
 
 // ---------- sheets, dialog, toast ----------
@@ -790,7 +914,13 @@ document.addEventListener('click', e => {
   }
   if (el.dataset.again) { const text = el.dataset.again; newChat(); return send(text); }
   if (el.classList.contains('sug')) return send(el.textContent);
-  if (el.classList.contains('chip')) return send(el.textContent);  // quick answers of a question
+  if (el.dataset.say) return send(el.dataset.say);  // a recommended product's "see prices"
+  if (el.classList.contains('chip')) return send(el.textContent);  // quick answers of a question, next steps
+  if (el.dataset.chat) return openChat(el.dataset.chat);
+  if (el.dataset.delchat) {
+    const id = el.dataset.delchat;
+    return api('/api/chats/' + id, {method: 'DELETE'}).then(() => { if (id === chatId) newChat(); drawChats(); }).catch(() => toast(t('error')));
+  }
   if (el.dataset.sort) {
     const a = el.closest('.a'), d = shown[+a.dataset.turn]; d.sort = el.dataset.sort; a.innerHTML = render(d, +a.dataset.turn); return;
   }
@@ -831,7 +961,9 @@ function drawAcct() {
     `<button class="btn me" type="button" aria-label="${t('account')}">${me.picture ? `<img src="${esc(me.picture)}" alt="" referrerpolicy="no-referrer">` : ''}<span class="nm">${esc(me.name.split(' ')[0])}</span></button>`);
 }
 function signedIn(d) {
+  const first = !me && d.user;
   me = d.user; unseen = d.unseen || 0; drawAcct();
+  if (first) { drawChats(); if (turns.length) saveChat(); }  // the chat started before signing in is kept too
   if (me && me.market && markets.some(m => m.code === me.market)) { marketCode = me.market; drawRegion(); }
   if (me && !me.market) welcome();
 }

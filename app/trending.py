@@ -2,7 +2,6 @@
 search on the site lately, what's trending in the market's stores this week, and the occasions coming up
 (Black Friday, Ramadan, back to school...). One web search + one LLM call per refresh, kept in the database."""
 import asyncio
-import json
 import logging
 import time
 

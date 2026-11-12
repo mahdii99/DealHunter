@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Path as UrlPart
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -190,9 +191,27 @@ class ChatMessage(BaseModel):
     text: str = Field(max_length=2000)
 
 
+class ShownResult(BaseModel):
+    """One result on the shopper's screen, sent back with the next message so questions about it get real answers."""
+    title: str = Field("", max_length=300)
+    price: float | None = None
+    old_price: float | None = None
+    discount_pct: int | None = None
+    store: str = Field("", max_length=100)
+    trusted: bool = False
+    trust_score: int | None = None
+    verified: bool | None = None
+    condition: str | None = Field(None, max_length=30)
+    unconfirmed: bool = False
+    lowest_seen: float | None = None
+    previous_price: float | None = None
+    note: str | None = Field(None, max_length=300)
+
+
 class ChatTurn(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
     request: str = Field("", max_length=600)  # the standalone request of the previous search, "" at the start
+    shown: list[ShownResult] = Field(default_factory=list, max_length=20)  # the last search's results, cheapest first
 
 
 @app.post("/api/chat")
@@ -206,13 +225,15 @@ async def chat(turn: ChatTurn, request: Request):
 @app.post("/api/chat/stream")
 async def chat_stream(turn: ChatTurn, request: Request):
     """Same as /api/chat, but sends progress lines while it works (NDJSON: one JSON object per line):
-    {"type": "status", "text": ...} ... then {"type": "done", "data": <the /api/chat answer>}."""
+    {"type": "status", "text": ...} and {"type": "reply", "text": <the reply so far, while the LLM writes it>} ...
+    then {"type": "done", "data": <the /api/chat answer>}."""
     queue: asyncio.Queue = asyncio.Queue()
     client = client_id(request)
     user = await asyncio.to_thread(current_user, request)
 
     async def work():
         token = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
+        said = agent.REPLY.set(lambda text: queue.put_nowait({"type": "reply", "text": text}))  # typed as it comes
         try:
             queue.put_nowait({"type": "done", "data": await _chat_turn(turn, client, user)})
         except HTTPException as e:
@@ -221,6 +242,7 @@ async def chat_stream(turn: ChatTurn, request: Request):
             log.exception("chat stream failed")
             queue.put_nowait({"type": "error", "status": 500})
         finally:
+            agent.REPLY.reset(said)
             agent.PROGRESS.reset(token)
 
     async def lines():
@@ -279,18 +301,22 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
     agent.llm.reset_usage()
     if agent.llm.available():
         try:
-            plan = await agent.plan_turn(messages, turn.request)
+            plan = await agent.plan_turn(messages, turn.request, [r.model_dump() for r in turn.shown])
         except agent.llm.LLMError as e:
             log.warning("chat planner failed: %s", e)
             failed = e
-    if plan and plan["action"] == "ask":
+    if plan and plan["action"] == "ask":  # like a salesperson: one question first, to recommend the right thing
         log.info("=" * 70 + "\n")
-        return {"action": "ask", "question": plan["question"],
-                "options": [o for o in plan.get("options") or [] if isinstance(o, str)][:4],
-                "request": turn.request, "understood": plan.get("understood", ""), "results": [], "demo": DEMO}
+        return {"action": "ask", "question": plan["question"], "options": plan.get("options") or [],
+                "request": turn.request, "results": [], "demo": DEMO}
+    if plan and plan["action"] == "recommend":  # products that fit, from the LLM's knowledge, before any search
+        log.info("=" * 70 + "\n")
+        return {"action": "recommend", "answer": plan["reply"], "recommendations": plan["recommendations"],
+                "suggestions": plan["suggestions"], "request": turn.request, "results": [], "demo": DEMO}
     if plan and plan["action"] == "answer":  # a question about the shown results: answer it, no new search
         log.info("=" * 70 + "\n")
-        return {"action": "answer", "answer": plan["answer"], "request": turn.request or plan["request"],
+        return {"action": "answer", "answer": plan["answer"], "table": plan.get("table"),
+                "suggestions": plan["suggestions"], "request": turn.request or plan["request"],
                 "results": [], "demo": DEMO}
     if failed and turn.request and newest.rstrip().endswith(("?", "؟")):
         # a question about the results needs the LLM; gluing it onto the old request would search for nonsense
@@ -314,6 +340,8 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         if client and not cached:  # counted before searching, so many searches sent at once can't pass the limit
             await _db(db.count_search, client)
         payload = await _search(request, plan=plan, budget_text=said)
+    if plan and not payload.get("suggestions"):  # next steps the shopper can tap (the judge's, from the results, first)
+        payload["suggestions"] = plan.get("suggestions") or []
     return {**payload, "action": "search"}
 
 
@@ -543,6 +571,44 @@ def update_me(body: Settings, request: Request):
 def delete_me(request: Request, response: Response):
     accounts.delete_user(_need_user(request)["id"])
     response.delete_cookie(accounts.COOKIE)
+    return {"ok": True}
+
+
+MAX_CHAT_BYTES = 400_000  # one saved conversation (6 turns with their results are ~60-150 KB)
+CHAT_ID = r"^[A-Za-z0-9_-]{8,40}$"
+
+
+class SavedChat(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    data: dict
+
+
+@app.get("/api/chats")
+def chats(request: Request):
+    """The signed-in shopper's saved conversations, newest first (any device they sign in on)."""
+    return {"chats": accounts.list_chats(_need_user(request)["id"])}
+
+
+@app.get("/api/chats/{chat_id}")
+def get_chat(request: Request, chat_id: str = UrlPart(pattern=CHAT_ID)):
+    c = accounts.get_chat(_need_user(request)["id"], chat_id)
+    if not c:
+        raise HTTPException(404, "not found")
+    return c
+
+
+@app.put("/api/chats/{chat_id}")
+def save_chat(body: SavedChat, request: Request, chat_id: str = UrlPart(pattern=CHAT_ID)):
+    if len(json.dumps(body.data, ensure_ascii=False).encode()) > MAX_CHAT_BYTES:
+        raise HTTPException(413, "conversation too big")
+    accounts.save_chat(_need_user(request)["id"], chat_id, body.title.strip(), body.data)
+    return {"ok": True}
+
+
+@app.delete("/api/chats/{chat_id}")
+def delete_chat(request: Request, chat_id: str = UrlPart(pattern=CHAT_ID)):
+    if not accounts.delete_chat(_need_user(request)["id"], chat_id):
+        raise HTTPException(404, "not found")
     return {"ok": True}
 
 
