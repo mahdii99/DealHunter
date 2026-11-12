@@ -61,7 +61,7 @@ Python 3.12 · FastAPI · httpx (async) · selectolax · SQLite / Postgres (Supa
 
 ```bash
 python -m venv .venv && .venv/Scripts/activate      # Windows; on Linux/macOS: source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env                                 # then add your free keys (see the comments in the file)
 python -m scripts.check_keys                         # checks every key with one tiny request
 uvicorn app.main:app --reload                        # open http://localhost:8000

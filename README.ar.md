@@ -4,7 +4,7 @@
 
 ## تشغيل محلي
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 uvicorn app.main:app --reload       # افتح http://localhost:8000
 DEMO=1 uvicorn app.main:app         # وضع تجريبي من صفحات عينة (من غير إنترنت)
 pytest -q                           # الاختبارات
