@@ -947,23 +947,30 @@ def _same_product_link(a: str, b: str) -> bool:
     return _page_id(a) == _page_id(b) or bool(_product_ids(a) & _product_ids(b))
 
 
-async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> Product | None:
+async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> tuple[Product | None, str]:
     """A followed product whose page we may not open ourselves (robots.txt, bot wall, no price data in it): the
-    web search service's own fresh copy of that page, read by the LLM, the same way searches read such pages.
-    One search + one LLM read; None when the search doesn't return that page."""
+    web search service's own copy of that page, read by the LLM, the same way searches read such pages.
+    Up to 2 searches (with the product number first, then the title alone) + 1 LLM read.
+    Returns (product, "") or (None, why: what the search returned instead)."""
     if not (websearch.available() and llm.available() and title):
-        return None
-    hits = await websearch.search(client, title, max_results=5, include_domains=[trust.domain(url)])
-    hit = next((h for h in hits if _same_product_link(h["url"], url) and len(h.get("content") or "") >= 200), None)
-    if hit is None:
-        return None
-    products = await _llm_read_page(hit["url"], hit["content"], title)
-    same = [p for p in products if _same_product_link(p.url, url)] or (products if len(products) == 1 else [])
-    if not same:
-        return None
-    p = same[0]
-    p.url = url
-    return p
+        return None, "no search/LLM key or title"
+    ids = sorted(_product_ids(url), key=len, reverse=True)[:1]
+    seen: list[str] = []
+    for query in dict.fromkeys([" ".join([title] + ids), title]):
+        hits = await websearch.search(client, query, max_results=6, include_domains=[trust.domain(url)])
+        seen += [_slug(h["url"])[:40] or h["url"][-40:] for h in hits]
+        for h in hits:
+            text = h.get("content") or h.get("snippet") or ""
+            if not _same_product_link(h["url"], url) or len(text) < 40:
+                continue
+            products = await _llm_read_page(h["url"], text, title)
+            same = [p for p in products if _same_product_link(p.url, url)] or (products if len(products) == 1 else [])
+            if same:
+                p = same[0]
+                p.url = url
+                return p, ""
+            return None, f"its search copy has no price ({len(text)} chars)"
+    return None, "search didn't return it: " + ", ".join(dict.fromkeys(seen))[:300]
 
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")

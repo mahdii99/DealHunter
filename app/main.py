@@ -654,10 +654,10 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
         async def by_search(i):
             url, _, err = done[i]
             try:
-                p = await agent.price_from_search(client, url, await asyncio.to_thread(accounts.watch_title, url))
+                p, why = await agent.price_from_search(client, url, await asyncio.to_thread(accounts.watch_title, url))
             except Exception as e:
-                return url, None, f"{err} / search: {type(e).__name__}"
-            return url, p, None if p else f"{err} / not found by search"
+                return url, None, f"{err} / search: {type(e).__name__}: {str(e)[:120]}"
+            return url, p, None if p else f"{err} / {why}"
         for i, res in zip(tries, await asyncio.gather(*(by_search(i) for i in tries))):
             done[i] = res
     seen = [{"url": url, "price": p.price, "title": p.title, "store": p.store, "in_stock": p.in_stock,
