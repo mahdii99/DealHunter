@@ -212,6 +212,8 @@ class ChatTurn(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
     request: str = Field("", max_length=600)  # the standalone request of the previous search, "" at the start
     shown: list[ShownResult] = Field(default_factory=list, max_length=20)  # the last search's results, cheapest first
+    price_min: float | None = Field(None, ge=0, le=10_000_000)  # the price range set in the search box, if any
+    price_max: float | None = Field(None, gt=0, le=10_000_000)
 
 
 @app.post("/api/chat")
@@ -291,7 +293,11 @@ def _personalize(d: dict, user: dict) -> None:
 
 async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -> dict:
     messages = [m.model_dump() for m in turn.messages]
-    said = " | ".join(m["text"] for m in messages if m["role"] == "user")
+    lo, hi = turn.price_min or None, turn.price_max or None
+    if lo and hi and lo > hi:
+        lo, hi = hi, lo
+    rng = agent.price_range_text(lo, hi)
+    said = " | ".join([m["text"] for m in messages if m["role"] == "user"] + ([rng] if rng else []))
     newest = next((m["text"] for m in reversed(messages) if m["role"] == "user"), "").strip()
     if len(newest) < 2:
         raise HTTPException(422, "empty message")
@@ -301,7 +307,7 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
     agent.llm.reset_usage()
     if agent.llm.available():
         try:
-            plan = await agent.plan_turn(messages, turn.request, [r.model_dump() for r in turn.shown])
+            plan = await agent.plan_turn(messages, turn.request, [r.model_dump() for r in turn.shown], (lo, hi))
         except agent.llm.LLMError as e:
             log.warning("chat planner failed: %s", e)
             failed = e
@@ -310,8 +316,10 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         return {"action": "ask", "question": plan["question"], "options": plan.get("options") or [],
                 "request": turn.request, "results": [], "demo": DEMO}
     if plan and plan["action"] == "recommend":  # products that fit, from the LLM's knowledge, before any search
+        await agent.price_recommendations(plan, lo, hi)  # ...with today's prices, so none is over the budget
         log.info("=" * 70 + "\n")
         return {"action": "recommend", "answer": plan["reply"], "recommendations": plan["recommendations"],
+                "over_budget": plan.get("over_budget") or [],
                 "suggestions": plan["suggestions"], "request": turn.request, "results": [], "demo": DEMO}
     if plan and plan["action"] == "answer":  # a question about the shown results: answer it, no new search
         log.info("=" * 70 + "\n")
@@ -324,6 +332,11 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         return {"action": "answer", "request": turn.request, "results": [], "demo": DEMO,
                 "answer": "معلش، الموديلات المجانية مشغولة دلوقتي فمقدرتش أرد على سؤالك. ابعته تاني كمان دقيقة."}
     request = plan["request"] if plan else " ".join(filter(None, [turn.request, newest]))  # no LLM: just append
+    if rng:  # the range set in the box is the budget: always applied, and part of the request (and its cache key)
+        if plan:
+            plan["max_price"], plan["min_price"] = hi, lo
+        if not agent._states_budget(request):
+            request = f"{request} ({rng})"
     if (client and limit and await _db(db.searches_today, client, default=0) >= limit
             and not await _db(db.cached_search, db.cache_key(request, market.current().code), CACHE_TTL)):
         log.info("daily limit reached for %s", client)

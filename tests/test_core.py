@@ -1519,8 +1519,8 @@ def test_chat_recommends_products_before_searching(monkeypatch):
     monkeypatch.setattr(agent, "run", no_search)
     d = TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "عايز لابتوب للبرمجة"}]}).json()
     assert d["action"] == "recommend" and d["answer"].startswith("دول أحسن")
-    assert d["recommendations"] == [{"name": "Lenovo IdeaPad Slim 3 (16GB)", "why": "رامات كفاية"},  # never a price
-                                    {"name": "ASUS Vivobook 15", "why": "شاشة كويسة"}]
+    assert d["recommendations"] == [{"name": "Lenovo IdeaPad Slim 3 (16GB)", "why": "رامات كفاية", "tier": ""},
+                                    {"name": "ASUS Vivobook 15", "why": "شاشة كويسة", "tier": ""}]  # never its price
     assert d["suggestions"] == ["دوّرلي على أسعارهم", "عايز أخف"] and d["results"] == []
 
 
@@ -1663,3 +1663,173 @@ def test_chat_stream_sends_the_reply_while_it_is_written(monkeypatch):
     events = [json.loads(line) for line in r.text.splitlines() if line.strip()]
     assert [e["text"] for e in events if e["type"] == "reply"] == ["سؤال", "سؤال حلو"]
     assert events[-1]["type"] == "done" and events[-1]["data"]["answer"] == "سؤال حلو"
+
+
+def test_suggestions_get_todays_prices_and_over_budget_ones_go(monkeypatch):
+    """The LLM's idea of prices is old: each suggestion is looked up on the well-known stores, the card shows the price
+    found, and one that costs more than the shopper's budget today is taken out (Liberty 3 Pro for a 2000 budget)."""
+    from app import websearch
+    asks, searched = [], []
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, step="", **kw):
+        asks.append((step, prompt))
+        if step == "plan":
+            return {"reply": "دي أحسن اختيارات في ميزانيتك:", "action": "recommend", "stores": ["btech.com"],
+                    "recommendations": [{"name": "Anker Soundcore R50i NC", "tier": "الأوفر", "why": "عزل كويس"},
+                                        {"name": "Anker Liberty 3 Pro", "tier": "الأعلى جودة", "why": "صوت ممتاز"},
+                                        {"name": "Sony WF-C510", "tier": "أحسن قيمة", "why": "بطارية طويلة"}]}
+        return {"prices": [{"i": 0, "price": 1113, "store": "B.TECH", "keep": True},
+                           {"i": 1, "price": 6500, "store": "Amazon", "keep": False},
+                           {"i": 2, "price": None, "store": None, "keep": True}]}
+
+    async def fake_search(client, query, max_results=8, include_domains=None, **kw):
+        searched.append((query, include_domains))
+        return [{"url": "https://btech.com/p", "title": query, "snippet": "1,113 ج.م"}]
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "search", fake_search)
+    d = TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "عايز ايربودز حلوة"}],
+                                                     "price_max": 2000}).json()
+    assert d["action"] == "recommend" and [r["name"] for r in d["recommendations"]] == [
+        "Anker Soundcore R50i NC", "Sony WF-C510"]
+    assert d["recommendations"][0]["price"] == 1113 and d["recommendations"][0]["store"] == "B.TECH"
+    assert "price" not in d["recommendations"][1] and d["over_budget"] == ["Anker Liberty 3 Pro"]
+    assert len(searched) == 3 and "btech.com" in searched[0][1] and "amazon.eg" in searched[0][1]
+    plan_prompt = asks[0][1]
+    assert "Price range the shopper set in the search box: السعر تحت 2000" in plan_prompt
+    assert "never ask about budget" in plan_prompt and "تحت 2000" in asks[1][1]
+
+
+def test_price_range_from_the_box_is_the_search_budget(monkeypatch):
+    seen = {}
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, step="", **kw):
+        return {"reply": "هدورلك", "action": "search", "request": "سماعة انكر", "max_price": 9000, "queries": ["anker"]}
+
+    async def fake_search(q, plan=None, budget_text=None):
+        seen.update(q=q, maxp=plan["max_price"], minp=plan["min_price"], said=budget_text)
+        return {"results": [], "request": q, "count": 0}
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(main, "_search", fake_search)
+    TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "سماعة انكر"}],
+                                                 "price_min": 2000, "price_max": 1000})
+    assert seen["maxp"] == 2000 and seen["minp"] == 1000  # swapped: the shopper typed them the other way round
+    assert seen["q"] == "سماعة انكر (السعر من 1000 لحد 2000 ج.م)" and agent._states_budget(seen["said"])
+
+
+def test_planner_talks_with_a_bit_of_variety(monkeypatch):
+    temps = {}
+
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, step="", temperature=0, **kw):
+        temps[step] = temperature
+        return {"reply": "هتستخدمها في إيه؟", "action": "ask", "options": ["جيم", "مكالمات"]}
+
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    asyncio.run(agent.plan_turn([{"role": "user", "text": "ايربودز"}]))
+    assert 0 < temps["plan"] <= 0.7
+
+
+def test_llm_sends_the_temperature_asked_for(monkeypatch):
+    bodies = []
+
+    def handler(request: httpx.Request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}]})
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setattr(llm, "_list_models", lambda client, provider: asyncio.sleep(0, ["openai/gpt-oss-120b"]))
+    real = httpx.AsyncClient
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    llm._COOLDOWN.clear()
+    assert asyncio.run(llm.ask_json("x", temperature=0.5)) == {"ok": 1}
+    assert asyncio.run(llm.ask_json("x")) == {"ok": 1}
+    assert [b["temperature"] for b in bodies] == [0.5, 0]
+
+
+def test_suggestion_prices_spend_few_web_searches(monkeypatch):
+    """Free search quotas: a product priced today is not searched again, one we saw in our own recent searches is
+    priced from those, and at most RECS_MAX_SEARCHES products get a web search."""
+    from app import db, market, websearch
+    from app.models import Product
+    db.record_prices([Product(store="B.TECH", title="ايربودز انكر ساوندكور R50i NC اسود", price=1113,
+                              url="https://btech.com/r50i").to_dict()], market.current().code)
+    searched, prompts = [], []
+
+    async def fake_search(client, query, max_results=8, include_domains=None, **kw):
+        searched.append(query)
+        return [{"url": "https://amazon.eg/x", "title": query, "snippet": "EGP 999"}]
+
+    async def fake_ask(prompt, **kw):
+        prompts.append(prompt)
+        lines = prompt.split("(product | title | snippet | url):")[1]
+        return {"prices": [{"i": i, "price": 900 + i, "store": "Amazon"} for i in range(1, 7) if f"\n{i} | " in lines]}
+
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    names = ["Anker Soundcore R50i NC", "Sony WF-C510", "JBL Wave Beam", "Samsung Galaxy Buds FE",
+             "Xiaomi Redmi Buds 6", "Huawei FreeBuds SE 3", "Oraimo FreePods 4"]
+
+    def plan():
+        return {"request": "ايربودز", "recommendations": [{"name": n, "why": ""} for n in names]}
+
+    p = plan()
+    asyncio.run(agent.price_recommendations(p, None, 2000))
+    assert len(searched) == agent.RECS_MAX_SEARCHES and not any("R50i" in q for q in searched)  # known: no search
+    assert "1113 EGP at B.TECH (seen in our searches)" in prompts[0]
+    assert [r.get("price") for r in p["recommendations"]][:5] == [None, 901, 902, 903, 904]
+    searched.clear()
+    p = plan()
+    asyncio.run(agent.price_recommendations(p, None, 2000))
+    assert not any(n in q for q in searched for n in names[1:5])  # priced today: reused, not searched again
+    assert [r.get("price") for r in p["recommendations"]][1:5] == [901, 902, 903, 904]
+    assert len(searched) == 2  # the two that didn't get a search the first time
+
+
+def test_model_word_is_the_model_number():
+    assert agent._model_word("Anker Soundcore R50i NC") == "r50i"
+    assert agent._model_word("Sony WF-C510") == "c510"
+    assert agent._model_word("JBL Wave Beam") == "" and agent._model_word("iPhone 16") == ""
+
+
+def test_planner_checks_todays_market_prices_before_offering_ranges(monkeypatch):
+    """'لاب استيراد للشغل ai': the planner knows the need (a strong GPU) but not today's prices, so it asks for one web
+    search; the second call sees the prices and offers ranges that can buy it. The same check is reused for a day."""
+    from app import websearch
+    prompts, searched, live = [], [], []
+
+    async def fake_ask(prompt, step="", on_text=None, **kw):
+        prompts.append((step, prompt))
+        if "Market check (" not in prompt:
+            if on_text:
+                on_text('{"need_specs": ["RTX 4060+"], "market_query": "سعر لابتوب RTX 4070 استيراد", "reply": "ميز')
+            return {"need_specs": ["RTX 4060+"], "market_query": "سعر لابتوب RTX 4070 استيراد", "reply": "ميزانيتك؟",
+                    "action": "ask", "options": ["أقل من 15000"]}
+        if on_text:
+            on_text('{"need_specs": [], "market_query": null, "reply": "اللابات اللي تنفع')
+        return {"reply": "اللابات اللي تنفع للـ AI بتبدأ من حوالي 30 ألف، ميزانيتك قد إيه؟", "action": "ask",
+                "options": ["30-40 ألف", "40-55 ألف", "أكتر من 55 ألف"], "market_query": None}
+
+    async def fake_search(client, query, max_results=8, include_domains=None, **kw):
+        searched.append(query)
+        return [{"url": "https://import-shop.com/p", "title": "Lenovo Legion RTX 4070 استيراد", "snippet": "38,500 جنيه"}]
+
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "search", fake_search)
+    msgs = [{"role": "user", "text": "عايز لاب استيراد للشغل ai ومش عارف أجيب إيه"}]
+    token = agent.REPLY.set(live.append)
+    try:
+        plan = asyncio.run(agent.plan_turn(msgs))
+    finally:
+        agent.REPLY.reset(token)
+    assert plan["action"] == "ask" and plan["options"][0] == "30-40 ألف" and plan["market_checked"]
+    assert searched == ["سعر لابتوب RTX 4070 استيراد"]
+    assert "38,500 جنيه | import-shop.com" in prompts[1][1] and prompts[1][0] == "plan_market"
+    assert live == ["اللابات اللي تنفع"]  # the first, uninformed reply was never shown
+    asyncio.run(agent.plan_turn(msgs))
+    assert len(searched) == 1  # the same check today: from the database, no new search

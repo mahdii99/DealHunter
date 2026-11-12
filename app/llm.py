@@ -8,6 +8,7 @@ skipped until the quota resets (midnight US Pacific time). The last model that w
 Both are saved to debug/llm_state.json, so a server restart (--reload) doesn't retry dead models again.
 """
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -21,6 +22,9 @@ import httpx
 RETRY_STATUS = {429, 500, 502, 503, 504}
 log = logging.getLogger("uvicorn.error")
 TOTAL_BUDGET = float(os.getenv("LLM_BUDGET_SECONDS", "25"))  # give up and use the simple fallback after this
+
+
+_TEMPERATURE: contextvars.ContextVar = contextvars.ContextVar("temperature", default=0.0)  # set per ask_json call
 
 
 class LLMError(Exception):
@@ -250,7 +254,7 @@ def _gone(model: str) -> bool:
 async def _gemini(client: httpx.AsyncClient, model: str, prompt: str) -> httpx.Response:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"]}
-    config = {"responseMimeType": "application/json", "temperature": 0,
+    config = {"responseMimeType": "application/json", "temperature": _TEMPERATURE.get(),
               "thinkingConfig": {"thinkingBudget": 0}}  # no "thinking": much faster, enough for this task
     r = await client.post(url, headers=headers, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": config})
     if r.status_code == 400:  # e.g. a model that can't turn thinking off: retry with defaults
@@ -262,7 +266,7 @@ async def _gemini(client: httpx.AsyncClient, model: str, prompt: str) -> httpx.R
 async def _compat(provider: str, client: httpx.AsyncClient, model: str, prompt: str, on_text=None) -> httpx.Response:
     url = _base(provider) + "/chat/completions"
     headers = {"Authorization": f"Bearer {os.environ[COMPAT[provider][1]]}"}
-    body = {"model": model, "temperature": 0,
+    body = {"model": model, "temperature": _TEMPERATURE.get(),
             "messages": [{"role": "user", "content": prompt + "\nReply with JSON only."}]}
     if provider != "openrouter":  # not every free OpenRouter model accepts it; the prompt asks for JSON anyway
         body["response_format"] = {"type": "json_object"}
@@ -339,16 +343,26 @@ def _text(provider: str, r: httpx.Response) -> str:
 
 
 async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, spread: int = 0,
-                   budget: float | None = None, step: str = "other", on_text=None) -> dict:
+                   budget: float | None = None, step: str = "other", on_text=None, temperature: float = 0) -> dict:
     """prefer="bulk": try the fast non-Gemini providers' smaller models first (bulk work like reading pages, so the
     strong models' daily quota is kept for understanding the request and judging the results);
     prefer="strong": the strongest models first (the judge), never just whichever model answered last;
     prefer="groq" etc.: that provider.
     spread=n: start from the n-th model of that provider, so calls running at the same time go to different
     models (each model has its own per-minute limit).
-    on_text(text so far): called while the answer arrives (OpenAI-style providers stream it; Gemini answers at once)."""
+    on_text(text so far): called while the answer arrives (OpenAI-style providers stream it; Gemini answers at once).
+    temperature: 0 (default) = the same answer every time, for planning searches and judging; a bit more for talk."""
     if not available():
         raise LLMError("مفيش مفتاح LLM في ملف .env")
+    token = _TEMPERATURE.set(temperature)
+    try:
+        return await _ask_json(prompt, timeout, prefer, spread, budget, step, on_text)
+    finally:
+        _TEMPERATURE.reset(token)
+
+
+async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int, budget: float | None, step: str,
+                    on_text) -> dict:
     errors, start = [], time.monotonic()
     async with httpx.AsyncClient(timeout=timeout) as client:
         attempts = []

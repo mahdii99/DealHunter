@@ -38,31 +38,54 @@ MAX_PER_PAGE = 15       # products kept from one page (listing pages can have ma
 FAMOUS_RESULTS = 15     # search results for the well-known stores group (one search shared by 5-10 big stores)
 WEB_DEBUG = DEBUG_DIR / "web"
 
-UNDERSTAND_PROMPT = """You are the salesperson of a price-comparison agent for shoppers in Egypt: like a smart, friendly
-salesperson standing in a shop, except you stand in every online store at once. Talk like one, in short, warm
-Egyptian Arabic (English if the shopper writes English). Your job is to find out what the shopper really needs and get
-them the right product at the best price, not just to run a search for the words they typed.
+UNDERSTAND_PROMPT = """You are the salesperson of a price-comparison site for shoppers in Egypt: the kind of salesperson
+people come back to because they really know the products, listen first and care that the shopper buys the right thing
+for them. The difference: you stand in every online store at once.
+
+How you talk: natural, warm Egyptian Arabic (English if the shopper writes English), like a person and not a form.
+Use the shopper's own words, react to what they said, and say WHY in plain words (what they gain, what they give up).
+Vary your wording; never sound like a template. Short is good, but never dry.
+
+How you sell: first understand what this shopper needs (what for, what matters to them, budget), then show the real
+choice they have: several good options across brands and price levels, not just one or two, with the trade-off of
+each. Never push something over their budget; if their budget is tight for what they want, say so honestly and offer
+the best you can within it plus one "if you can stretch a bit" option. Suggest current models that are sold in Egypt
+now (the latest generations, not ones from years ago).
 
 Shoppers often don't know the product's name or how stores list it: they describe what they need
 ("تيشرت راوند بيزك اسود", "موبايل مش غالي وبطاريته تكمل يومين"). Understand what they really want and turn it
 into concrete specs and searches that find it in Egyptian online stores.
 
-Choose ONE action for the newest message, the way a good salesperson would:
+Choose ONE action for the newest message:
 - "search": the shopper named a specific product/model, asked for prices/offers, picked one of your suggestions, or
   you already know enough to find good matches. Don't make a shopper who knows what they want answer questions.
-- "ask": the request is too open to pick good products and ONE answer would change what you'd recommend a lot (who
-  it's for, what they'll use it for, budget, size...). Ask one short question with 2-4 tap answers. Don't repeat
-  a question already asked, and after two questions in a row stop asking: recommend or search.
-- "recommend": the shopper described a need, or asked what to buy ("أنهي موبايل أحسن في حدود 8000؟", "عايز لابتوب
-  للبرمجة"): suggest 2-4 specific products sold in Egypt now that fit, each with one line on why it fits them, from
-  your own knowledge and WITHOUT prices (you don't know today's prices) and without searching. The shopper then picks
-  one, or asks you to find prices for all of them (that is a "search" for those products).
+- "ask": the request is too open to pick good products and one answer would change what you'd suggest a lot. Ask
+  about what matters most for THIS product and this shopper (what they'll use it for, a feature that splits the
+  choices, who it's for...), not always the price. If a price range is set below, never ask about budget. One short,
+  friendly question with 2-4 tap answers. Don't repeat a question, and after two questions in a row stop asking.
+- "recommend": the shopper described a need or asked what to buy ("أنهي موبايل أحسن في حدود 8000؟", "عايز ايربودز
+  حلوة"): suggest 3-6 specific products that fit, covering different brands and price levels inside the budget, each
+  with a short "tier" label and one line on what it gives THIS shopper and what it lacks. Use your own knowledge,
+  without searching and without writing prices (we check today's prices ourselves). The shopper then picks one, or
+  asks for prices of all of them (that is a "search" for those products).
 - "answer": a QUESTION about results already shown or buying advice ("أول نتيجة دي أصلية؟", "الفرق بين الاتنين إيه؟",
   "أنهي أحسن؟", "عليها ضمان؟", "السعر ده كويس؟") that doesn't ask for different products: reply from the shown results
-  (their stores, prices, discounts, trust, price history) and your knowledge, without a new search. To compare 2-4
-  products or offers, also fill "table". Be honest: if a price looks too low for that product, say it may be a
-  mistake, a different variant or a used/refurbished listing and how to check on the store page; if a store is
-  unverified, say so.
+  (their stores, prices, discounts, trust, price history) and your knowledge, without a new search, and give your
+  honest pick. To compare 2-4 products or offers, also fill "table". If a price looks too low for that product, say it
+  may be a mistake, a different variant or a used/refurbished listing and how to check; if a store is unverified, say so.
+
+Understand the need before you offer anything. Work out what this use really requires (e.g. local AI work needs a
+strong NVIDIA GPU with plenty of VRAM and RAM; a gym earbud needs a secure fit and sweat resistance; a gift needs to
+know who it's for), and what products that meet it cost in Egypt TODAY (new or imported, as the shopper says). Price
+ranges you offer as tap answers and products you suggest must come from that: a range nobody can buy the needed
+product in is useless. Prices in Egypt change fast and your memory of them is often old: when your answer depends on
+today's prices (budget ranges, what a budget can buy, which models are in reach) and the "Market check" below is
+missing, set market_query to ONE short web search, in the words Egyptian stores and shoppers use, that shows those
+prices (e.g. 'سعر لابتوب RTX 4070 استيراد', 'اسعار سماعات بلوتوث عزل ضوضاء'); we run it and ask you again with the
+results. When a Market check is given, base the prices on it and set market_query to null.
+
+A budget the shopper gave anywhere in the chat (or the price range set below) stays for every later search and
+recommendation until they change it: put it in max_price/min_price again each time.
 
 The chat is a conversation. A new message usually CHANGES THE CURRENT REQUEST instead of starting over:
 "سامسونج بس" / "عايزه أرخص" / "بلاش الأحمر" / "مقاس XL" / "تحت 5000" -> keep everything from the current request
@@ -80,15 +103,19 @@ The search fields (need_based and everything after "request") are needed ONLY fo
 for the other actions.
 
 {chat}
-Reply JSON (put "reply" first):
+Reply JSON (in this order):
 {
+  "need_specs": ["what this shopper's use really requires, in short English, e.g. 'NVIDIA RTX GPU 8GB+ VRAM',
+                 '32GB RAM'; [] when they named an exact product"],
+  "market_query": "one short web search for today's prices in Egypt, or null (see above)",
   "reply": "what you say to the shopper now, as a salesperson: for ask the question itself; for recommend one short
             intro line; for answer 1-5 short sentences answering; for search one short line saying what you'll look
             for (mention the change if a follow-up)",
   "action": "search" or "ask" or "recommend" or "answer",
   "options": ["if ask: 2-4 short quick answers the shopper can tap, else []"],
-  "recommendations": [{"name": "if recommend: a specific product, e.g. 'Samsung Galaxy A16'", "why": "one short
-     Egyptian Arabic line on why it fits THIS shopper"}],
+  "recommendations": [{"name": "if recommend: a specific product, e.g. 'Samsung Galaxy A16'", "tier": "2-3 words,
+     e.g. 'الأوفر' / 'أحسن قيمة' / 'الأعلى جودة' / 'لو تقدر تزود شوية'", "why": "one short Egyptian Arabic line:
+     what it gives THIS shopper and what it lacks"}],
   "table": null or, for an answer that compares: {"columns": ["", "product 1", "product 2"],
            "rows": [["السعر", "...", "..."], ["الضمان", "...", "..."]]} (2-6 short rows),
   "suggestions": ["2-4 short Egyptian Arabic next messages the shopper may want to tap, written as the shopper
@@ -127,6 +154,7 @@ _PRICE_TAIL = re.compile(r"\s*[-–—:,(]*\s*(?:EGP|LE|ج\.?م|جنيه)?\s*\d[
 
 
 MAX_SHOWN = 10  # results of the last search the planner sees (to answer and compare)
+MAX_RECS = 6    # products one recommendation shows
 
 
 def _money(n) -> str:
@@ -163,10 +191,23 @@ def _shown_block(shown: list[dict]) -> str:
     return ("Results shown to the shopper now (cheapest first):\n" + "\n".join(lines) + "\n") if lines else ""
 
 
-def _chat_block(messages: list[dict], current: str, shown: list[dict] | None = None) -> str:
+def price_range_text(lo: float | None, hi: float | None) -> str:
+    """The price range the shopper set in the search box, in words (also what makes it count as a stated budget)."""
+    cur = market.current().currency_ar
+    if lo and hi:
+        return f"السعر من {lo:g} لحد {hi:g} {cur}"
+    if hi:
+        return f"السعر تحت {hi:g} {cur}"
+    return f"السعر فوق {lo:g} {cur}" if lo else ""
+
+
+def _chat_block(messages: list[dict], current: str, shown: list[dict] | None = None,
+                price: tuple[float | None, float | None] = (None, None)) -> str:
     lines = [("Shopper: " if m.get("role") == "user" else "Assistant: ") + str(m.get("text", ""))[:800]
              for m in messages[-MAX_HISTORY:]]
-    return ("Current request (from the previous search): " + (current or "none") + "\n" + _shown_block(shown or [])
+    rng = (f"Price range the shopper set in the search box: {price_range_text(*price)} (min {price[0] or 'none'}, "
+           f"max {price[1] or 'none'}). Respect it in every action and never ask about budget.\n") if any(price) else ""
+    return ("Current request (from the previous search): " + (current or "none") + "\n" + rng + _shown_block(shown or [])
             + "Conversation (oldest first, the last line is the newest message):\n" + "\n".join(lines) + "\n")
 
 
@@ -202,14 +243,56 @@ def _table(t) -> dict | None:
     return {"columns": cols, "rows": rows} if len(cols) >= 2 and rows else None
 
 
-async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] | None = None) -> dict:
-    """One LLM call: understand the newest message in the context of the chat (and the results on screen), decide
-    what a good salesperson does now (search / ask / recommend / answer), and plan the searches.
+MARKET_HITS = 8           # search results the planner reads to learn today's prices
+MARKET_TTL = 24 * 3600    # the same market check is reused for a day (prices don't move that fast)
+_MARKET_ASKED = re.compile(r'"market_query"\s*:\s*"[^"]')  # the planner wants a market check first
+
+
+async def _market_check(query: str, plan: dict) -> str:
+    """One web search for what the needed products cost today (any shop: imported goods are often sold outside
+    the big stores), kept for a day so popular needs cost nothing. '' when it can't be done."""
+    key = "__market__:" + db.cache_key(query, market.current().code)
+    hit = await asyncio.to_thread(_db_safe, db.cached_search, key, MARKET_TTL)
+    if hit is not None:
+        return hit.get("text", "")
+    if not websearch.available():
+        return ""
+    _progress("بشوف أسعار السوق النهارده عشان أرشحلك صح...")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await websearch.search(client, query, max_results=MARKET_HITS)
+    except (websearch.SearchError, httpx.HTTPError) as e:
+        log.warning("agent: market check failed: %s", e)
+        return ""
+    text = "\n".join(f"- {str(h.get('title', ''))[:120]} | {str(h.get('snippet', ''))[:240]} | {trust.domain(h.get('url', ''))}"
+                     for h in res)
+    if text:
+        await asyncio.to_thread(_db_safe, db.save_search, key, market.current().code, {"text": text})
+    return text
+
+
+async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] | None = None,
+                    price: tuple[float | None, float | None] = (None, None)) -> dict:
+    """Understand the newest message in the context of the chat (and the results on screen), decide what a good
+    salesperson does now (search / ask / recommend / answer), and plan the searches. Usually one LLM call; when the
+    answer depends on today's prices it doesn't know (market_query), one web search and a second call that sees them.
     Raises llm.LLMError when no model answers."""
     live = REPLY.get()
-    on_text = (lambda text: live(t) if (t := reply_so_far(text)) else None) if live else None
-    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", _chat_block(messages, current, shown)), timeout=12,
-                              prefer="strong", step="plan", on_text=on_text)  # gpt-oss-120b on Groq first: ~1 s
+
+    def on_text(text: str) -> None:  # the reply is shown while it's written, unless a market check comes first
+        if live and not _MARKET_ASKED.search(text) and (t := reply_so_far(text)):
+            live(t)
+    block = _chat_block(messages, current, shown, price)
+    plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", block), timeout=12, prefer="strong", step="plan",
+                              on_text=on_text if live else None,
+                              temperature=0.5)  # a little variety: a salesperson, not a template
+    query = plan.get("market_query")
+    if isinstance(query, str) and query.strip() and (found := await _market_check(query.strip()[:150], plan)):
+        log.info("agent: market check %r before answering", query)
+        block += f"Market check (web search '{query.strip()[:150]}', today's prices in Egypt):\n{found}\n"
+        plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", block), timeout=12, prefer="strong",
+                                  step="plan_market", on_text=on_text if live else None, temperature=0.5)
+        plan["market_checked"] = query.strip()[:150]
     last = next((m.get("text", "") for m in reversed(messages) if m.get("role") == "user"), "")
     # names only: a price the LLM guessed would mislead the shopper and the judge
     plan["suggested_products"] = [_PRICE_TAIL.sub("", x).strip() for x in plan.get("suggested_products") or []
@@ -220,7 +303,8 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
     plan["suggestions"] = _strs(plan.get("suggestions"), 4, 60)
     if not isinstance(plan.get("request"), str) or not plan["request"].strip():
         plan["request"] = last
-    recs = [{"name": str(r["name"]).strip()[:120], "why": str(r.get("why") or "").strip()[:200]}
+    recs = [{"name": str(r["name"]).strip()[:120], "why": str(r.get("why") or "").strip()[:200],
+             "tier": str(r.get("tier") or "").strip()[:40]}
             for r in plan.get("recommendations") or [] if isinstance(r, dict) and str(r.get("name") or "").strip()]
     action = plan.get("action")
     if action == "answer" and reply:
@@ -228,7 +312,7 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
         plan["table"] = _table(plan.get("table"))
         plan["request"] = current or plan["request"]  # a question about the results keeps the current request
     elif action == "recommend" and recs:
-        plan["recommendations"] = [{**r, "name": _PRICE_TAIL.sub("", r["name"]).strip()} for r in recs[:4]]
+        plan["recommendations"] = [{**r, "name": _PRICE_TAIL.sub("", r["name"]).strip()} for r in recs[:MAX_RECS]]
         plan["request"] = current or plan["request"]
     elif action == "ask" and reply:
         plan["question"] = reply
@@ -238,6 +322,117 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
         plan["understood"] = str(plan.get("understood") or reply).strip()
     log.info("agent: plan %s -> %r", plan["action"], reply if plan["action"] != "search" else plan["request"])
     return plan
+
+
+RECS_PRICE_PROMPT = """You help a salesperson in Egypt check today's prices of the products they just suggested.
+Shopper's request: {request}
+Shopper's budget: {budget}
+Suggested products:
+{recs}
+
+Web search results from Egyptian online stores (product | title | snippet | url):
+{hits}
+
+For each suggested product, find its current price for a NEW, genuine unit of THAT exact model (not a case, not a
+different generation, not a monthly installment) in these results. Use only prices written in the results; null if
+none is shown.
+Reply JSON: {{"prices": [{{"i": <number of the product>, "price": number or null, "store": "store name or null"}}]}}"""
+RECS_PRICE_RESULTS = 5  # search results per suggested product
+RECS_MAX_SEARCHES = 4   # web searches per recommendation at most: the rest use what we know, or show no price
+RECS_PRICE_TTL = 24 * 3600  # a suggested product's price found today is reused for this long (no new search)
+RECS_KNOWN_DAYS = 3     # prices from our own past searches younger than this count as known
+_MODEL_WORD = re.compile(r"[A-Za-z]*\d[A-Za-z\d-]*")
+
+
+def _model_word(name: str) -> str:
+    """The most specific word of a product name, the model number ('Anker Soundcore R50i NC' -> 'r50i'), to find it in
+    titles we saved. '' when the name has none (then only a web search can price it)."""
+    words = [w for w in _MODEL_WORD.findall(name) if len(w) >= 3 and not w.isdigit()]
+    return max(words, key=len).lower() if words else ""
+
+
+def _rec_key(name: str) -> str:
+    return "__recprice__:" + db.cache_key(name, market.current().code)
+
+
+async def price_recommendations(plan: dict, lo: float | None = None, hi: float | None = None) -> None:
+    """Today's price of each suggested product, shown on the card ("حوالي X في Amazon"); a product that is clearly
+    over the shopper's budget is taken out. The LLM's own idea of prices is often old, so it never sets the price itself.
+    Free quotas are kept: a price found in the last day is reused, prices from our own recent searches are read before
+    any web search, and at most RECS_MAX_SEARCHES products get a web search (one each, on the well-known stores).
+    Changes plan["recommendations"]."""
+    recs = plan.get("recommendations") or []
+    if not recs:
+        return
+    mk = market.current().code
+    todo, hits, searched = [], [], 0
+    for i, r in enumerate(recs):
+        if (hit := await asyncio.to_thread(_db_safe, db.cached_search, _rec_key(r["name"]), RECS_PRICE_TTL)) is not None:
+            r.update({k: hit.get(k) for k in ("price", "store") if hit.get(k)})
+            r["_known"] = True
+            continue
+        word = _model_word(r["name"])
+        known = await asyncio.to_thread(_db_safe, db.recent_prices_like, word, mk,
+                                        time.time() - RECS_KNOWN_DAYS * 86400) if word else None
+        if known:
+            hits += [f"{i} | {k['title'][:120]} | {k['price']:g} {market.current().currency} at {k['store']} "
+                     f"(seen in our searches) | {k['url'][:120]}" for k in known]
+        else:
+            todo.append(i)
+    sites = _famous_sites(plan)
+    ask = [i for i in todo][:RECS_MAX_SEARCHES] if websearch.available() else []
+    if ask:
+        _progress("بشوف أسعارهم النهارده في المتاجر...")
+        async with httpx.AsyncClient(timeout=10) as client:
+            found = await asyncio.gather(*(websearch.search(client, f"{recs[i]['name']} سعر",
+                                                            max_results=RECS_PRICE_RESULTS, include_domains=sites)
+                                           for i in ask), return_exceptions=True)
+        searched = len(ask)
+        hits += [f"{i} | {str(h.get('title', ''))[:120]} | {str(h.get('snippet', ''))[:220]} | {h.get('url', '')[:120]}"
+                 for i, res in zip(ask, found) if not isinstance(res, BaseException) for h in res]
+    if hits:
+        budget = price_range_text(lo, hi) or (f"under {plan['max_price']:g}"
+                                              if isinstance(plan.get("max_price"), (int, float)) else "not given")
+        try:
+            out = await llm.ask_json(RECS_PRICE_PROMPT.format(
+                request=plan.get("request", ""), budget=budget,
+                recs="\n".join(f"{i}. {r['name']}" for i, r in enumerate(recs)), hits="\n".join(hits)),
+                timeout=12, budget=15, prefer="strong", step="recs_price")
+        except llm.LLMError as e:
+            log.warning("agent: pricing the suggestions failed: %s", e)
+            out = {}
+        for x in out.get("prices") or []:
+            if isinstance(x, dict) and isinstance(x.get("i"), int) and 0 <= x["i"] < len(recs) \
+                    and isinstance(x.get("price"), (int, float)) and x["price"] > 0 and not recs[x["i"]].get("_known"):
+                r = recs[x["i"]]
+                r["price"], r["store"] = float(x["price"]), str(x.get("store") or "")[:60] or None
+                await asyncio.to_thread(_db_safe, db.save_search, _rec_key(r["name"]), mk,
+                                        {"price": r["price"], "store": r["store"]})
+    # over the budget = a price we found that is clearly outside the range (5% slack: prices move a little)
+    if not hi and isinstance(plan.get("max_price"), (int, float)):  # a budget the shopper said in words
+        hi = plan["max_price"]
+
+    def out_of(p: float) -> bool:
+        return bool((hi and p > hi * 1.05) or (lo and p < lo * 0.95))
+    kept = [r for r in recs if not (r.get("price") and out_of(r["price"]))]
+    dropped = [r for r in recs if r not in kept]
+    if not kept:  # nothing fits: show them anyway, with their prices, rather than an empty answer
+        kept, dropped = recs, []
+    for r in recs:
+        r.pop("_known", None)
+    plan["recommendations"] = kept
+    plan["over_budget"] = [r["name"] for r in dropped]
+    log.info("agent: priced %d of %d suggestions (%d web searches), %d over budget",
+             sum(1 for r in recs if r.get("price")), len(recs), searched, len(dropped))
+
+
+def _db_safe(fn, *args):
+    """A database read/write for a nice-to-have: if the database fails, carry on without it."""
+    try:
+        return fn(*args)
+    except Exception as e:
+        log.warning("agent: db %s failed: %s", getattr(fn, "__name__", "?"), type(e).__name__)
+        return None
 
 
 CHECK_PROMPT = """You plan searches for a price-comparison agent for shoppers in Egypt.

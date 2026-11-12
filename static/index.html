@@ -149,6 +149,20 @@
   .composer .mic { width:44px; height:44px; flex-shrink:0; border-radius:12px; border:0; background:transparent; color:var(--muted);
                    display:inline-flex; align-items:center; justify-content:center; }
   .composer .mic[hidden] { display:none; }
+  .composer .price-btn { height:44px; flex-shrink:0; padding:0 12px; border-radius:12px; border:1px solid var(--border); background:transparent; color:var(--muted);
+                         display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:500; white-space:nowrap; }
+  .composer .price-btn.on { color:var(--ink); background:var(--soft); border-color:var(--accent); font-weight:600; }
+  .range { display:grid; gap:10px; padding:12px; border-radius:14px; background:var(--card); border:1px solid var(--border2); }
+  .range[hidden] { display:none; }
+  .range .row { display:flex; gap:8px; align-items:end; flex-wrap:wrap; }
+  .range label { display:grid; gap:4px; font-size:13px; color:var(--muted); flex:1 1 110px; }
+  .range input { height:42px; padding:0 10px; border-radius:10px; border:1px solid var(--border2); background:var(--bg); color:var(--text); font-size:15px; min-width:0; }
+  .range .row button { height:42px; padding:0 16px; border-radius:10px; border:0; font-weight:600; font-size:14px; }
+  .range .ok { background:var(--accent); color:var(--on-accent); }
+  .range .clear { background:transparent; color:var(--muted); border:1px solid var(--border) !important; }
+  .range .hint { font-size:12px; color:var(--muted); }
+  .rec .tier { display:inline-block; width:fit-content; font-size:11px; font-weight:600; color:var(--ink); background:var(--soft); padding:1px 8px; border-radius:6px; }
+  .rec .rp { font-size:13px; font-weight:600; color:var(--ink); }
   .composer .mic[aria-pressed="true"] { color:var(--on-accent); background:var(--warn); animation:pulse 1.2s ease-in-out infinite; }
   .err { color:var(--warn); font-size:13px; }
   .grid { display:flex; flex-direction:column; gap:12px; }
@@ -259,6 +273,9 @@
     .u { max-width:90%; }
     .composer .send .lbl-send { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
     .composer .send { padding:0 16px; }
+    .composer .price-btn .lbl { display:none; }
+    .composer .price-btn.on .lbl { display:inline; }
+    .composer .price-btn { padding:0 10px; }
     .overlay { align-items:flex-end; padding:0; }
     .dialog { max-width:none; border-radius:24px 24px 0 0; padding:12px 16px 24px; max-height:90vh; }
     .dialog::before { content:""; width:40px; height:4px; border-radius:2px; background:var(--border2); justify-self:center; }
@@ -367,9 +384,19 @@
     </section>
     <div id="chat" aria-live="polite"></div>
     <form class="composer" id="f">
+      <div class="range" id="range" hidden>
+        <div class="row">
+          <label><span data-t="priceFrom"></span><input id="pmin" type="number" inputmode="numeric" min="0" step="50" data-t-ph="any"></label>
+          <label><span data-t="priceTo"></span><input id="pmax" type="number" inputmode="numeric" min="0" step="50" data-t-ph="any"></label>
+          <button class="ok" type="button" id="pok" data-t="done"></button>
+          <button class="clear" type="button" id="pclear" data-t="anyPrice"></button>
+        </div>
+        <div class="hint" data-t="rangeHint"></div>
+      </div>
       <label class="sr" for="q" data-t="askLabel"></label>
       <div class="box">
         <input id="q" autocomplete="off" required minlength="2" maxlength="300" data-t-ph="placeholder">
+        <button class="price-btn" id="priceBtn" type="button" aria-expanded="false" aria-controls="range"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="8" cy="8" r="1.5"/></svg><span class="lbl"></span></button>
         <button class="mic" id="mic" type="button" hidden aria-pressed="false" data-t-aria="voice">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
         <button class="send" id="b"><span class="lbl-send" data-t="send"></span>
@@ -496,6 +523,9 @@ const T = {
     cancelWatch: 'إلغاء', nowAt: 'دلوقتي', was: 'كان', yourRegion: 'بلدك', onlyTrusted: 'وريني المتاجر المشهورة والموثوقة بس',
     logout: 'تسجيل خروج', deleteMe: 'امسح حسابي وكل بياناتي', sureDelete: 'متأكد؟ هنمسح حسابك والمنتجات اللي بتتابعها والإشعارات.',
     signInFailed: 'معرفناش نسجلك دخول، جرب تاني.',
+    priceFrom: 'من', priceTo: 'لحد', any: 'أي سعر', done: 'تمام', anyPrice: 'أي سعر', priceLbl: 'السعر',
+    rangeHint: 'هندورلك ونرشحلك في الرينج ده بس، لحد ما تغيّره.', upTo: n => 'لحد ' + n, from: n => 'من ' + n,
+    overBudget: names => 'شلت ' + names.join(' و') + ' لأن سعرها النهارده فوق ميزانيتك.', about: 'حوالي', at: 'في',
     chatsTitle: 'محادثاتك', delChat: 'امسح المحادثة', voice: 'اتكلم بدل ما تكتب', listening: 'سامعك... اتكلم',
     noMic: 'مقدرناش نسمعك، اسمح للموقع يستخدم المايك وجرب تاني.', searchNow: 'دوّرلي على طول', priceOf: 'شوف سعره',
     findAll: 'دوّرلي على أسعارهم كلهم', findAllMsg: names => 'دوّرلي على أسعار ' + names.join(' و'), findOneMsg: n => 'دوّرلي على سعر ' + n,
@@ -526,6 +556,9 @@ const T = {
     cancelWatch: 'Remove', nowAt: 'now', was: 'was', yourRegion: 'Your country', onlyTrusted: 'Show only well-known and trusted stores',
     logout: 'Sign out', deleteMe: 'Delete my account and all my data', sureDelete: 'Sure? This deletes your account, followed products and notifications.',
     signInFailed: 'We couldn’t sign you in, try again.',
+    priceFrom: 'From', priceTo: 'To', any: 'Any', done: 'Done', anyPrice: 'Any price', priceLbl: 'Price',
+    rangeHint: 'We’ll search and suggest only in this range until you change it.', upTo: n => 'Up to ' + n, from: n => 'From ' + n,
+    overBudget: names => 'I left out ' + names.join(', ') + ': today it costs more than your budget.', about: 'About', at: 'at',
     chatsTitle: 'Your chats', delChat: 'Delete chat', voice: 'Speak instead of typing', listening: 'Listening... speak now',
     noMic: 'We couldn’t hear you. Allow the microphone for this site and try again.', searchNow: 'Just search now', priceOf: 'See prices',
     findAll: 'Find prices for all of them', findAllMsg: names => 'Find prices for ' + names.join(', '), findOneMsg: n => 'Find the price of ' + n,
@@ -558,7 +591,7 @@ function applyLang() {
   $$('[data-t-aria]').forEach(el => { el.setAttribute('aria-label', t(el.dataset.tAria)); });
   $$('[data-lang]').forEach(el => el.setAttribute('aria-checked', String(el.dataset.lang === lang)));
   $('#sugs').innerHTML = t('sugs').map(s => `<button class="sug" type="button">${esc(s)}</button>`).join('');
-  drawRegion(); drawSide(); fbCount(); if (me) drawChats();
+  drawRegion(); drawSide(); fbCount(); drawPrice(); if (me) drawChats();
   shown.forEach((d, i) => { const el = chat.querySelector(`.a[data-turn="${i}"]`); if (el) el.innerHTML = render(d, i); });
 }
 function isDark() {
@@ -690,8 +723,10 @@ function render(d, turn) {  // one assistant turn
   if (d.action === 'recommend') {  // like a salesperson: products that fit, then the shopper picks what to price
     const recs = d.recommendations || [];
     return `<div class="sum">${SPARK}<div><span>${esc(d.answer)}</span></div></div>` +
-      `<div class="recs">${recs.map(r => `<div class="rec"><span><b dir="auto">${esc(r.name)}</b>${r.why ? `<small>${esc(r.why)}</small>` : ''}</span>` +
+      `<div class="recs">${recs.map(r => `<div class="rec"><span>${r.tier ? `<i class="tier">${esc(r.tier)}</i>` : ''}<b dir="auto">${esc(r.name)}</b>` +
+        `${r.price ? `<span class="rp">${t('about')} ${fmt(r.price)}${r.store ? ` ${t('at')} ${esc(r.store)}` : ''}</span>` : ''}${r.why ? `<small>${esc(r.why)}</small>` : ''}</span>` +
         `<button type="button" data-say="${esc(t('findOneMsg')(r.name))}">${t('priceOf')}</button></div>`).join('')}</div>` +
+      (d.over_budget && d.over_budget.length ? `<div class="hint-line">${esc(t('overBudget')(d.over_budget))}</div>` : '') +
       `<div class="chips">${recs.length > 1 ? `<button class="chip" type="button" data-say="${esc(t('findAllMsg')(recs.map(r => r.name)))}">${t('findAll')}</button>` : ''}` +
       `${(d.suggestions || []).map(o => `<button class="chip next" type="button">${esc(o)}</button>`).join('')}</div>`;
   }
@@ -799,7 +834,8 @@ async function send(text) {
     // progress arrives line by line (what the agent is doing now, and its reply while it's written),
     // the whole answer comes in the last line
     const r = await fetch('/api/chat/stream', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                              body: JSON.stringify({messages: history.slice(-12), request: currentRequest, shown: lastResults()})});
+                                              body: JSON.stringify({messages: history.slice(-12), request: currentRequest, shown: lastResults(),
+                                                                    price_min: price.min, price_max: price.max})});
     if (!r.ok || !r.body) throw new Error(r.status);
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = '', d = null;
@@ -831,9 +867,31 @@ async function send(text) {
   } finally { clearInterval(timer); b.disabled = false; q.focus(); }
 }
 function newChat() {
-  turns = []; chatId = newId(); saveChat();
+  turns = []; chatId = newId(); saveChat(); setPrice(null, null);
   history = []; currentRequest = ''; shown.length = 0; chat.innerHTML = ''; hero.hidden = false; closeAll(); q.focus();
 }
+
+// ---------- price range: set before sending, kept for the whole chat until changed ----------
+let price = store.get('dh-price', {min: null, max: null});
+const pnum = v => { const n = Math.round(Number(String(v).replace(/[^\d.]/g, ''))); return n > 0 ? n : null; };
+function setPrice(min, max) {
+  if (min && max && min > max) [min, max] = [max, min];
+  price = {min, max}; store.set('dh-price', price); drawPrice();
+}
+function drawPrice() {
+  const btn = $('#priceBtn'), on = !!(price.min || price.max);
+  const n = x => new Intl.NumberFormat(lang === 'ar' ? 'ar-EG' : 'en-US').format(x);
+  btn.classList.toggle('on', on);
+  btn.querySelector('.lbl').textContent = !on ? t('priceLbl') : price.min && price.max ? `${n(price.min)} - ${n(price.max)}`
+    : price.max ? t('upTo')(n(price.max)) : t('from')(n(price.min));
+  btn.setAttribute('aria-label', btn.querySelector('.lbl').textContent);
+  $('#pmin').value = price.min || ''; $('#pmax').value = price.max || '';
+}
+function rangeOpen(open) { $('#range').hidden = !open; $('#priceBtn').setAttribute('aria-expanded', String(open)); if (open) $('#pmax').focus(); }
+$('#priceBtn').addEventListener('click', () => rangeOpen($('#range').hidden));
+$('#pok').addEventListener('click', () => { setPrice(pnum($('#pmin').value), pnum($('#pmax').value)); rangeOpen(false); q.focus(); });
+$('#pclear').addEventListener('click', () => { setPrice(null, null); rangeOpen(false); q.focus(); });
+['#pmin', '#pmax'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('#pok').click(); } }));
 
 // ---------- voice: the browser's own speech recognition (free; Chrome, Edge, Safari) ----------
 const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
