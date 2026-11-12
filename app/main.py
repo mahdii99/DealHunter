@@ -626,14 +626,15 @@ def _same_page(a: str, b: str) -> bool:
 
 
 @app.post("/api/cron/check-watches")
-async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100)):
+async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), every: bool = False):
     """Opens followed product pages again to catch price drops nobody searched for. Called on a schedule by
     .github/workflows/check-watches.yml (free), with the CRON_SECRET header: the free server sleeps, so it can't
     run its own timer."""
     secret = os.getenv("CRON_SECRET", "")
     if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
         raise HTTPException(403, "forbidden")
-    urls = await asyncio.to_thread(accounts.urls_to_check, CHECK_HOURS * 3600 * 0.8, limit)
+    # every=1 (a run started by hand): all followed pages now, not only those not checked for a while
+    urls = await asyncio.to_thread(accounts.urls_to_check, 0 if every else CHECK_HOURS * 3600 * 0.8, limit)
     sem = asyncio.Semaphore(4)
     async with httpx.AsyncClient() as client:
         async def one(url: str):
