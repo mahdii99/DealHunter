@@ -105,6 +105,36 @@ def logo(request: Request):
     return FileResponse(ROOT / "static" / name, headers={"Cache-Control": "public, max-age=86400"})
 
 
+def _site(request: Request) -> str:
+    proto = "https" if _secure(request) else request.url.scheme
+    return f"{proto}://{request.url.netloc}"
+
+
+@app.get("/robots.txt")
+def robots(request: Request):
+    """Search engines may list the pages, not the API (search results are made per visitor)."""
+    return Response(f"User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /img\nSitemap: {_site(request)}/sitemap.xml\n",
+                    media_type="text/plain")
+
+
+@app.get("/sitemap.xml")
+def sitemap(request: Request):
+    urls = "".join(f"<url><loc>{_site(request)}{p}</loc></url>" for p in ("/", "/privacy"))
+    return Response('<?xml version="1.0" encoding="UTF-8"?>'
+                    f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>',
+                    media_type="application/xml")
+
+
+@app.get("/{name}.html")
+def site_verification(name: str):
+    """Google Search Console's "HTML file" check: set GOOGLE_SITE_VERIFICATION to the file name it gives
+    (e.g. google1a2b3c.html) on the server, no code change or upload needed."""
+    want = os.getenv("GOOGLE_SITE_VERIFICATION", "").strip().removesuffix(".html")
+    if not want or name != want or not name.startswith("google"):
+        raise HTTPException(404)
+    return Response(f"google-site-verification: {name}.html", media_type="text/html")
+
+
 @app.get("/privacy")
 def privacy():
     """Privacy policy: Google requires its link before sign-in can be opened to everyone."""

@@ -16,6 +16,8 @@ services:
         generateValue: true
       - key: GOOGLE_CLIENT_ID
         sync: false
+      - key: GOOGLE_SITE_VERIFICATION
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: CRON_SECRET

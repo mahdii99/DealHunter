@@ -1461,3 +1461,16 @@ def test_search_box_ideas_drop_english_when_it_does_not_line_up():
     assert trending._pairs(["هدية لأمي", "سماعة"], ["Gift for mom"]) == (["هدية لأمي", "سماعة"], [])
     assert trending._pairs(["هدية لأمي", "سماعة"], ["Gift for mom", ""]) == (["هدية لأمي", "سماعة"], [])
     assert trending._pairs("x", None) == ([], [])
+
+
+def test_search_engines_can_find_and_verify_the_site(monkeypatch):
+    from app import main
+    with TestClient(main.app) as c:
+        r = c.get("/robots.txt")
+        assert "Disallow: /api/" in r.text and "Sitemap: http://testserver/sitemap.xml" in r.text
+        assert "<loc>http://testserver/</loc>" in c.get("/sitemap.xml").text
+        assert c.get("/google1a2b3c.html").status_code == 404  # not set up yet
+        monkeypatch.setenv("GOOGLE_SITE_VERIFICATION", "google1a2b3c.html")
+        assert c.get("/google1a2b3c.html").text == "google-site-verification: google1a2b3c.html"
+        assert c.get("/googlezzz.html").status_code == 404
+        assert "Easy Found" in c.get("/").text
