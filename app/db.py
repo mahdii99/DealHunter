@@ -126,7 +126,7 @@ CREATE INDEX IF NOT EXISTS chats_user ON chats (user_id, updated_at);
 CREATE TABLE IF NOT EXISTS events (
     id {ID},
     at {FLOAT} NOT NULL,
-    kind TEXT NOT NULL,                 -- visit / turn (a chat message or search) / click (a store link opened)
+    kind TEXT NOT NULL,                 -- visit / turn (a chat message or search) / click (a store link opened) / follow
     client TEXT NOT NULL,               -- a hash of the visitor's IP, never the IP itself
     member INTEGER NOT NULL,            -- 1 = signed in
     detail TEXT NOT NULL,               -- visit: the site they came from, turn: their message, click: the page
@@ -392,7 +392,7 @@ def list_reports(limit: int = 200) -> list[dict]:
 
 EVENTS_DAYS = 180  # usage events older than this are deleted
 _EVENT_FIELDS = ("detail", "request", "store", "title", "price", "action", "results", "cached")
-_LIMITS = {"detail": 600, "request": 600, "store": 100, "title": 300, "action": 20}
+_LIMITS = {"detail": 1000, "request": 600, "store": 100, "title": 300, "action": 20}
 _pruned = [0.0]
 
 

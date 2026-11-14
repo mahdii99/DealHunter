@@ -82,6 +82,9 @@ def test_visits_chat_messages_and_store_clicks_are_counted(monkeypatch):
     assert shopper.post("/api/event", json=click).status_code == 200
     assert shopper.post("/api/event", json={**click, "url": "javascript:alert(1)"}).status_code == 422
     assert shopper.post("/api/event", json={"kind": "purchase"}).status_code == 422
+    assert shopper.post("/api/event", json={**click, "kind": "save", "rank": 250}).status_code == 200
+    long = {**click, "url": "https://www.amazon.eg/dp/B0TEST?" + "x" * 3000, "store": "S" * 300, "rank": 1}
+    assert shopper.post("/api/event", json={**long, "kind": "share"}).status_code == 200  # long text is cut, not lost
     db.add_event("turn", "other", detail="شاحن ابل", request="شاحن ابل اصلي", action="search", results=0, cached=False)
     db.add_event("turn", "other2", detail="شاحن ابل", request="شاحن ابل اصلي",
                  action="search", results=4, cached=True)
@@ -92,6 +95,7 @@ def test_visits_chat_messages_and_store_clicks_are_counted(monkeypatch):
     totals = {t["kind"]: t for t in s["totals"]}
     assert totals["visit"]["n"] == 2 and totals["visit"]["people"] == 1
     assert totals["turn"]["n"] == 3 and totals["click"]["n"] == 1
+    assert totals["save"]["n"] == 1 and totals["share"]["n"] == 1
     assert {a["action"]: a["n"] for a in s["actions"]} == {"search": 2, "ask": 1}
     assert s["searches"][0]["request"] == "شاحن ابل اصلي" and s["searches"][0]["n"] == 2
     assert s["searches"][0]["avg_results"] == 2.0 and s["searches"][0]["cached"] == 1
@@ -128,3 +132,19 @@ def test_every_schema_statement_is_whole():
     for stmt in filter(str.strip, db._SCHEMA.split(";")):
         code = "\n".join(line.split("--")[0] for line in stmt.splitlines()).strip()
         assert code.startswith("CREATE"), stmt[:120]
+
+
+def test_streamed_chat_messages_are_counted(monkeypatch):
+    """The page uses the streamed chat: the stream ends right after the answer, which must not cancel the counting."""
+    async def fake_ask(prompt, timeout=10, prefer=None, spread=0, budget=None, **kw):
+        return {"action": "ask", "question": "الكوتشي لمين؟", "options": ["لراجل", "لست"]}
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    with TestClient(main.app) as c:
+        r = c.post("/api/chat/stream", json={"messages": [{"role": "user", "text": "عايز كوتشي"}]})
+        assert r.status_code == 200 and '"done"' in r.text
+        for _ in range(50):
+            if db._db.run("SELECT detail FROM events WHERE kind = 'turn'"):
+                break
+            time.sleep(0.05)
+    assert [r[0] for r in db._db.run("SELECT detail FROM events WHERE kind = 'turn'")] == ["عايز كوتشي"]
