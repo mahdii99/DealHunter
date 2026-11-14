@@ -855,10 +855,12 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
             except Exception as e:
                 return url, None, f"{err} / search: {type(e).__name__}: {str(e)[:120]}"
             return url, p, None if p else f"{err} / {why}"
+        via_search = set()
         for i, res in zip(tries, await asyncio.gather(*(by_search(i) for i in tries))):
             done[i] = res
+            via_search.add(res[0])
     seen = [{"url": url, "price": p.price, "title": p.title, "store": p.store, "in_stock": p.in_stock,
-             "old_price": p.old_price} for url, p, _ in done if p]
+             "old_price": p.old_price, "via_search": url in via_search} for url, p, _ in done if p]
     for url, p, err in done:
         if not p:
             log.info("watch check %s: %s", url[:80], err)

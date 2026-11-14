@@ -291,6 +291,9 @@ def prices_seen(results: list[dict]) -> list[dict]:
                 body = f"نزل من {_money(last, mk)} لـ {_money(price, mk)} في {store}"
                 if first > price:
                     body += f" (أقل بـ {round((first - price) / first * 100)}% من وقت ما تابعته)"
+                if r.get("via_search"):  # the store keeps crawlers off its page: the price is from a search copy
+                    body += (". المتجر ده مش بيسمح لنا نفتح صفحته، فالسعر ده من نتايج البحث وممكن يكون عرض لوقت"
+                             " قصير أو لمقاس/لون تاني: اتأكد منه في صفحة المنتج")
                 n = notify(uid, "price_drop", f"السعر نزل: {title[:80]}", body, url)
                 made.append(n | {"email": email, "name": name, "email_alerts": bool(alerts)})
             _db.run("UPDATE watches SET price = ?, checked_at = ? WHERE id = ?", (price, now, wid))

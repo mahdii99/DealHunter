@@ -231,7 +231,8 @@ def test_scheduled_check_reads_pages_it_cant_open_through_the_search_service(mon
     d = c.post("/api/cron/check-watches", headers={"X-Cron-Secret": "cron-secret"}).json()
     assert d == {"checked": 1, "prices": 1, "alerts": 1, "failed": {}}
     assert c.get("/api/watches").json()["watches"][0]["price"] == 2385
-    assert "2,385" in c.get("/api/notifications").json()["notifications"][0]["body"]
+    body = c.get("/api/notifications").json()["notifications"][0]["body"]
+    assert "2,385" in body and "اتأكد منه في صفحة المنتج" in body  # read from a search copy: says so
 
 
 def test_product_links_match_by_their_product_number():
