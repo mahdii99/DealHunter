@@ -732,13 +732,13 @@ def _is_article(html: str) -> bool:
 
 class RobotsDisallowed(Exception):
     def __str__(self):
-        return "robots.txt disallows"
+        return "robots.txt disallows" + (f" ({self.args[0]})" if self.args else "")
 
 
 async def _fetch_page(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: str) -> tuple[list[Product], str]:
     # the store's crawler rules apply to our own requests too, not only to the reader service (cached per site)
     if not await asyncio.wait_for(fetchers.robots_allows(client, url), timeout=PAGE_TIMEOUT):
-        raise RobotsDisallowed()
+        raise RobotsDisallowed(fetchers.robots_reason(url))
     async with sem:
         r = await client.get(url, headers=HEADERS, follow_redirects=True, timeout=PAGE_TIMEOUT)
     r.raise_for_status()

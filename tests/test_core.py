@@ -1874,3 +1874,19 @@ def test_only_prices_confirmed_on_the_store_page_are_shown(monkeypatch):
     again = asyncio.run(agent.recheck(saved))
     assert [r["store"] for r in again["results"]] == ["A"] and again["results"][0]["price_context"] == "x"
     assert again["count"] == 1 and {u["store"] for u in again["unchecked"]} == {"B", "C"}
+
+
+def test_robots_txt_read_the_standard_way():
+    """The longest matching rule wins (Allow on a tie), with * and $ (RFC 9309): a broad Disallow listed first
+    doesn't block a page a longer Allow opens; other crawlers' groups don't apply to us."""
+    from app.fetchers import Robots
+    r = Robots("User-agent: GPTBot\nDisallow: /\n\nUser-agent: *\nUser-agent: other\nDisallow: /-/\n"
+               "Disallow: /*/ref=\nAllow: /-/en/*/dp/\nDisallow: /gp/cart\nDisallow: /*.pdf$\nDisallow:\n")
+    assert r.can_fetch("https://s.com/dp/B0CJZY1CTP")
+    assert r.can_fetch("https://s.com/-/en/Puma/dp/B0CJZY1CTP")  # longer Allow beats Disallow: /-/
+    assert r.can_fetch("https://s.com/-/en/Puma/dp/B0CJZY1CTP/ref=sr_1_46")  # the Allow is longer than /*/ref=
+    assert not r.can_fetch("https://s.com/s/ref=sr_pg_2")
+    assert not r.can_fetch("https://s.com/-/ar/x") and not r.can_fetch("https://s.com/gp/cart?x=1")
+    assert not r.can_fetch("https://s.com/a/b.pdf") and r.can_fetch("https://s.com/a/b.pdf?x")
+    assert r.rule_for("https://s.com/gp/cart")[1] == "Disallow: /gp/cart"
+    assert Robots("").can_fetch("https://s.com/anything")

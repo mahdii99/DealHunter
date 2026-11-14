@@ -13,17 +13,66 @@ import logging
 import os
 import time
 from urllib.parse import urlparse
-from urllib.robotparser import RobotFileParser
+import re
 
 import httpx
 
 log = logging.getLogger("uvicorn.error")
-_ROBOTS: dict[str, tuple[float, RobotFileParser | None]] = {}
+_ROBOTS: dict[str, tuple[float, "Robots | None"]] = {}
 ROBOTS_TTL = 6 * 3600
 MIN_TEXT = 300  # less than this is an empty shell / error page
 
 
-async def _robots_via_reader(client: httpx.AsyncClient, robots_url: str) -> RobotFileParser | None:
+class Robots:
+    """robots.txt read the standard way (RFC 9309, as Google and Bing read it): the group for any crawler ("*"),
+    `*` and `$` in paths, and the most specific (longest) matching rule wins, Allow on a tie. Python's own
+    parser takes the first rule listed and no wildcards, which wrongly blocks pages on big stores whose files
+    list a broad Disallow before a longer Allow."""
+
+    def __init__(self, text: str):
+        self.rules: list[tuple[int, bool, re.Pattern, str]] = []
+        groups, agents, in_rules = [], [], False
+        for raw in text.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if ":" not in line:
+                continue
+            key, value = (x.strip() for x in line.split(":", 1))
+            key = key.lower()
+            if key == "user-agent":
+                if in_rules:
+                    agents, in_rules = [], False
+                agents.append(value.lower())
+                if len(agents) == 1:
+                    groups.append((agents, []))
+            elif key in ("allow", "disallow") and groups:
+                in_rules = True
+                groups[-1][1].append((key == "allow", value))
+        for names, rules in groups:
+            if "*" in names:
+                for allow, path in rules:
+                    if path:  # an empty Disallow allows everything
+                        self.rules.append((len(path), allow, self._pattern(path), path))
+
+    @staticmethod
+    def _pattern(path: str) -> re.Pattern:
+        end = path.endswith("$")
+        body = re.escape(path.rstrip("$")).replace(r"\*", ".*")
+        return re.compile(body + ("$" if end else ""))
+
+    def rule_for(self, url: str) -> tuple[bool, str]:
+        u = urlparse(url)
+        target = (u.path or "/") + ("?" + u.query if u.query else "")
+        best = None
+        for length, allow, pattern, path in self.rules:
+            if pattern.match(target) and (best is None or (length, allow) > (best[0], best[1])):
+                best = (length, allow, path)
+        return (True, "") if best is None else (best[1], ("Allow: " if best[1] else "Disallow: ") + best[2])
+
+    def can_fetch(self, url: str) -> bool:
+        return self.rule_for(url)[0]
+
+
+async def _robots_via_reader(client: httpx.AsyncClient, robots_url: str) -> "Robots | None":
     """The store didn't answer us (timeout/blocked): read its robots.txt through the reader service instead."""
     try:
         r = await client.get("https://r.jina.ai/" + robots_url, timeout=6,
@@ -32,9 +81,7 @@ async def _robots_via_reader(client: httpx.AsyncClient, robots_url: str) -> Robo
         return None
     if r.status_code != 200 or "user-agent" not in r.text.lower():
         return None
-    rp = RobotFileParser()
-    rp.parse(r.text.splitlines())
-    return rp
+    return Robots(r.text)
 
 
 async def robots_allows(client: httpx.AsyncClient, url: str) -> bool:
@@ -44,22 +91,30 @@ async def robots_allows(client: httpx.AsyncClient, url: str) -> bool:
     host = f"{parts.scheme}://{parts.netloc}"
     hit = _ROBOTS.get(host)
     if not hit or time.time() - hit[0] > ROBOTS_TTL:
-        rp: RobotFileParser | None
+        rp: Robots | None
         try:
             r = await client.get(host + "/robots.txt", timeout=4, follow_redirects=True,
                                  headers={"User-Agent": "Mozilla/5.0 (compatible; price-agent)"})
-            if r.status_code >= 500:
-                rp = None
-            else:
-                rp = RobotFileParser()
-                rp.parse(r.text.splitlines() if r.status_code < 400 else [])
+            rp = None if r.status_code >= 500 else Robots(r.text if r.status_code < 400 else "")
         except httpx.HTTPError:
             rp = None
         if rp is None:
             rp = await _robots_via_reader(client, host + "/robots.txt")
         _ROBOTS[host] = hit = (time.time(), rp)
     rp = hit[1]
-    return rp is not None and rp.can_fetch("*", url)
+    return rp is not None and rp.can_fetch(url)
+
+
+def robots_reason(url: str) -> str:
+    """Why robots_allows said no (after it ran for this site): the rule that matched, or that we couldn't read
+    the file at all."""
+    parts = urlparse(url)
+    hit = _ROBOTS.get(f"{parts.scheme}://{parts.netloc}")
+    if not hit:
+        return "robots.txt not read yet"
+    if hit[1] is None:
+        return "robots.txt unreachable"
+    return hit[1].rule_for(url)[1] or "allowed"
 
 
 async def _tavily_extract(client: httpx.AsyncClient, urls: list[str]) -> dict[str, str]:

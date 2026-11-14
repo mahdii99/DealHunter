@@ -852,11 +852,22 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
             try:
                 products, html = await asyncio.wait_for(agent._fetch_page(client, sem, url), timeout=25)
             except Exception as e:  # a slow / blocked page: tried again next time
-                return url, None, type(e).__name__
+                return url, None, f"{type(e).__name__}: {e}"[:200]
+            read_by_llm = False
+            if not products and agent.llm.available():  # no product data in the page (e.g. Amazon): the LLM reads it
+                title = await asyncio.to_thread(accounts.watch_title, url)
+                try:
+                    products = await agent._llm_read_page(url, html, title or url, focus=title)
+                except Exception as e:
+                    return url, None, f"LLM read failed: {type(e).__name__}"
+                read_by_llm = True
             # only a price the page itself gives for this product: its own product data, or the one product
-            # on it when the page shows that price (never a copy kept elsewhere, which can be old)
-            same = [p for p in products if _same_page(p.url, url)]
-            single = products[0] if len(products) == 1 and products[0].price in agent._shown_numbers(html) else None
+            # on it when the page shows that price (never a copy kept elsewhere, which can be old). What the LLM
+            # read must also be a price the page shows.
+            shown = agent._shown_numbers(html)
+            same = [p for p in products if (_same_page(p.url, url) or read_by_llm and len(products) == 1)
+                    and (not read_by_llm or p.price in shown)]
+            single = products[0] if len(products) == 1 and products[0].price in shown else None
             p = same[0] if same else single
             return url, p, None if p else "no price for this product on its page"
         done = await asyncio.gather(*(one(u) for u in urls))
