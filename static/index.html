@@ -301,7 +301,7 @@
   .tabs { display:flex; gap:6px; margin-bottom:10px; }
   .tabs button { flex:1; min-height:36px; border-radius:10px; font-size:13px; background:transparent; color:var(--muted); border:1px solid var(--border); }
   .tabs button.on { color:var(--ink); border-color:var(--accent); background:var(--soft); }
-  .row { padding:8px 0; border-bottom:1px solid var(--border); font-size:14px; }
+  .row { padding:8px 0; border-bottom:1px solid var(--border); font-size:14px; line-height:1.5; overflow-wrap:anywhere; }
   .row:last-child { border-bottom:0; }
   .row .when, .panel-hint { font-size:12px; color:var(--muted); }
   .row.new { font-weight:600; }
@@ -316,7 +316,12 @@
   .regions button { min-height:48px; padding:0 12px; border-radius:12px; font-size:16px; background:var(--bg); border:1px solid var(--border); }
   .regions button.on { border-color:var(--accent); color:var(--ink); font-weight:700; }
   .regions small { color:var(--muted); font-size:12px; }
-  @media (max-width:760px) { .acct .me span.nm { display:none; } }
+  @media (max-width:760px) {
+    .acct .me span.nm { display:none; }
+    /* phones: the account menu can't hang off the button (it ran past the screen's edge): it spans the screen
+       under the header, as tall as there is room for */
+    #panel { position:fixed; top:var(--panel-top, 72px); inset-inline:12px; width:auto; max-height:calc(100dvh - var(--panel-top, 72px) - 12px); }
+  }
 </style>
 </head>
 <body>
@@ -1108,7 +1113,8 @@ acct.addEventListener('click', async e => {
   const b2 = e.target.closest('button'); if (!b2) return;
   if (b2.classList.contains('bell') || b2.classList.contains('me')) {
     tab = b2.classList.contains('bell') ? 'notes' : 'settings';
-    panel.hidden = !panel.hidden; if (!panel.hidden) drawPanel();
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) { panel.style.setProperty('--panel-top', Math.round($('header').getBoundingClientRect().bottom + 8) + 'px'); drawPanel(); }
   } else if (b2.dataset.tab) { tab = b2.dataset.tab; drawPanel(); }
   else if (b2.dataset.unwatch) { await api('/api/watches/' + b2.dataset.unwatch, {method: 'DELETE'}).catch(() => {}); drawPanel(); }
   else if (b2.id === 'slogout') { await api('/api/auth/logout', {method: 'POST'}); location.reload(); }
