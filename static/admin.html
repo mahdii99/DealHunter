@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>لوحة التحكم - Easy Found</title>
+<link rel="icon" href="/logo.svg?v=2" type="image/svg+xml">
+<style>
+  :root { --bg:#F4F7F6; --card:#fff; --card2:#EDF2F1; --text:#13221F; --muted:#56665F; --border:#DCE4E1; --border2:#C3CFCB;
+          --accent:#0F766E; --on-accent:#fff; --soft:#DDF1EC; --ink:#0B5F58; --warn:#9A4D00; --warn-soft:#FDF1DC; --bad:#B42318; color-scheme:light; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0C1312; --card:#141F1D; --card2:#1B2926; --text:#E6EEEC;
+          --muted:#9DAEA9; --border:#263633; --border2:#344743; --accent:#2DD4BF; --on-accent:#04221F; --soft:#103A35; --ink:#5EEAD4;
+          --warn:#FCD34D; --warn-soft:#3A2E10; --bad:#F97066; color-scheme:dark; } }
+  :root[data-theme="dark"] { --bg:#0C1312; --card:#141F1D; --card2:#1B2926; --text:#E6EEEC; --muted:#9DAEA9; --border:#263633;
+          --border2:#344743; --accent:#2DD4BF; --on-accent:#04221F; --soft:#103A35; --ink:#5EEAD4; --warn:#FCD34D; --warn-soft:#3A2E10;
+          --bad:#F97066; color-scheme:dark; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 "IBM Plex Sans Arabic",system-ui,"Segoe UI",Tahoma,sans-serif; }
+  a { color:var(--ink); }
+  main { max-width:1180px; margin:0 auto; padding:16px 16px 60px; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:16px; }
+  h1 { font-size:22px; margin:0; flex:1; min-width:160px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .btn, select { height:40px; padding:0 14px; border-radius:10px; border:1px solid var(--border); background:var(--card); color:var(--text);
+                 font:inherit; font-size:14px; cursor:pointer; }
+  .btn:hover, select:hover { border-color:var(--border2); }
+  .btn.primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:16px; min-width:0; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:12px; }
+  .tile .v { font-size:28px; font-weight:700; line-height:1.2; font-variant-numeric:tabular-nums; }
+  .tile .k { color:var(--muted); font-size:13px; }
+  .tile .s { color:var(--muted); font-size:12px; margin-top:2px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:12px; margin-top:12px; }
+  .grid .wide { grid-column:1 / -1; }
+  @media (max-width:420px) { .grid { grid-template-columns:1fr; } }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+  .tabs button { height:32px; padding:0 12px; border-radius:999px; border:1px solid var(--border); background:var(--card); color:var(--text);
+                 font:inherit; font-size:13px; cursor:pointer; }
+  .tabs button[aria-pressed="true"] { background:var(--soft); border-color:var(--accent); color:var(--ink); font-weight:600; }
+  .chart { position:relative; }
+  .chart svg { display:block; width:100%; height:auto; overflow:visible; }
+  .chart .bar { fill:var(--accent); }
+  .chart .hit:hover + .bar, .chart .bar.on { fill:var(--ink); }
+  .chart .grid-line { stroke:var(--border); stroke-width:1; }
+  .chart text { fill:var(--muted); font-size:11px; font-family:inherit; }
+  .tip { position:absolute; pointer-events:none; background:var(--text); color:var(--bg); padding:6px 10px; border-radius:8px; font-size:12px;
+         white-space:nowrap; transform:translate(50%, -100%); }
+  .scroll { overflow-x:auto; }
+  #recent { max-height:520px; overflow-y:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th { text-align:start; color:var(--muted); font-weight:500; font-size:12px; padding:6px 8px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  td { padding:7px 8px; border-bottom:1px solid var(--border); vertical-align:top; }
+  tr:last-child td { border-bottom:0; }
+  td.n { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  td.t { max-width:340px; overflow-wrap:anywhere; }
+  .meter { height:6px; border-radius:3px; background:var(--card2); margin-top:4px; overflow:hidden; }
+  .meter i { display:block; height:100%; background:var(--accent); border-radius:3px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; background:var(--card2); color:var(--muted); white-space:nowrap; }
+  .pill.search { background:var(--soft); color:var(--ink); }
+  .pill.limit, .pill.warn { background:var(--warn-soft); color:var(--warn); }
+  .empty { color:var(--muted); font-size:13px; padding:8px 0; }
+  .login { max-width:360px; margin:12vh auto; text-align:center; }
+  .login input { width:100%; height:44px; border-radius:10px; border:1px solid var(--border2); background:var(--card); color:var(--text);
+                 padding:0 12px; font:inherit; margin:12px 0; }
+  .err { color:var(--bad); font-size:13px; min-height:20px; }
+  .note { background:var(--card2); border-radius:12px; padding:12px 14px; font-size:13.5px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <form class="card login" id="login" hidden>
+    <h1>لوحة التحكم</h1>
+    <p class="muted">الصفحة دي ليك انت بس.</p>
+    <input id="pw" type="password" autocomplete="current-password" placeholder="الباسورد" aria-label="الباسورد" required>
+    <button class="btn primary" type="submit" style="width:100%">دخول</button>
+    <p class="err" id="loginErr"></p>
+  </form>
+
+  <div id="dash" hidden>
+    <header>
+      <h1>لوحة التحكم <span class="muted" id="updated"></span></h1>
+      <select id="days" aria-label="المدة">
+        <option value="1">آخر ٢٤ ساعة</option>
+        <option value="7" selected>آخر ٧ أيام</option>
+        <option value="30">آخر ٣٠ يوم</option>
+        <option value="90">آخر ٩٠ يوم</option>
+        <option value="180">آخر ١٨٠ يوم</option>
+      </select>
+      <button class="btn" type="button" id="refresh">تحديث</button>
+      <a class="btn" href="/" style="display:inline-flex;align-items:center;text-decoration:none">الموقع</a>
+      <button class="btn" type="button" id="logout">خروج</button>
+    </header>
+    <p class="err" id="err"></p>
+
+    <section class="tiles" id="tiles" aria-label="الأرقام الأساسية"></section>
+
+    <section class="card">
+      <h2>كل يوم</h2>
+      <div class="tabs" id="metricTabs" role="group" aria-label="اختار الرقم"></div>
+      <div class="chart" id="chart"></div>
+      <details class="muted" style="margin-top:6px"><summary>الأرقام في جدول</summary><div class="scroll" id="dailyTable"></div></details>
+    </section>
+
+    <div class="grid">
+      <section class="card"><h2>أكتر حاجات اتدور عليها</h2><div class="scroll" id="searches"></div></section>
+      <section class="card"><h2>المتاجر اللي الناس فتحت لينكاتها</h2><div class="scroll" id="stores"></div></section>
+      <section class="card wide"><h2>المنتجات اللي اتفتحت أكتر</h2><div class="scroll" id="products"></div></section>
+      <section class="card"><h2>بحث مالقاش نتايج</h2><p class="muted">دي حاجات الناس عايزاها ومش لاقيينها: فرصة نحسّن البحث.</p><div class="scroll" id="empty"></div></section>
+      <section class="card"><h2>الشات عمل إيه</h2><div id="actions"></div><h2 style="margin-top:16px">بيضغطوا على النتيجة رقم كام</h2><div id="ranks"></div></section>
+      <section class="card"><h2>الزوار جايين منين</h2><div class="scroll" id="sources"></div><h2 style="margin-top:16px">موبايل ولا كمبيوتر</h2><div id="devices"></div></section>
+      <section class="card"><h2>الحسابات</h2><div id="accounts"></div></section>
+      <section class="card wide"><h2>آخر نشاط</h2><p class="muted">كل زائر ليه كود قصير (من بصمة مشفرة للـ IP) عشان تعرف مين عمل إيه من غير ما نعرف هو مين.</p><div class="scroll" id="recent"></div></section>
+      <section class="card"><h2>آخر الشكاوى والمقترحات</h2><div class="scroll" id="feedback"></div></section>
+      <section class="card"><h2>آخر بلاغات «النتيجة دي غلط؟»</h2><div class="scroll" id="reports"></div></section>
+      <section class="card wide note">
+        <b>هتعرف إزاي إن حد اشترى؟</b> الموقع بيشوف لحد ما الزائر يضغط على لينك المتجر بس، وده اللي في الجداول فوق.
+        الشرا نفسه بيحصل في موقع المتجر، فالمتجر بس هو اللي يعرفه. الحل إنك تشترك في برنامج التسويق بالعمولة
+        (Affiliate) بتاع كل متجر (أمازون مصر، نون، جوميا...)، وتحط كود الشراكة في <code>AFFILIATE_TAGS</code> على Render،
+        والموقع هيضيفه لوحده على كل لينك. بعدها لوحة المتجر هتوريك المشتريات والعمولة، وتقارنها بالضغطات اللي هنا.
+      </section>
+    </div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = n => new Intl.NumberFormat('ar-EG').format(Math.round(n || 0));
+const money = n => n == null ? '' : new Intl.NumberFormat('ar-EG').format(n) + ' ج.م';
+const when = at => new Date(at * 1000).toLocaleString('ar-EG', {day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'});
+const safeUrl = u => /^https?:\/\//i.test(u || '') ? esc(u) : '#';
+const ACTIONS = {search: 'بحث عن أسعار', ask: 'سأل سؤال يفهم بيه', recommend: 'رشّح منتجات', answer: 'جاوب على سؤال', limit: 'وصل للحد اليومي'};
+const KINDS = {complaint: 'شكوى', suggestion: 'اقتراح', result: 'مشكلة في نتيجة', question: 'سؤال'};
+const REASONS = {wrong_product: 'منتج تاني', wrong_price: 'السعر غلط', bad_store: 'متجر مش موثوق', sold_out: 'خلصان', other: 'حاجة تانية'};
+const METRICS = [['visitors', 'الزوار'], ['visits', 'الزيارات'], ['turns', 'رسائل الشات'], ['clicks', 'ضغطات على المتاجر']];
+let data = null, metric = 'visitors';
+
+function table(rows, cols, emptyText = 'مفيش حاجة لسه في المدة دي.') {
+  if (!rows.length) return `<p class="empty">${emptyText}</p>`;
+  return `<table><thead><tr>${cols.map(c => `<th>${c[0]}</th>`).join('')}</tr></thead><tbody>` +
+    rows.map(r => `<tr>${cols.map(c => c[1](r)).join('')}</tr>`).join('') + '</tbody></table>';
+}
+const bar = (n, max) => `<div class="meter"><i style="width:${max ? Math.max(3, n / max * 100) : 0}%"></i></div>`;
+const share = (rows, key, label) => {  // a list with a meter: value, share of the total
+  const total = rows.reduce((s, r) => s + r[key], 0);
+  return rows.length ? rows.map(r => `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:8px">
+    <span>${label(r)}</span><span class="muted">${num(r[key])} · ${num(r[key] / total * 100)}٪</span></div>${bar(r[key], total)}</div>`).join('')
+    : '<p class="empty">مفيش حاجة لسه في المدة دي.</p>';
+};
+
+function days() {  // one row per day of the period, in the viewer's time, missing days = 0
+  const today = Math.floor((data.now + data.tz_minutes * 60) / 86400);
+  const n = Math.min(data.days, 180), rows = [];
+  for (let d = today - n + 1; d <= today; d++) rows.push({day: d, visitors: 0, visits: 0, turns: 0, clicks: 0});
+  const at = Object.fromEntries(rows.map(r => [r.day, r]));
+  for (const r of data.daily) {
+    const row = at[r.day]; if (!row) continue;
+    if (r.kind === 'visit') { row.visitors = r.people; row.visits = r.n; }
+    if (r.kind === 'turn') row.turns = r.n;
+    if (r.kind === 'click') row.clicks = r.n;
+  }
+  return rows;
+}
+const dayName = d => new Date(d * 86400000).toLocaleDateString('ar-EG', {day: 'numeric', month: 'short', timeZone: 'UTC'});
+
+function drawChart() {
+  $('#metricTabs').innerHTML = METRICS.map(([k, l]) => `<button type="button" data-m="${k}" aria-pressed="${k === metric}">${l}</button>`).join('');
+  const rows = days(), W = Math.max(280, $('#chart').clientWidth || 800), H = 220, top = 12, bottom = 26, left = 4, right = 36;
+  const max = Math.max(1, ...rows.map(r => r[metric]));
+  const step = Math.pow(10, Math.floor(Math.log10(max))), nice = Math.ceil(max / step) * step;
+  const ticks = [0, nice / 2, nice], x0 = left, w = (W - left - right) / rows.length, gap = Math.min(2, w * 0.2);
+  const y = v => H - bottom - v / nice * (H - top - bottom);
+  const every = Math.ceil(rows.length / Math.max(2, Math.floor(W / 90)));
+  let svg = ticks.map(t => `<line class="grid-line" x1="${x0}" x2="${W - right}" y1="${y(t)}" y2="${y(t)}"/>` +
+    `<text x="${W - right + 6}" y="${y(t) + 4}" text-anchor="start">${num(t)}</text>`).join('');
+  rows.forEach((r, i) => {
+    const bx = x0 + i * w + gap / 2, bw = Math.max(1, w - gap), by = y(r[metric]), bh = H - bottom - by;
+    const rad = Math.min(4, bw / 2, bh);
+    // bar rounded at the top only (anchored to the baseline)
+    const path = bh <= 0 ? '' : `M${bx},${H - bottom}V${by + rad}Q${bx},${by} ${bx + rad},${by}H${bx + bw - rad}Q${bx + bw},${by} ${bx + bw},${by + rad}V${H - bottom}Z`;
+    svg += `<rect class="hit" data-i="${i}" x="${x0 + i * w}" y="${top}" width="${w}" height="${H - top - bottom}" fill="transparent"/>` +
+      (path ? `<path class="bar" d="${path}"/>` : '<path class="bar" d=""/>');
+    if (i % every === 0 || i === rows.length - 1) svg += `<text x="${bx + bw / 2}" y="${H - 8}" text-anchor="middle">${dayName(r.day)}</text>`;
+  });
+  $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" direction="ltr" role="img" aria-label="${METRICS.find(m => m[0] === metric)[1]} كل يوم">${svg}</svg><div class="tip" hidden></div>`;
+  const tip = $('#chart .tip'), box = $('#chart');
+  box.querySelectorAll('.hit').forEach(h => {
+    h.addEventListener('mouseenter', () => {
+      const r = rows[+h.dataset.i], rect = h.getBoundingClientRect(), outer = box.getBoundingClientRect();
+      tip.innerHTML = `<b>${dayName(r.day)}</b> · ${num(r[metric])} ${METRICS.find(m => m[0] === metric)[1]}`;
+      tip.style.right = (outer.right - rect.right + rect.width / 2) + 'px'; tip.style.top = '0px'; tip.hidden = false;
+    });
+    h.addEventListener('mouseleave', () => { tip.hidden = true; });
+  });
+  $('#dailyTable').innerHTML = table(rows.slice().reverse(), [['اليوم', r => `<td>${dayName(r.day)}</td>`],
+    ...METRICS.map(([k, l]) => [l, r => `<td class="n">${num(r[k])}</td>`])]);
+}
+
+function draw() {
+  const tot = Object.fromEntries(data.totals.map(t => [t.kind, t]));
+  const v = tot.visit || {n: 0, people: 0}, tn = tot.turn || {n: 0, people: 0}, c = tot.click || {n: 0, people: 0};
+  const searches = (data.actions.find(a => a.action === 'search') || {n: 0}).n;
+  const tiles = [
+    ['زوار', v.people, `${num(v.n)} زيارة`],
+    ['اتكلموا مع الشات', tn.people, `${num(tn.n)} رسالة`],
+    ['عمليات بحث عن أسعار', searches, ''],
+    ['ضغطات على لينكات المتاجر', c.n, `من ${num(c.people)} زائر`],
+    ['نسبة الضغط', searches ? c.n / searches * 100 : 0, 'ضغطات لكل ١٠٠ بحث', '٪'],
+    ['حسابات جديدة', data.accounts.new_users, `${num(data.accounts.users)} حساب كلهم`],
+  ];
+  $('#tiles').innerHTML = tiles.map(([k, n, s, unit]) => `<div class="card tile"><div class="k">${k}</div><div class="v">${num(n)}${unit || ''}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`).join('');
+  drawChart();
+  const maxS = Math.max(0, ...data.searches.map(r => r.n));
+  $('#searches').innerHTML = table(data.searches, [
+    ['الطلب', r => `<td class="t" dir="auto">${esc(r.request)}${bar(r.n, maxS)}</td>`],
+    ['مرات', r => `<td class="n">${num(r.n)}</td>`],
+    ['زوار', r => `<td class="n">${num(r.people)}</td>`],
+    ['نتايج', r => `<td class="n">${r.avg_results == null ? '' : num(r.avg_results)}</td>`],
+    ['آخر مرة', r => `<td class="n muted">${when(r.last)}</td>`]]);
+  const maxC = Math.max(0, ...data.stores.map(r => r.n));
+  $('#stores').innerHTML = table(data.stores, [
+    ['المتجر', r => `<td class="t">${esc(r.store || '؟')}${bar(r.n, maxC)}</td>`],
+    ['ضغطات', r => `<td class="n">${num(r.n)}</td>`],
+    ['زوار', r => `<td class="n">${num(r.people)}</td>`]], 'محدش ضغط على لينك متجر لسه.');
+  $('#products').innerHTML = table(data.products, [
+    ['المنتج', r => `<td class="t" dir="auto"><a href="${safeUrl(r.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.title || r.url)}</a></td>`],
+    ['المتجر', r => `<td>${esc(r.store)}</td>`],
+    ['السعر', r => `<td class="n">${money(r.price)}</td>`],
+    ['ضغطات', r => `<td class="n">${num(r.n)}</td>`],
+    ['آخر مرة', r => `<td class="n muted">${when(r.last)}</td>`]], 'محدش ضغط على منتج لسه.');
+  $('#empty').innerHTML = table(data.empty_searches, [
+    ['الطلب', r => `<td class="t" dir="auto">${esc(r.request)}</td>`],
+    ['مرات', r => `<td class="n">${num(r.n)}</td>`],
+    ['آخر مرة', r => `<td class="n muted">${when(r.last)}</td>`]], 'كل عمليات البحث لقت نتايج.');
+  $('#actions').innerHTML = share(data.actions, 'n', r => esc(ACTIONS[r.action] || r.action));
+  $('#ranks').innerHTML = share(data.ranks, 'n', r => r.rank === 0 ? 'الأولى' : `رقم ${num(r.rank + 1)}`);
+  $('#sources').innerHTML = table(data.sources, [
+    ['من', r => `<td>${r.source ? esc(r.source) : 'دخلوا على اللينك على طول'}</td>`],
+    ['زيارات', r => `<td class="n">${num(r.n)}</td>`],
+    ['زوار', r => `<td class="n">${num(r.people)}</td>`]]);
+  $('#devices').innerHTML = share(data.devices, 'people', r => r.device === 'mobile' ? 'موبايل أو تابلت' : 'كمبيوتر');
+  const a = data.accounts;
+  $('#accounts').innerHTML = table([
+    ['حسابات كلهم', a.users], ['حسابات جديدة في المدة دي', a.new_users], ['سجلوا دخول في المدة دي', a.active_users],
+    ['منتجات بيتابعوا سعرها', a.watches], ['تنبيهات نزول سعر اتبعتت', a.alerts], ['محادثات محفوظة', a.saved_chats],
+    ['مواقع متقفلة (مش بتفتح)', data.blocked_sites]].map(([k, n]) => ({k, n})),
+    [['', r => `<td>${r.k}</td>`], ['', r => `<td class="n">${num(r.n)}</td>`]]);
+  $('#recent').innerHTML = table(data.recent, [
+    ['الوقت', r => `<td class="n muted">${when(r.at)}</td>`],
+    ['الزائر', r => `<td class="n"><span class="pill">${esc(r.client)}</span>${r.member ? ' <span class="pill search">بحساب</span>' : ''}</td>`],
+    ['عمل إيه', r => r.kind === 'click'
+      ? `<td><span class="pill search">فتح لينك</span> ${esc(r.store)}</td>`
+      : `<td><span class="pill ${r.action === 'search' ? 'search' : r.action === 'limit' ? 'limit' : ''}">${esc(ACTIONS[r.action] || r.action)}</span>${r.cached ? ' <span class="pill">من الكاش</span>' : ''}</td>`],
+    ['التفاصيل', r => r.kind === 'click'
+      ? `<td class="t" dir="auto"><a href="${safeUrl(r.detail)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.title || r.detail)}</a> <span class="muted">${money(r.price)}</span></td>`
+      : `<td class="t" dir="auto">${esc(r.detail)}${r.request && r.request.toLowerCase() !== r.detail.toLowerCase() ? `<div class="muted">← ${esc(r.request)}</div>` : ''}${r.results != null ? ` <span class="muted">(${num(r.results)} نتيجة)</span>` : ''}</td>`]]);
+  $('#feedback').innerHTML = table(data.feedback, [
+    ['', r => `<td class="n muted">${when(r.at)}<div><span class="pill">${esc(KINDS[r.kind] || r.kind)}</span></div></td>`],
+    ['الرسالة', r => `<td class="t" dir="auto">${esc(r.message)}${r.contact ? `<div class="muted">${esc(r.contact)}</div>` : ''}</td>`]], 'مفيش رسايل في المدة دي.');
+  $('#reports').innerHTML = table(data.reports, [
+    ['', r => `<td class="n muted">${when(r.at)}<div><span class="pill warn">${esc(REASONS[r.reason] || r.reason)}</span></div></td>`],
+    ['النتيجة', r => `<td class="t" dir="auto"><a href="${safeUrl(r.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.title)}</a> <span class="muted">${esc(r.store)} ${money(r.price)}</span><div class="muted">${esc(r.request)}</div></td>`]], 'مفيش بلاغات في المدة دي.');
+  $('#updated').textContent = '· اتحدثت ' + new Date().toLocaleTimeString('ar-EG', {hour: 'numeric', minute: '2-digit'});
+}
+
+async function load() {
+  $('#err').textContent = '';
+  const tz = -new Date().getTimezoneOffset();
+  const r = await fetch(`/api/admin/stats?days=${$('#days').value}&tz=${tz}`);
+  if (r.status === 401) { $('#dash').hidden = true; $('#login').hidden = false; $('#pw').focus(); return; }
+  if (!r.ok) { $('#err').textContent = 'مقدرناش نجيب الأرقام (قاعدة البيانات مش بترد؟). جرب تحديث كمان شوية.'; return; }
+  data = await r.json();
+  $('#login').hidden = true; $('#dash').hidden = false;
+  draw();
+}
+
+$('#login').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('#loginErr').textContent = '';
+  const r = await fetch('/api/admin/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                             body: JSON.stringify({password: $('#pw').value})}).catch(() => null);
+  if (r && r.ok) { $('#pw').value = ''; return load(); }
+  $('#loginErr').textContent = !r ? 'مفيش اتصال، جرب تاني.' : r.status === 429 ? 'محاولات غلط كتير، جرب بعد ساعة.' : 'الباسورد غلط.';
+});
+$('#days').addEventListener('change', load);
+$('#refresh').addEventListener('click', load);
+$('#logout').addEventListener('click', async () => { await fetch('/api/admin/logout', {method: 'POST'}).catch(() => {}); location.reload(); });
+let resizeT; addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (data) drawChart(); }, 150); });
+$('#metricTabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { metric = b.dataset.m; drawChart(); } });
+load().catch(() => { $('#login').hidden = false; });
+</script>
+</body>
+</html>

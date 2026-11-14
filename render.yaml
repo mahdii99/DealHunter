@@ -22,6 +22,10 @@ services:
         sync: false
       - key: CRON_SECRET
         sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: AFFILIATE_TAGS
+        sync: false
       - key: BREVO_API_KEY
         sync: false
       - key: MAIL_FROM

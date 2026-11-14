@@ -97,6 +97,20 @@ average request from 55 s to 40 s while the average number of matching results w
 | `GET` | `/api/notifications` | The shopper's notifications (`POST /api/notifications/seen` marks them read) |
 | `POST` | `/api/cron/check-watches` | Re-check followed prices (header `X-Cron-Secret`), run by `.github/workflows/check-watches.yml` |
 | `POST` | `/api/report` | "This result is wrong" from a visitor: `{reason, request, url, store, title, price}`; review with `python -m scripts.reports` |
+| `POST` | `/api/event` | Usage counting from the page: a visit (`{kind: "visit", source, mobile}`) or a store link opened (`{kind: "click", url, store, title, price, request, rank}`) |
+| `GET` | `/admin` | The owner's private dashboard (visitors, what they ask, which stores they open), behind `ADMIN_PASSWORD` |
+
+### Admin dashboard
+
+Set `ADMIN_PASSWORD` (Render → Environment; never in the code) and open `/admin`. It shows visitors per day, chat
+messages and what the agent did with them, the top requests and the ones that found nothing, the stores and
+products people opened, where visitors come from, accounts, feedback and reports. Everything is counted on our own
+database (no third-party analytics), tied only to the salted IP hash, and deleted after 180 days. The owner's own
+browser, once signed in to `/admin`, isn't counted.
+
+Purchases happen on the stores' sites, so only the stores' affiliate programs can report them. Put each program's
+code in `AFFILIATE_TAGS` (e.g. `amazon.eg: tag=yourcode-21; noon.com: utm_source=xxx`) and the page adds it to every
+link to that store; compare their sales reports with the clicks here.
 
 ## Free hosting
 

@@ -32,7 +32,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, agent, db, market, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, agent, db, market, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -114,7 +114,7 @@ def _site(request: Request) -> str:
 @app.get("/robots.txt")
 def robots(request: Request):
     """Search engines may list the pages, not the API (search results are made per visitor)."""
-    return Response(f"User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /img\nSitemap: {_site(request)}/sitemap.xml\n",
+    return Response(f"User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /img\nDisallow: /admin\nSitemap: {_site(request)}/sitemap.xml\n",
                     media_type="text/plain")
 
 
@@ -152,14 +152,16 @@ async def search(request: Request, q: str = Query(..., min_length=2, max_length=
         if await _db(db.searches_today, client, default=0) >= DAILY_LIMIT:
             raise HTTPException(429, LIMIT_TEXT.format(n=DAILY_LIMIT))
         await _db(db.count_search, client)
-    return await _search(q)
+    d = await _search(q)
+    await _track_turn(request, q, {**d, "action": "search"})
+    return d
 
 
-async def _db(fn, *args, default=None):
+async def _db(fn, *args, default=None, **kwargs):
     """A database call off the event loop (a slow or reconnecting database must not freeze every other visitor).
     Bookkeeping errors are logged, not shown: a search still works without the cache or price history."""
     try:
-        return await asyncio.to_thread(fn, *args)
+        return await asyncio.to_thread(fn, *args, **kwargs)
     except Exception:
         log.exception("database call %s failed", fn.__name__)
         return default
@@ -221,7 +223,9 @@ async def chat(turn: ChatTurn, request: Request):
     """A chat turn: the newest message is read together with the earlier ones, so a follow-up like
     'سامسونج بس' narrows the previous request instead of starting a new search."""
     user = await asyncio.to_thread(current_user, request)
-    return await _chat_turn(turn, client_id(request), user)
+    d = await _chat_turn(turn, client_id(request), user)
+    await _track_turn(request, turn.messages[-1].text, d)
+    return d
 
 
 @app.post("/api/chat/stream")
@@ -237,7 +241,9 @@ async def chat_stream(turn: ChatTurn, request: Request):
         token = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
         said = agent.REPLY.set(lambda text: queue.put_nowait({"type": "reply", "text": text}))  # typed as it comes
         try:
-            queue.put_nowait({"type": "done", "data": await _chat_turn(turn, client, user)})
+            d = await _chat_turn(turn, client, user)
+            queue.put_nowait({"type": "done", "data": d})
+            await _track_turn(request, turn.messages[-1].text, d)
         except HTTPException as e:
             queue.put_nowait({"type": "error", "status": e.status_code})
         except Exception:  # the page shows a friendly error; the details are in the server log
@@ -275,6 +281,22 @@ async def _chat_turn(turn: ChatTurn, client: str | None = None, user: dict | Non
     if user:
         await asyncio.to_thread(_personalize, d, user)
     return d
+
+
+async def _track_turn(request: Request, message: str, d: dict) -> None:
+    """Counts a chat message for the owner's /admin page: what was asked, what the agent did, how many results."""
+    action = "limit" if d.get("limit") else d.get("action") or "search"
+    results = d.get("results") or []
+    await _track(request, "turn", detail=message, request=d.get("query") or d.get("request") or "", action=action,
+                 results=len(results) if action == "search" else None, cached=d.get("cached"))
+
+
+async def _track(http: Request, kind: str, **fields) -> None:
+    """One usage event (db.events). The owner's own visits (signed in to /admin) aren't counted."""
+    if DEMO or admin.is_admin(http.cookies.get(admin.COOKIE)):
+        return
+    member = bool(accounts.read_session(http.cookies.get(accounts.COOKIE)))
+    await _db(db.add_event, kind, client_id(http), member, **fields)
 
 
 def _personalize(d: dict, user: dict) -> None:
@@ -369,7 +391,7 @@ class Report(BaseModel):
 
 # Reports and feedback messages per visitor per day: enough for any real shopper, and stops one script from filling
 # the database. Kept in memory (a restart forgets it, which is fine for this).
-SPAM_LIMITS = {"report": 60, "feedback": 20}
+SPAM_LIMITS = {"report": 60, "feedback": 20, "event": 600, "admin": 600}
 _sent: dict[tuple[str, str, str], int] = {}
 
 
@@ -406,6 +428,86 @@ def feedback(f: Feedback, request: Request):
     db.add_feedback(f.kind, f.message.strip(), f.contact.strip(), f.lang, client_id(request))
     log.info("FEEDBACK %s: %s", f.kind, f.message[:80])
     return {"ok": True}
+
+
+class Event(BaseModel):
+    """Sent by the page: a visit (once per page load) or a click on a store link."""
+    kind: str = Field(pattern="^(visit|click)$")
+    source: str = Field("", max_length=200)      # visit: the site the visitor came from (its host name only)
+    mobile: bool = False                         # visit: a phone or a tablet
+    url: str = Field("", max_length=1000)        # click: the product page opened
+    store: str = Field("", max_length=100)
+    title: str = Field("", max_length=300)
+    price: float | None = None
+    request: str = Field("", max_length=600)     # click: the search it came from
+    rank: int | None = Field(None, ge=0, le=100)  # click: its place in the list as shown (0 = first)
+
+
+@app.post("/api/event")
+async def event(e: Event, request: Request):
+    """Usage counting for the owner's /admin page. Only what's listed in Event is kept, with a hash of the IP."""
+    if _too_many("event", client_id(request)):
+        raise HTTPException(429, "too many events today")
+    if e.kind == "visit":
+        source = urlparse(e.source if "//" in e.source else "//" + e.source).hostname or ""
+        await _track(request, "visit", detail=source.removeprefix("www."), action="mobile" if e.mobile else "desktop")
+    else:
+        if not e.url.startswith(("https://", "http://")):
+            raise HTTPException(422, "not a web address")
+        await _track(request, "click", detail=e.url, store=e.store, title=e.title, price=e.price, request=e.request,
+                     results=e.rank)
+    return {"ok": True}
+
+
+# ---------- the owner's /admin page (app/admin.py): off unless ADMIN_PASSWORD is set ----------
+NO_INDEX = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"}
+
+
+@app.get("/admin")
+def admin_page():
+    if not admin.enabled():
+        raise HTTPException(404)
+    return FileResponse(ROOT / "static" / "admin.html", headers=NO_INDEX)
+
+
+class AdminLogin(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+
+
+@app.post("/api/admin/login")
+def admin_login(body: AdminLogin, request: Request, response: Response):
+    if not admin.enabled():
+        raise HTTPException(404)
+    client = client_id(request)
+    if admin.locked(client):
+        raise HTTPException(429, "too many wrong passwords, try again in an hour")
+    if not admin.check(body.password, client):
+        log.warning("admin: wrong password")
+        raise HTTPException(401, "wrong password")
+    response.set_cookie(admin.COOKIE, admin.make_cookie(), max_age=admin.ADMIN_DAYS * 86400, httponly=True,
+                        samesite="strict", secure=_secure(request))
+    return {"ok": True}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(response: Response):
+    response.delete_cookie(admin.COOKIE)
+    return {"ok": True}
+
+
+@app.get("/api/admin/stats")
+async def admin_stats(request: Request, days: int = Query(7, ge=1, le=db.EVENTS_DAYS),
+                      tz: int = Query(0, ge=-840, le=840)):
+    """Visitors, chat messages, searches and store clicks of the last `days` days. tz = the viewer's offset from UTC
+    in minutes (the page sends it), so the days start at the owner's midnight."""
+    if not admin.is_admin(request.cookies.get(admin.COOKIE)):
+        raise HTTPException(401, "sign in")
+    try:
+        stats = await asyncio.to_thread(db.usage_stats, days, tz)
+    except Exception:
+        log.exception("admin stats failed")
+        raise HTTPException(503, "database unavailable")
+    return JSONResponse(stats, headers=NO_INDEX)
 
 
 # Store images are loaded through us, shrunk to a thumbnail: some stores block their images on other sites, and the
@@ -517,8 +619,24 @@ def config():
             "markets": [{"code": m.code, "name_ar": m.country_ar, "name_en": m.country_en, "currency_ar": m.currency_ar,
                          "currency": m.currency, "enabled": m.code in live} for m in market.MARKETS.values()],
             "google_client_id": accounts.google_client_id(), "email_alerts": accounts.email_enabled(),
+            "affiliate": affiliate_tags(),
             "regions": [{"code": c, "name": market.MARKETS[c].country_ar, "currency": market.MARKETS[c].currency_ar,
                          "live": c in live} for c in accounts.REGIONS]}
+
+
+def affiliate_tags() -> dict[str, dict[str, str]]:
+    """AFFILIATE_TAGS = the stores' affiliate codes, added by the page to the store links it opens, e.g.
+    "amazon.eg: tag=mycode-21; noon.com: utm_source=x&utm_medium=y" -> {"amazon.eg": {"tag": "mycode-21"}, ...}.
+    A domain also matches its subdomains. Empty = links are opened as the stores gave them."""
+    tags = {}
+    for part in os.getenv("AFFILIATE_TAGS", "").split(";"):
+        domain, _, params = part.partition(":")
+        domain = domain.strip().lower().removeprefix("www.")
+        pairs = dict(p.split("=", 1) for p in params.strip().split("&") if "=" in p)
+        pairs = {k.strip(): v.strip() for k, v in pairs.items() if k.strip()}
+        if domain and pairs:
+            tags[domain] = pairs
+    return tags
 
 
 class GoogleLogin(BaseModel):
