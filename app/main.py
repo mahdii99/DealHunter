@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -866,10 +867,14 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
             # read must also be a price the page shows.
             shown = agent._shown_numbers(html)
             same = [p for p in products if (_same_page(p.url, url) or read_by_llm and len(products) == 1)
-                    and (not read_by_llm or p.price in shown)]
-            single = products[0] if len(products) == 1 and products[0].price in shown else None
+                    and (not read_by_llm or agent.shows(shown, p.price))]
+            single = products[0] if len(products) == 1 and agent.shows(shown, products[0].price) else None
             p = same[0] if same else single
-            return url, p, None if p else "no price for this product on its page"
+            if p:
+                return url, p, None
+            found = ", ".join(f"{q.price:g}" for q in products[:5])
+            return url, None, (f"page doesn't show the price read ({found})" if products else
+                               f"no product read on the page ({len(html)} chars, title: {_page_title(html)})")
         done = await asyncio.gather(*(one(u) for u in urls))
     seen = [{"url": url, "price": p.price, "title": p.title, "store": p.store, "in_stock": p.in_stock,
              "old_price": p.old_price} for url, p, _ in done if p]
@@ -882,6 +887,11 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
     made = await _alert_followers(seen)
     return {"checked": len(urls), "prices": len(seen), "alerts": len(made),
             "failed": {url: err for url, p, err in done if not p}}
+
+
+def _page_title(html: str) -> str:
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+    return " ".join(m.group(1).split())[:60] if m else "-"
 
 
 @app.get("/health")

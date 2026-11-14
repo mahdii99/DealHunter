@@ -1298,13 +1298,13 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
                     p.price, p.old_price, p.coupon_price = q.price, q.old_price, q.coupon_price
                     p.discount_pct = _discount(p)
                 p.in_stock = True if q.in_stock is None else q.in_stock
-                p.verified = p.price in shown or (bool(by_link) and abs(q.price - p.price) < 1)
+                p.verified = shows(shown, p.price) or (bool(by_link) and abs(q.price - p.price) < 1)
             else:
                 said = extract_mod._page_says_sold_out(html, extract_mod._visible_text(html), p.title)
                 if said:
                     sold.add(id(p))
                     continue
-                p.verified = said is False and p.price in shown
+                p.verified = said is False and shows(shown, p.price)
             if not p.verified:
                 log.info("agent: %s page doesn't show %g: not shown as checked", p.store, p.price)
         if retry:  # the reader service opens the page now (where robots.txt allows): live, not a stored copy
@@ -1315,11 +1315,17 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
                     if said:
                         sold.add(id(p))
                     else:
-                        p.verified = said is False and p.price in _shown_numbers(text)
+                        p.verified = said is False and shows(_shown_numbers(text), p.price)
     if sold:
         log.info("agent: %d results sold out on their own page: %s", len(sold),
                  [p.store for p in picks if id(p) in sold])
     return [p for p in picks if id(p) not in sold], len(sold)
+
+
+def shows(shown: set[float], price: float) -> bool:
+    """The page shows this price: the same number, or its pounds part (stores often write the piasters apart,
+    small and raised: "EGP2,413" then "43", so the page text holds 2413 and 43, not 2413.43)."""
+    return price in shown or int(price) in shown
 
 
 def _shown_numbers(page: str) -> set[float]:
