@@ -1843,3 +1843,34 @@ def test_placeholder_prices_are_dropped():
         Product("deppsi.com", "Lenovo Legion 5 RTX 3060", 29000, "u9")]
     agent._flag_price_outliers(picks, typical=38000)
     assert [p.price for p in picks] == [29000]
+
+
+def test_only_prices_confirmed_on_the_store_page_are_shown(monkeypatch):
+    """A price the store's own page (opened just now) doesn't show is never shown: such offers become plain links.
+    The judge's sentences with prices go (they were written before the check); a saved answer is checked again."""
+    from app.models import Product
+    monkeypatch.setattr(agent, "VERIFY_PICKS", True)
+    pages = {"https://a.com/p/heater-50": "<html><h1>Heater 50L</h1><p>السعر ٣٬٩٩٩ جنيه</p></html>",
+             "https://b.com/p/heater-50": "<html><h1>Heater 50L</h1><p>4,850 EGP</p></html>"}  # not the price we had
+
+    async def fake_fetch(client, sem, url):
+        if url not in pages:
+            raise httpx.ConnectError("robots")
+        return [], pages[url]
+
+    async def no_reader(client, urls, deadline=12):
+        return {}, {}
+    monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
+    monkeypatch.setattr(agent.fetchers, "read_pages", no_reader)
+    picks = [Product("A", "Heater 50L", 3999, "https://a.com/p/heater-50"),
+             Product("B", "Heater 50L", 3599, "https://b.com/p/heater-50"),
+             Product("C", "Heater 50L", 3500, "https://c.com/p/heater-50")]
+    shown, unchecked, gone = asyncio.run(agent.checked_only(picks))
+    assert [p.store for p in shown] == ["A"] and shown[0].verified is True and gone == 0
+    assert [u["store"] for u in unchecked] == ["B", "C"] and "price" not in unchecked[0]
+    s = agent._honest_summary("أرخص عرض في C بـ 3500. اختار ماركة معروفة.", shown)
+    assert "3500" not in s and "3,999" in s and "اختار ماركة معروفة." in s
+    saved = {"results": [dict(p.to_dict(), price_context="x") for p in picks], "summary": "C بـ 3500", "count": 3}
+    again = asyncio.run(agent.recheck(saved))
+    assert [r["store"] for r in again["results"]] == ["A"] and again["results"][0]["price_context"] == "x"
+    assert again["count"] == 1 and {u["store"] for u in again["unchecked"]} == {"B", "C"}

@@ -32,7 +32,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, admin, agent, db, market, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, agent, db, fetchers, market, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -171,9 +171,9 @@ async def _search(q: str, plan: dict | None = None, budget_text: str | None = No
     mk = market.current().code
     key = db.cache_key(q, mk)
     if not DEMO and (hit := await _db(db.cached_search, key, CACHE_TTL)):
-        log.info("served from cache")
+        log.info("served from cache (prices checked again on the store pages)")
         log.info("=" * 70 + "\n")
-        return {**hit, "cached": True}
+        return {**await agent.recheck(hit), "cached": True}
     t = time.monotonic()
     payload = await agent.run(q, plan=plan, budget_text=budget_text)
     log.info("DONE in %.1fs: %d results (%s)", time.monotonic() - t, len(payload["results"]), payload.get("source"))
@@ -757,11 +757,24 @@ def watches(request: Request):
     return {"watches": accounts.list_watches(_need_user(request)["id"])}
 
 
+_watch_client = httpx.AsyncClient(timeout=10)
+
+
+async def _may_open(url: str) -> bool:
+    """The store's robots.txt lets us open this page (unknown = yes: the scheduled check tries it anyway)."""
+    try:
+        return await asyncio.wait_for(fetchers.robots_allows(_watch_client, url), timeout=10)
+    except Exception:
+        return True
+
+
 @app.post("/api/watches")
 async def add_watch(w: Watch, request: Request):
     """"تابع السعر" on a result: we tell the shopper when this product's price drops."""
     if not await _public_host(urlparse(w.url).hostname or ""):  # we open this page later: never our own network
         raise HTTPException(400, "not a store page")
+    if not await _may_open(w.url):  # we must open the page again later: a copy kept elsewhere can be old
+        raise HTTPException(422, "المتجر ده مش بيسمح لنا نفتح صفحات منتجاته، فمنقدرش نتابع سعره ونبلغك لما ينزل.")
     return await asyncio.to_thread(_add_watch, w, request)
 
 
@@ -811,7 +824,6 @@ async def _alert_followers(results: list[dict]) -> list[dict]:
     return made
 
 
-SEARCH_RECHECKS = 10  # followed pages per re-check read through the search service (each = 1 search + 1 LLM read)
 CHECK_HOURS = float(os.getenv("WATCH_CHECK_HOURS", "6"))  # how often each followed product page is re-checked
 
 
@@ -838,29 +850,18 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
             if not url.startswith("https://") or not await _public_host(urlparse(url).hostname or ""):
                 return url, None, "address not allowed"
             try:
-                products, _ = await asyncio.wait_for(agent._fetch_page(client, sem, url), timeout=25)
+                products, html = await asyncio.wait_for(agent._fetch_page(client, sem, url), timeout=25)
             except Exception as e:  # a slow / blocked page: tried again next time
                 return url, None, type(e).__name__
+            # only a price the page itself gives for this product: its own product data, or the one product
+            # on it when the page shows that price (never a copy kept elsewhere, which can be old)
             same = [p for p in products if _same_page(p.url, url)]
-            p = same[0] if same else products[0] if len(products) == 1 else None
-            return url, p, None if p else "no price on page"
+            single = products[0] if len(products) == 1 and products[0].price in agent._shown_numbers(html) else None
+            p = same[0] if same else single
+            return url, p, None if p else "no price for this product on its page"
         done = await asyncio.gather(*(one(u) for u in urls))
-        # pages we couldn't open or read: the search service's copy of them (robots.txt / bot walls, e.g. Amazon)
-        tries = [i for i, (url, p, err) in enumerate(done) if not p and err != "address not allowed"][:SEARCH_RECHECKS]
-
-        async def by_search(i):
-            url, _, err = done[i]
-            try:
-                p, why = await agent.price_from_search(client, url, await asyncio.to_thread(accounts.watch_title, url))
-            except Exception as e:
-                return url, None, f"{err} / search: {type(e).__name__}: {str(e)[:120]}"
-            return url, p, None if p else f"{err} / {why}"
-        via_search = set()
-        for i, res in zip(tries, await asyncio.gather(*(by_search(i) for i in tries))):
-            done[i] = res
-            via_search.add(res[0])
     seen = [{"url": url, "price": p.price, "title": p.title, "store": p.store, "in_stock": p.in_stock,
-             "old_price": p.old_price, "via_search": url in via_search} for url, p, _ in done if p]
+             "old_price": p.old_price} for url, p, _ in done if p]
     for url, p, err in done:
         if not p:
             log.info("watch check %s: %s", url[:80], err)

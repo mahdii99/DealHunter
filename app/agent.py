@@ -10,6 +10,7 @@
 Fallbacks: no search key -> the built-in direct stores (app.stores); no LLM key -> simple rules.
 """
 import asyncio
+from dataclasses import fields
 import contextvars
 import json
 import logging
@@ -1213,15 +1214,15 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             summary = ("الموديلات المجانية مشغولة دلوقتي فمقدرتش أراجع النتايج بدقة، فدي مرتبة بالسعر بس "
                        "واتأكد من الموديل في كل واحدة. جرب تاني كمان دقيقة لنتيجة أدق.")
     picks = list({id(p): p for p in picks}.values())
-    gone = 0
+    gone, unchecked = 0, []
     if picks and VERIFY_PICKS:
         _progress(f"بفتح صفحة كل نتيجة ({len(picks)}) وبتأكد إنها متوفرة وإن سعرها لسه زي ما هو...")
         tv = time.monotonic()
-        picks, gone = await _verify_stock(picks)
+        picks, unchecked, gone = await checked_only(picks)
         TIMES["verify"] = round(time.monotonic() - tv, 1)
+        summary = _honest_summary(summary, picks)
         if gone:
-            summary = (summary + " " if summary else "") + (
-                f"(شلت {gone} عرض لقيته خلصان لما فتحت صفحته." + ("" if picks else " ومفيش عرض تاني متوفر دلوقتي.") + ")")
+            summary += f" (شلت {gone} عرض لقيته خلصان لما فتحت صفحته.)"
     _flag_price_outliers(picks, typical)
     picks = _show_order(picks)
     return {
@@ -1238,88 +1239,15 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "candidates_checked": len(pool),
         "sold_out_dropped": gone,
         "results": [p.to_dict() for p in picks],
+        "unchecked": unchecked,  # offers whose price we couldn't confirm on their own page: links only, no price
         "store_errors": errors,
     }
 
 
 VERIFY_PICKS = True    # open each result's own page before showing it (tests turn it off unless they check it)
-VERIFY_MAX = 12        # results checked per search (the cheapest first)
-VERIFY_DEADLINE = 7    # opening the result pages ourselves
+VERIFY_MAX = 25        # results checked per search (the cheapest first); the rest are shown as links only
+VERIFY_DEADLINE = 8    # opening the result pages ourselves
 VERIFY_READER_DEADLINE = 6  # pages we couldn't open, through the reader service
-
-
-_PRODUCT_ID = re.compile(r"[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*")
-
-
-def _product_ids(url: str) -> set[str]:
-    """Path parts that look like a product number (8+ letters/digits with a digit, e.g. B09YXNHF8N, 945105411):
-    the same product's link differs between a search and a store page (language part, tracking), its number not."""
-    parts = re.split(r"[/.?&=]", urlparse(url).path)
-    return {x.lower() for x in parts if len(x) >= 8 and _PRODUCT_ID.fullmatch(x) and not x.startswith("ref")}
-
-
-def _same_product_link(a: str, b: str) -> bool:
-    if trust.domain(a) != trust.domain(b):
-        return False
-    return _page_id(a) == _page_id(b) or bool(_product_ids(a) & _product_ids(b))
-
-
-LISTING_READS = 2  # other pages of the store read while looking for a followed product
-WITH_PAGE_TEXT = ["exa", "tavily"]  # search services that return their copy of each page, not just a snippet
-
-
-async def price_from_search(client: httpx.AsyncClient, url: str, title: str) -> tuple[Product | None, str]:
-    """A followed product whose page we may not open ourselves (robots.txt, bot wall, no price data in it): the
-    web search services' own copy of that page, read by the LLM, the same way searches read such pages.
-    Each service that returns page text is asked in turn (product number + title first, then the title alone)
-    until one has that page with a price; stores that keep their product pages from crawlers (Amazon) often show
-    the product on listing / search pages that are crawled, so up to LISTING_READS of those are read last.
-    At most 6 searches + 4 LLM reads for one product.
-    Returns (product, "") or (None, why)."""
-    services = [n for n in WITH_PAGE_TEXT if n in websearch.configured()]
-    if not (services and llm.available() and title):
-        return None, "no search service with page text / LLM key, or no title"
-    ids = sorted(_product_ids(url), key=len, reverse=True)[:1]
-    why: list[str] = []
-    listings: dict[str, str] = {}  # other pages of that store the searches returned, with their page text
-    for service in services:
-        for query in dict.fromkeys([" ".join([title] + ids), *ids, title]):
-            try:
-                hits = await websearch.search(client, query, max_results=6, include_domains=[trust.domain(url)],
-                                              only=[service])
-            except websearch.SearchError as e:
-                why.append(f"{service}: {str(e)[:60]}")
-                break
-            for h in hits:
-                if not _same_product_link(h["url"], url) and len(h.get("content") or "") >= MIN_CRAWLED_TEXT:
-                    listings.setdefault(h["url"], h["content"])
-            hit = next((h for h in hits if _same_product_link(h["url"], url)), None)
-            if hit is None:
-                why.append(f"{service}: not returned")
-                continue
-            text = hit.get("content") or hit.get("snippet") or ""
-            products = await _llm_read_page(hit["url"], text, title) if len(text) >= 40 else []
-            same = [p for p in products if _same_product_link(p.url, url)] or (products if len(products) == 1 else [])
-            if same:
-                p = same[0]
-                p.url = url
-                return p, ""
-            why.append(f"{service}: its copy has no price ({len(text)} chars)")
-            break  # this service has the page but not its price: ask the next one
-    # pages that mention the product number first, then listing pages (a search page shows many products)
-    pages = sorted(listings.items(), key=lambda x: (not any(i in x[1].lower() for i in ids),
-                                                    bool(_product_ids(x[0]))))[:LISTING_READS]
-    for page_url, text in pages:
-        try:
-            products = await _llm_read_page(page_url, text, title)
-        except (llm.LLMError, NotAStore):
-            continue
-        if p := next((p for p in products if _same_product_link(p.url, url)), None):
-            p.url = url
-            return p, ""
-    if pages:
-        why.append(f"not on {len(pages)} other pages of the store")
-    return None, "; ".join(why)[:300]
 
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")
@@ -1337,10 +1265,10 @@ def _price_moved(html: str, before: float, now: float) -> bool:
 
 async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
     """Before results are shown, open each one's own product page: drop it when the store now says sold out,
-    take the page's current price when it changed, and mark it `verified` when the page confirmed it.
-    A listing page often shows stale stock/prices, and a sold-out item is a wasted click for the shopper.
-    Returns (picks still for sale, how many were dropped as sold out). Results whose page can't be checked stay,
-    unverified, so the page can ask the shopper to check them."""
+    take the page's current price when it changed, and mark it `verified` only when that page, opened just now,
+    shows the price we'd show (or its own product data says exactly that price). Anything else - a page we
+    can't open, a listing page, a copy kept by a search service - can be old or another option's price.
+    Returns (picks still for sale, how many were dropped as sold out)."""
     for p in picks:
         p.verified = False
     todo = sorted((p for p in picks if _page_id(p.url)), key=_paid)[:VERIFY_MAX]
@@ -1348,7 +1276,7 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
         return picks, 0
     sold: set[int] = set()
     async with httpx.AsyncClient() as client:
-        sem = asyncio.Semaphore(6)
+        sem = asyncio.Semaphore(8)
         pages = await _within(VERIFY_DEADLINE, [_fetch_page(client, sem, p.url) for p in todo])
         retry = []
         for p, res in zip(todo, pages):
@@ -1356,6 +1284,7 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
                 retry.append(p)
                 continue
             products, html = res
+            shown = _shown_numbers(html)
             pid = _page_id(p.url)
             by_link = [q for q in products if _page_id(q.url) == pid]
             same = by_link or (products if len(products) == 1 else [])
@@ -1368,29 +1297,72 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
                     log.info("agent: %s price now %g (was %g)", p.store, q.price, p.price)
                     p.price, p.old_price, p.coupon_price = q.price, q.old_price, q.coupon_price
                     p.discount_pct = _discount(p)
-                elif abs(q.price - p.price) >= 1:
-                    log.info("agent: %s page data says %g, page shows %g: kept", p.store, q.price, p.price)
                 p.in_stock = True if q.in_stock is None else q.in_stock
-                p.verified = True
-                continue
-            said = extract_mod._page_says_sold_out(html, extract_mod._visible_text(html), p.title)
-            if said:
-                sold.add(id(p))
-            elif said is False:  # the title is on the page and no sold-out words next to it
-                p.verified = True
-        if retry:
+                p.verified = p.price in shown or (bool(by_link) and abs(q.price - p.price) < 1)
+            else:
+                said = extract_mod._page_says_sold_out(html, extract_mod._visible_text(html), p.title)
+                if said:
+                    sold.add(id(p))
+                    continue
+                p.verified = said is False and p.price in shown
+            if not p.verified:
+                log.info("agent: %s page doesn't show %g: not shown as checked", p.store, p.price)
+        if retry:  # the reader service opens the page now (where robots.txt allows): live, not a stored copy
             texts, _ = await fetchers.read_pages(client, [p.url for p in retry], deadline=VERIFY_READER_DEADLINE)
             for p in retry:
                 if (text := texts.get(p.url)) is not None:
                     said = extract_mod._page_says_sold_out(text, text, p.title)
                     if said:
                         sold.add(id(p))
-                    elif said is False:
-                        p.verified = True
+                    else:
+                        p.verified = said is False and p.price in _shown_numbers(text)
     if sold:
         log.info("agent: %d results sold out on their own page: %s", len(sold),
                  [p.store for p in picks if id(p) in sold])
     return [p for p in picks if id(p) not in sold], len(sold)
+
+
+def _shown_numbers(page: str) -> set[float]:
+    return extract_mod._visible_numbers(page.translate(_ARABIC_DIGITS))
+
+
+async def checked_only(picks: list[Product]) -> tuple[list[Product], list[dict], int]:
+    """What may be shown with a price: only offers whose own page, opened just now, shows that price.
+    Returns (those offers, the others as plain links without a price, how many were sold out)."""
+    if not (picks and VERIFY_PICKS):
+        return picks, [], 0
+    picks, gone = await _verify_stock(picks)
+    unchecked = [{"store": p.store, "title": p.title, "url": p.url} for p in picks if not p.verified]
+    return [p for p in picks if p.verified], unchecked, gone
+
+
+_NUMBER = re.compile(r"\d")
+
+
+def _honest_summary(summary: str, picks: list[Product]) -> str:
+    """The judge's summary names prices from before the page check; they may now be wrong or not shown at all.
+    Keep only its sentences without numbers, and state the cheapest checked price ourselves."""
+    keep = " ".join(x for x in re.split(r"(?<=[.!؟?])\s+", summary or "") if x and not _NUMBER.search(x))
+    if not picks:
+        return keep
+    best = min(picks, key=_paid)
+    lead = f"أرخص سعر اتأكدنا منه من صفحة المتجر دلوقتي: {_paid(best):,.0f} في {best.store}."
+    return f"{lead} {keep}".strip()
+
+
+async def recheck(payload: dict) -> dict:
+    """A saved answer (served again within a few hours): its prices are checked on the store pages again."""
+    rows = payload.get("results") or []
+    if not rows or not VERIFY_PICKS:
+        return payload
+    names = {f.name for f in fields(Product)}
+    picks = [Product(**{k: v for k, v in r.items() if k in names}) for r in rows]
+    extra = {id(p): {k: v for k, v in r.items() if k not in names} for p, r in zip(picks, rows)}
+    shown, unchecked, gone = await checked_only(picks)
+    return {**payload, "results": [extra[id(p)] | p.to_dict() for p in _show_order(shown)],
+            "unchecked": unchecked + [u for u in payload.get("unchecked") or [] if u not in unchecked],
+            "count": len(shown), "summary": _honest_summary(payload.get("summary", ""), shown),
+            "sold_out_dropped": (payload.get("sold_out_dropped") or 0) + gone}
 
 
 _SEARCH_NOISE = {"price", "prices", "egypt", "سعر", "اسعار", "أسعار", "مصر", "في", "من", "the", "and", "for", "with",
@@ -1466,7 +1438,7 @@ def _flag_price_outliers(picks: list[Product], typical: float | None = None) -> 
 async def run_rules(raw: str, note: str) -> dict:
     q: ParsedQuery = parse_query(raw)
     products, errors = await _search_all([q.search_text])
-    picks = rank(products, q)
+    picks, unchecked, _ = await checked_only(rank(products, q))
     return {
         "mode": "rules", "source": "stores",
         "understood": note,
@@ -1478,5 +1450,6 @@ async def run_rules(raw: str, note: str) -> dict:
         "summary": "",
         "candidates_checked": len(products),
         "results": [p.to_dict() for p in picks],
+        "unchecked": unchecked,
         "store_errors": errors,
     }

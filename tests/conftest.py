@@ -46,3 +46,14 @@ def _no_result_page_check(monkeypatch):
     checks that step itself."""
     from app import agent
     monkeypatch.setattr(agent, "VERIFY_PICKS", False)
+
+
+
+@pytest.fixture(autouse=True)
+def _stores_allow_us(monkeypatch):
+    """Following a product asks the store's robots.txt first (a real request): allowed, unless a test says not."""
+    from app import main
+
+    async def allowed(url):
+        return True
+    monkeypatch.setattr(main, "_may_open", allowed)

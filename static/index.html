@@ -115,6 +115,10 @@
   .a { display:flex; flex-direction:column; gap:12px; }
   .und { font-weight:600; }
   .sugg, .req, .meta, .hint-line { font-size:13px; color:var(--muted); }
+  .unchecked { display:grid; gap:6px; margin-top:12px; }
+  .unchecked .uc { display:flex; gap:8px; align-items:baseline; padding:8px 12px; border:1px solid var(--border); border-radius:10px; color:var(--text); text-decoration:none; font-size:14px; min-width:0; }
+  .unchecked .uc span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .unchecked .uc b { flex-shrink:0; font-weight:600; }
   .meta.live { display:flex; align-items:center; gap:8px; font-size:14px; }
   .meta.live .step::before { content:""; display:inline-block; width:8px; height:8px; margin-inline-end:8px; border-radius:50%; background:var(--accent);
                              animation:pulse 1s ease-in-out infinite; }
@@ -739,7 +743,7 @@ function render(d, turn) {  // one assistant turn
     const recs = d.recommendations || [];
     return `<div class="sum">${SPARK}<div><span>${esc(d.answer)}</span></div></div>` +
       `<div class="recs">${recs.map(r => `<div class="rec"><span>${r.tier ? `<i class="tier">${esc(r.tier)}</i>` : ''}<b dir="auto">${esc(r.name)}</b>` +
-        `${r.price ? `<span class="rp">${t('about')} ${fmt(r.price)}${r.store ? ` ${t('at')} ${esc(r.store)}` : ''}</span>` : ''}${r.why ? `<small>${esc(r.why)}</small>` : ''}</span>` +
+        `${r.why ? `<small>${esc(r.why)}</small>` : ''}</span>` +
         `<button type="button" data-say="${esc(t('findOneMsg')(r.name))}">${t('priceOf')}</button></div>`).join('')}</div>` +
       (d.over_budget && d.over_budget.length ? `<div class="hint-line">${esc(t('overBudget')(d.over_budget))}</div>` : '') +
       `<div class="chips">${recs.length > 1 ? `<button class="chip" type="button" data-say="${esc(t('findAllMsg')(recs.map(r => r.name)))}">${t('findAll')}</button>` : ''}` +
@@ -764,7 +768,9 @@ function render(d, turn) {  // one assistant turn
     (d.summary ? `<div class="sum">${SPARK}<span>${esc(d.summary)}</span></div>` : '') +
     (errs.length ? `<div class="err">${L('صفحات مقدرناش نفتحها: ', 'Pages we couldn’t open: ')}${errs.map(k => esc(k) + ' (' + esc(d.store_errors[k]).slice(0, 60) + ')').join('، ')}</div>` : '') +
     (alt ? `<div class="err">${L('مالقيناش المطلوب بالظبط، ودي أقرب بدائل من متاجر حقيقية:', 'We didn’t find exactly that; these are the closest alternatives from real stores:')}</div>` : '') +
-    `<div class="grid">${list.length ? list.map((x, rank) => card(x.p, x.i, rank, turn)).join('') : `<div class="hint-line">${t('noDeals')}</div>`}</div>` +
+    `<div class="grid">${list.length ? list.map((x, rank) => card(x.p, x.i, rank, turn)).join('') : (d.unchecked || []).length ? '' : `<div class="hint-line">${t('noDeals')}</div>`}</div>` +
+    ((d.unchecked || []).length ? `<div class="unchecked"><div class="hint-line">${L('عروض تانية مقدرناش نتأكد من سعرها من صفحة المتجر دلوقتي، فمش هنكتب لها سعر. افتحها وشوف بنفسك:', 'More offers whose price we couldn’t confirm on the store page right now, so no price is shown. Open them to see:')}</div>` +
+      d.unchecked.slice(0, 12).map(u => `<a class="uc" href="${link(u.url)}" target="_blank" rel="noopener nofollow"><b>${esc(u.store)}</b><span dir="auto">${esc(u.title)}</span></a>`).join('') + '</div>' : '') +
     (d.suggestions && d.suggestions.length ? nexts(d.suggestions)
       : d.results.length ? `<div class="hint-line">${L('عايز تغيّر حاجة؟ اكتبها تحت، مثلاً: ماركة معينة، أرخص، لون تاني.', 'Want to change something? Type it below, e.g. a brand, cheaper, another color.')}</div>` : '');
 }
@@ -951,7 +957,7 @@ function fbCount() {
   $('#fbSend').disabled = n < 3;
 }
 let toastT;
-function toast(text) { const el = $('#toast'); el.textContent = text; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { el.hidden = true; }, 1800); }
+function toast(text, ms = 1800) { const el = $('#toast'); el.textContent = text; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { el.hidden = true; }, ms); }
 
 // ---------- events ----------
 f.addEventListener('submit', e => { e.preventDefault(); send(q.value); });
@@ -1129,7 +1135,10 @@ document.addEventListener('click', async e => {  // "follow price" on a result
       p.watched = true;
     }
     btn.classList.toggle('on', p.watched); lbl.textContent = p.watched ? t('following') : t('follow');
-  } catch (err) { lbl.textContent = err.detail && typeof err.detail === 'string' ? err.detail : t('error'); }
+  } catch (err) {
+    if (err.status === 422 && typeof err.detail === 'string') { lbl.textContent = L('مش متاح', 'Not available'); toast(err.detail, 5000); }
+    else lbl.textContent = t('error');
+  }
 });
 function drawGoogle() {  // Google's own button: dark in dark mode, only its round icon on phones (the header is narrow)
   if (!window.google?.accounts?.id || me) return;

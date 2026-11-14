@@ -258,11 +258,6 @@ def urls_to_check(older_than: float, limit: int) -> list[str]:
     return [r[0] for r in rows]
 
 
-def watch_title(url: str) -> str:
-    row = next(iter(_db.run("SELECT title FROM watches WHERE url = ? LIMIT 1", (url,))), None)
-    return row[0] if row else ""
-
-
 def _money(n: float, mk: str) -> str:
     cur = {"EG": "ج.م", "SA": "ر.س", "AE": "د.إ"}.get(mk, "")
     return f"{n:,.0f} {cur}".strip()
@@ -291,9 +286,6 @@ def prices_seen(results: list[dict]) -> list[dict]:
                 body = f"نزل من {_money(last, mk)} لـ {_money(price, mk)} في {store}"
                 if first > price:
                     body += f" (أقل بـ {round((first - price) / first * 100)}% من وقت ما تابعته)"
-                if r.get("via_search"):  # the store keeps crawlers off its page: the price is from a search copy
-                    body += (". المتجر ده مش بيسمح لنا نفتح صفحته، فالسعر ده من نتايج البحث وممكن يكون عرض لوقت"
-                             " قصير أو لمقاس/لون تاني: اتأكد منه في صفحة المنتج")
                 n = notify(uid, "price_drop", f"السعر نزل: {title[:80]}", body, url)
                 made.append(n | {"email": email, "name": name, "email_alerts": bool(alerts)})
             _db.run("UPDATE watches SET price = ?, checked_at = ? WHERE id = ?", (price, now, wid))

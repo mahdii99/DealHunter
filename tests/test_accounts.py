@@ -202,44 +202,6 @@ def test_logo_files():
         assert r.status_code == 200 and r.content[:4] == b"\x89PNG"
 
 
-def test_scheduled_check_reads_pages_it_cant_open_through_the_search_service(monkeypatch):
-    """Amazon's robots.txt keeps our own requests off its product pages: the price comes from the search
-    service's copy of that page instead (the same product, whatever the link's language part or tracking)."""
-    from app import llm, websearch
-    c = _signed_in(monkeypatch)
-    url = "https://www.amazon.eg/-/en/Puma-Electron-Running-Unisex-Silver/dp/B0CJZY1CTP/ref=sr_1_46"
-    c.post("/api/watches", json={"url": url, "title": "Puma Unisex Running Sneaker", "store": "Amazon.eg", "price": 2739})
-    monkeypatch.setattr(main, "CHECK_HOURS", 0)
-
-    async def blocked(client, sem, u):
-        raise agent.RobotsDisallowed()
-
-    async def fake_search(client, query, max_results=8, include_domains=None, only=None, **kw):
-        assert query == "Puma Unisex Running Sneaker b0cjzy1ctp" and include_domains == ["amazon.eg"]
-        return [{"url": "https://www.amazon.eg/dp/B0OTHER123", "content": "x" * 300},
-                {"url": "https://www.amazon.eg/Puma-Unisex-Running-Sneaker/dp/B0CJZY1CTP", "content": "Puma ... EGP2,385.00 " * 20}]
-
-    async def fake_ask(prompt, **kw):
-        assert "EGP2,385.00" in prompt
-        return {"page": "shop", "currency": "EGP", "products": [
-            {"title": "Puma Unisex Running Sneaker", "price": 2385, "old_price": 2739, "url": None, "in_stock": True}]}
-    monkeypatch.setattr(agent, "_fetch_page", blocked)
-    monkeypatch.setattr(websearch, "configured", lambda: ["tavily"])
-    monkeypatch.setattr(websearch, "search", fake_search)
-    monkeypatch.setattr(llm, "available", lambda: True)
-    monkeypatch.setattr(llm, "ask_json", fake_ask)
-    d = c.post("/api/cron/check-watches", headers={"X-Cron-Secret": "cron-secret"}).json()
-    assert d == {"checked": 1, "prices": 1, "alerts": 1, "failed": {}}
-    assert c.get("/api/watches").json()["watches"][0]["price"] == 2385
-    body = c.get("/api/notifications").json()["notifications"][0]["body"]
-    assert "2,385" in body and "اتأكد منه في صفحة المنتج" in body  # read from a search copy: says so
-
-
-def test_product_links_match_by_their_product_number():
-    assert agent._same_product_link("https://www.amazon.eg/-/en/Puma-SMASH/dp/B09YXNHF8N/ref=sr_1_33",
-                                    "https://www.amazon.eg/dp/B09YXNHF8N")
-    assert not agent._same_product_link("https://www.amazon.eg/dp/B09YXNHF8N", "https://www.amazon.eg/dp/B0CJZY1CTP")
-    assert not agent._same_product_link("https://www.amazon.eg/dp/B09YXNHF8N", "https://noon.com/dp/B09YXNHF8N")
 
 
 def test_saved_chats_follow_the_shopper(monkeypatch):
@@ -278,27 +240,13 @@ def test_only_the_newest_chats_are_kept(monkeypatch):
     assert [x["title"] for x in accounts.list_chats("g:1")] == ["t4", "t3", "t2"]
 
 
-def test_followed_product_found_on_a_crawled_listing_page(monkeypatch):
-    from app import llm, websearch
-    url = "https://www.amazon.eg/-/en/Puma-Electron/dp/B0CJZY1CTP/ref=sr_1_46"
+def test_stores_that_keep_us_off_their_pages_cant_be_followed(monkeypatch):
+    """A price we can't read on the store's own page could be old: such a product isn't followed at all."""
+    c = _signed_in(monkeypatch)
 
-    async def fake_search(client, query, max_results=8, include_domains=None, only=None, **kw):
-        return [{"url": "https://www.amazon.eg/dp/B0CJZY1CTP", "content": "", "snippet": "Puma sneaker"},
-                {"url": "https://www.amazon.eg/s?k=puma+sneaker", "content": "listing " * 200}]
-
-    async def fake_ask(prompt, **kw):
-        return {"page": "shop", "currency": "EGP", "products": [
-            {"title": "Other", "price": 999, "url": "/dp/B0OTHER999"},
-            {"title": "Puma Unisex Running Sneaker", "price": 2385, "url": "/-/en/Puma/dp/B0CJZY1CTP/ref=sr_1_3"}]}
-    monkeypatch.setattr(websearch, "configured", lambda: ["tavily"])
-    monkeypatch.setattr(websearch, "search", fake_search)
-    monkeypatch.setattr(llm, "available", lambda: True)
-    monkeypatch.setattr(llm, "ask_json", fake_ask)
-    import asyncio
-    import httpx
-
-    async def go():
-        async with httpx.AsyncClient() as client:
-            return await agent.price_from_search(client, url, "Puma Unisex Running Sneaker")
-    p, why = asyncio.run(go())
-    assert why == "" and p.price == 2385 and p.url == url
+    async def disallowed(url):
+        return False
+    monkeypatch.setattr(main, "_may_open", disallowed)
+    r = c.post("/api/watches", json={"url": "https://www.amazon.eg/dp/B0CJZY1CTP", "title": "Puma", "price": 2385})
+    assert r.status_code == 422 and "منقدرش نتابع" in r.json()["detail"]
+    assert c.get("/api/watches").json()["watches"] == []
