@@ -89,6 +89,8 @@
   .saved-link:hover { background:var(--card2); }
   .saved-link img, .saved-link .ph { width:40px; height:40px; border-radius:8px; object-fit:contain; background:#fff; flex-shrink:0; }
   .saved-link .ph { background:var(--card2); }
+  .saved-list, .history-list, .chats-list { grid-template-columns:minmax(0, 1fr); }
+  .saved-link > span { min-width:0; overflow-wrap:anywhere; }
   .saved-link span { font-size:13px; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .saved-link b { display:block; color:var(--ink); font-size:13px; }
   .count { min-width:28px; height:24px; padding:0 8px; border-radius:12px; background:var(--soft); color:var(--ink); font-size:13px; font-weight:600;
@@ -248,7 +250,10 @@
   .done { display:flex; flex-direction:column; align-items:center; text-align:center; gap:10px; padding:18px 0 4px; }
   .done .ok-ic { width:64px; height:64px; border-radius:50%; background:var(--soft); color:var(--ink); display:inline-flex; align-items:center; justify-content:center; }
   .done p { margin:0; color:var(--muted); font-size:14px; max-width:360px; }
-  .sheet-items { display:grid; gap:4px; }
+  .sheet-items { display:grid; grid-template-columns:minmax(0, 1fr); gap:4px; }
+  /* grid items default to their content's width: a long saved title would push the whole sheet past the screen */
+  .dialog { grid-template-columns:minmax(0, 1fr); }
+  .dialog > *, .sheet-items > *, .hist { min-width:0; }
   .sheet-item { min-height:52px; padding:0 14px; border-radius:14px; border:0; background:transparent; display:flex; align-items:center; gap:10px; font-size:15px; text-align:start; }
   .sheet-item:hover { background:var(--card2); }
   .sheet-item.primary { background:var(--accent); color:var(--on-accent); font-weight:600; }
@@ -268,7 +273,18 @@
     header { backdrop-filter:none; background:var(--bg); }  /* blur behind a sticky bar is slow on phones */
     .desktop-only { display:none !important; }
     .mobile-only { display:flex; }
-    .bar { padding:10px 16px; }
+    /* the header holds the logo, the account buttons and the menu: it has to fit a 360px screen even when signed in,
+       or the whole page gets wider than the screen and opens zoomed out */
+    .bar { padding:10px 12px; gap:8px; }
+    .bar > * { min-width:0; }
+    .brand { gap:8px; flex-shrink:1; overflow:hidden; }
+    .brand img { width:34px; height:34px; flex-shrink:0; }
+    .brand .name { font-size:19px; white-space:nowrap; }
+    .tools, .acct { gap:6px; flex-shrink:0; }
+    .btn.icon { width:40px; height:40px; border-radius:11px; }
+    .mobile-only [data-act="theme"] { display:none; }  /* dark mode is in the menu; the header has no room for it */
+    /* iPhones zoom in on any box whose text is under 16px when it's tapped, and stay zoomed */
+    input, select, textarea, .field, .range input { font-size:16px; }
     .layout { padding:16px 16px 0; }
     .hero { padding:28px 4px 8px; } .hero h1 { font-size:26px; }
     .wrap { padding:12px; } .wrap.best { padding:11px; }
@@ -294,6 +310,7 @@
   #gbtn, #gbtn iframe { color-scheme:light; background:transparent; }
   .acct .me img { width:28px; height:28px; border-radius:50%; }
   .acct .me { padding:0 12px 0 8px; }
+  .acct .me .ini { width:28px; height:28px; border-radius:50%; background:var(--soft); color:var(--ink); display:inline-flex; align-items:center; justify-content:center; font-weight:700; }
   .acct .bell { position:relative; }
   .acct .bell b { position:absolute; top:-6px; inset-inline-start:-6px; min-width:18px; height:18px; padding:0 5px; font-size:11px; line-height:18px;
                   border-radius:9px; background:#dc2626; color:#fff; }
@@ -318,6 +335,7 @@
   .regions small { color:var(--muted); font-size:12px; }
   @media (max-width:760px) {
     .acct .me span.nm { display:none; }
+    .acct .me { width:40px; height:40px; padding:0; border-radius:11px; }
     /* phones: the account menu can't hang off the button (it ran past the screen's edge): it spans the screen
        under the header, as tall as there is room for */
     #panel { position:fixed; top:var(--panel-top, 72px); inset-inline:12px; width:auto; max-height:calc(100dvh - var(--panel-top, 72px) - 12px); }
@@ -1047,7 +1065,7 @@ function drawAcct() {
   gbtn.insertAdjacentHTML('afterend',
     `<button class="btn icon bell" type="button" aria-label="${t('notes')}">
        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 16v-5a6 6 0 0 0-12 0v5l-2 2h16z"/><path d="M10 21h4"/></svg>${unseen ? `<b>${unseen}</b>` : ''}</button>` +
-    `<button class="btn me" type="button" aria-label="${t('account')}">${me.picture ? `<img src="${esc(me.picture)}" alt="" referrerpolicy="no-referrer">` : ''}<span class="nm">${esc(me.name.split(' ')[0])}</span></button>`);
+    `<button class="btn me" type="button" aria-label="${t('account')}">${me.picture ? `<img src="${esc(me.picture)}" alt="" referrerpolicy="no-referrer">` : `<span class="ini">${esc((me.name || me.email || '?').trim().charAt(0).toUpperCase())}</span>`}<span class="nm">${esc(me.name.split(' ')[0])}</span></button>`);
 }
 function signedIn(d) {
   const first = !me && d.user;
