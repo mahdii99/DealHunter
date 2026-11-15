@@ -255,7 +255,8 @@ async def chat_stream(turn: ChatTurn, request: Request):
         try:
             d = await _chat_turn(turn, client, user)
             queue.put_nowait({"type": "done", "data": d})
-            await _track_turn(request, turn.messages[-1].text, d)
+            # on its own: the stream ends right after "done" and cancels this task, which would lose the count
+            _later(_track_turn(request, turn.messages[-1].text, d))
         except HTTPException as e:
             queue.put_nowait({"type": "error", "status": e.status_code})
         except Exception:  # the page shows a friendly error; the details are in the server log
@@ -301,6 +302,16 @@ async def _track_turn(request: Request, message: str, d: dict) -> None:
     results = d.get("results") or []
     await _track(request, "turn", detail=message, request=d.get("query") or d.get("request") or "", action=action,
                  results=len(results) if action == "search" else None, cached=d.get("cached"))
+
+
+_background: set[asyncio.Task] = set()
+
+
+def _later(coro) -> None:
+    """Runs bookkeeping after the answer is sent, kept referenced until it ends (a lone task can be dropped)."""
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
 
 
 async def _track(http: Request, kind: str, **fields) -> None:
@@ -443,16 +454,17 @@ def feedback(f: Feedback, request: Request):
 
 
 class Event(BaseModel):
-    """Sent by the page: a visit (once per page load) or a click on a store link."""
-    kind: str = Field(pattern="^(visit|click)$")
-    source: str = Field("", max_length=200)      # visit: the site the visitor came from (its host name only)
+    """Sent by the page: a visit (once per page load) or a click on a store link. Generous sizes: long text is cut
+    when saved (db.add_event), a count must never be lost because a store's address or title was long."""
+    kind: str = Field(pattern="^(visit|click|save|share)$")  # save / share: a result kept or shared
+    source: str = Field("", max_length=4000)     # visit: the site the visitor came from (its host name only)
     mobile: bool = False                         # visit: a phone or a tablet
-    url: str = Field("", max_length=1000)        # click: the product page opened
-    store: str = Field("", max_length=100)
-    title: str = Field("", max_length=300)
+    url: str = Field("", max_length=8000)        # click: the product page opened
+    store: str = Field("", max_length=1000)
+    title: str = Field("", max_length=4000)
     price: float | None = None
-    request: str = Field("", max_length=600)     # click: the search it came from
-    rank: int | None = Field(None, ge=0, le=100)  # click: its place in the list as shown (0 = first)
+    request: str = Field("", max_length=4000)    # click: the search it came from
+    rank: int | None = Field(None, ge=0)         # click: its place in the list as shown (0 = first)
 
 
 @app.post("/api/event")
@@ -466,8 +478,8 @@ async def event(e: Event, request: Request):
     else:
         if not e.url.startswith(("https://", "http://")):
             raise HTTPException(422, "not a web address")
-        await _track(request, "click", detail=e.url, store=e.store, title=e.title, price=e.price, request=e.request,
-                     results=e.rank)
+        await _track(request, e.kind, detail=e.url, store=e.store, title=e.title, price=e.price, request=e.request,
+                     results=min(e.rank, 100) if e.rank is not None else None)
     return {"ok": True}
 
 
@@ -787,7 +799,9 @@ async def add_watch(w: Watch, request: Request):
         raise HTTPException(400, "not a store page")
     if not await _may_open(w.url):  # we must open the page again later: a copy kept elsewhere can be old
         raise HTTPException(422, "المتجر ده مش بيسمح لنا نفتح صفحات منتجاته، فمنقدرش نتابع سعره ونبلغك لما ينزل.")
-    return await asyncio.to_thread(_add_watch, w, request)
+    d = await asyncio.to_thread(_add_watch, w, request)
+    await _track(request, "follow", detail=w.url, store=w.store, title=w.title, price=w.price)
+    return d
 
 
 def _add_watch(w: Watch, request: Request) -> dict:

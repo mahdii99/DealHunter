@@ -104,6 +104,8 @@ def test_follow_price_and_drop_notification(monkeypatch):
     url = "https://btech.com/ar/kettle-123"
     w = c.post("/api/watches", json={"url": url, "title": "Kettle", "store": "B.TECH", "price": 1000}).json()["watch"]
     assert w["first_price"] == 1000 and w["market"] == "EG"
+    follows = db._db.run("SELECT detail, store, member FROM events WHERE kind = 'follow'")  # for the /admin page
+    assert follows == [(url, "B.TECH", 1)]
     # a search sees it more expensive: no alert; then cheaper: alert
     assert accounts.prices_seen([{"url": url, "price": 1100}]) == []
     made = accounts.prices_seen([{"url": url, "price": 900}, {"url": "https://other.com/x", "price": 5}])

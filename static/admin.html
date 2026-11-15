@@ -132,6 +132,7 @@ const money = n => n == null ? '' : new Intl.NumberFormat('ar-EG').format(n) + '
 const when = at => new Date(at * 1000).toLocaleString('ar-EG', {day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'});
 const safeUrl = u => /^https?:\/\//i.test(u || '') ? esc(u) : '#';
 const ACTIONS = {search: 'بحث عن أسعار', ask: 'سأل سؤال يفهم بيه', recommend: 'رشّح منتجات', answer: 'جاوب على سؤال', limit: 'وصل للحد اليومي'};
+const PRODUCT_KINDS = {click: 'فتح لينك', follow: 'تابع السعر', save: 'حفظ منتج', share: 'شارك منتج'};
 const KINDS = {complaint: 'شكوى', suggestion: 'اقتراح', result: 'مشكلة في نتيجة', question: 'سؤال'};
 const REASONS = {wrong_product: 'منتج تاني', wrong_price: 'السعر غلط', bad_store: 'متجر مش موثوق', sold_out: 'خلصان', other: 'حاجة تانية'};
 const METRICS = [['visitors', 'الزوار'], ['visits', 'الزيارات'], ['turns', 'رسائل الشات'], ['clicks', 'ضغطات على المتاجر']];
@@ -208,6 +209,7 @@ function draw() {
     ['عمليات بحث عن أسعار', searches, ''],
     ['ضغطات على لينكات المتاجر', c.n, `من ${num(c.people)} زائر`],
     ['نسبة الضغط', searches ? c.n / searches * 100 : 0, 'ضغطات لكل ١٠٠ بحث', '٪'],
+    ['تابعوا سعر منتج', (tot.follow || {n: 0}).n, `حفظوا ${num((tot.save || {n: 0}).n)} · شاركوا ${num((tot.share || {n: 0}).n)}`],
     ['حسابات جديدة', data.accounts.new_users, `${num(data.accounts.users)} حساب كلهم`],
   ];
   $('#tiles').innerHTML = tiles.map(([k, n, s, unit]) => `<div class="card tile"><div class="k">${k}</div><div class="v">${num(n)}${unit || ''}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`).join('');
@@ -250,10 +252,10 @@ function draw() {
   $('#recent').innerHTML = table(data.recent, [
     ['الوقت', r => `<td class="n muted">${when(r.at)}</td>`],
     ['الزائر', r => `<td class="n"><span class="pill">${esc(r.client)}</span>${r.member ? ' <span class="pill search">بحساب</span>' : ''}</td>`],
-    ['عمل إيه', r => r.kind === 'click'
-      ? `<td><span class="pill search">فتح لينك</span> ${esc(r.store)}</td>`
+    ['عمل إيه', r => r.kind !== 'turn'
+      ? `<td><span class="pill search">${PRODUCT_KINDS[r.kind] || esc(r.kind)}</span> ${esc(r.store)}</td>`
       : `<td><span class="pill ${r.action === 'search' ? 'search' : r.action === 'limit' ? 'limit' : ''}">${esc(ACTIONS[r.action] || r.action)}</span>${r.cached ? ' <span class="pill">من الكاش</span>' : ''}</td>`],
-    ['التفاصيل', r => r.kind === 'click'
+    ['التفاصيل', r => r.kind !== 'turn'
       ? `<td class="t" dir="auto"><a href="${safeUrl(r.detail)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.title || r.detail)}</a> <span class="muted">${money(r.price)}</span></td>`
       : `<td class="t" dir="auto">${esc(r.detail)}${r.request && r.request.toLowerCase() !== r.detail.toLowerCase() ? `<div class="muted">← ${esc(r.request)}</div>` : ''}${r.results != null ? ` <span class="muted">(${num(r.results)} نتيجة)</span>` : ''}</td>`]]);
   $('#feedback').innerHTML = table(data.feedback, [

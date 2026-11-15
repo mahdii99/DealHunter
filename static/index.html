@@ -1020,13 +1020,21 @@ document.addEventListener('click', e => {
   if (el.dataset.sort) {
     const a = el.closest('.a'), d = shown[+a.dataset.turn]; d.sort = el.dataset.sort; a.innerHTML = render(d, +a.dataset.turn); return;
   }
-  const w = el.closest('.wrap'); if (!w) return;
-  const d = shown[+w.dataset.t], p = d.results[+w.dataset.i];
-  if (el.tagName === 'A') {  // the store link: counted, then the browser opens it as usual
-    const rank = [...w.parentNode.querySelectorAll('.wrap')].indexOf(w);
-    return beacon({kind: 'click', url: p.url, store: p.store || '', title: (p.title || '').slice(0, 300), price: p.price ?? null,
-                   request: (d.request || d.query || '').slice(0, 600), rank: rank >= 0 && rank <= 100 ? rank : null});
+  const w = el.closest('.wrap');
+  if (!w) {  // a store link elsewhere (saved products, followed products, notifications): counted too
+    if (el.tagName === 'A' && /^https?:/i.test(el.href) && new URL(el.href).host !== location.host)
+      beacon({kind: 'click', url: el.href, store: new URL(el.href).hostname.replace(/^www\./, ''), title: (el.querySelector('[dir=auto]') || el).textContent.trim().slice(0, 300)});
+    return;
   }
+  const d = shown[+w.dataset.t], p = d.results[+w.dataset.i];
+  const about = kind => {  // a result the shopper did something with, counted for the site owner
+    const rank = [...w.parentNode.querySelectorAll('.wrap')].indexOf(w);
+    beacon({kind, url: p.url, store: p.store || '', title: (p.title || '').slice(0, 300), price: p.price ?? null,
+            request: (d.request || d.query || '').slice(0, 600), rank: rank >= 0 ? rank : null});
+  };
+  if (el.tagName === 'A') return about('click');  // the store link: counted, then the browser opens it as usual
+  if (el.classList.contains('save') && !isSaved(p.url)) about('save');
+  if (el.classList.contains('share')) about('share');
   if (el.classList.contains('save')) {
     saved = isSaved(p.url) ? saved.filter(s => s.url !== p.url)
                            : [{url: p.url, title: p.title, price: p.price, store: p.store, image: p.image || ''}, ...saved].slice(0, 30);
