@@ -644,7 +644,7 @@ PAGE_CHARS = 3000  # page text sent to the LLM: the part with the products (most
 _PRICE_NUM = re.compile(r"\d[\d,.]{2,}")
 
 
-def _page_text(html: str, focus: list[str], limit: int = PAGE_CHARS, base_url: str = "") -> str:
+def _page_text(html: str, focus: list[str], limit: int = PAGE_CHARS, base_url: str = "", top: bool = False) -> str:
     """Readable page text with links kept, cut to the window that mentions the product most (search words and
     prices), so the LLM reads less text without losing the products."""
     html = re.sub(r"<(script|style|noscript|svg|head)\b.*?</\1>", " ", html, flags=re.S | re.I)
@@ -675,7 +675,9 @@ def _page_text(html: str, focus: list[str], limit: int = PAGE_CHARS, base_url: s
     def score(start: int) -> int:  # search words + prices inside the window
         end = start + limit
         return sum(start <= i < end for i in marks) + sum(start <= i < end for i in prices) // 2
-    start = max((max(0, i - 300) for i in marks[::max(1, len(marks) // 40)]), key=score)
+    # top: from where the product is first named (a product page's own title and buy box come before the
+    # related items, which can name the same words more often)
+    start = max(0, marks[0] - 300) if top else max((max(0, i - 300) for i in marks[::max(1, len(marks) // 40)]), key=score)
     return text[start:start + limit]
 
 
@@ -722,20 +724,26 @@ installments): never use them.
 Reply JSON: {{"same_product": true if the page's main product is the followed product (same model; another size or
 color is fine), "currency": "currency of the price, e.g. EGP",
 "price": number or null (the current price of the main product exactly as written, not the crossed-out old price),
-"choice_needed": true if the page shows a price range or several prices for sizes / colors / options and no single
-price is shown for the product as it opens, "in_stock": true | false | null}}
-price is null when the page writes no single current price for its main product. Never guess.
+"choice_needed": true only if the page shows a price range ("1,500 - 2,400") or only per-option prices and no single
+price for the product as it opens. Sizes or colors to pick don't matter when the page shows one current price (most
+pages do): then false. If the page lists a price per size and the product names a size, give that size's price.
+"in_stock": true | false | null}}
+price is null when the page writes no current price for its main product. Never guess.
 PAGE:
 {text}"""
 
 
-async def _read_main_price(url: str, html: str, title: str) -> Product | None:
+MAIN_PRICE_CHARS = 6000  # page text for a main-price read: the top of the page, where the product and its price are
+
+
+async def _read_main_price(url: str, html: str, title: str, spread: int = 0) -> Product | None:
     """A product page whose own product data doesn't settle the price (e.g. Amazon): the LLM reads only the main
     product's price. None when it isn't the followed product, the price depends on a choice (size, color) the page leaves
     open, or the page doesn't show that number: a price from a related item lower down must never become an alert."""
     words = [w for w in re.split(r"\W+", title) if len(w) > 2]
-    data = await llm.ask_json(FOLLOWED_PAGE_PROMPT.format(title=title or url, text=_page_text(html, words, base_url=url)),
-                              prefer="bulk", step="read_price")
+    text = _page_text(html, words, MAIN_PRICE_CHARS, base_url=url, top=True)
+    data = await llm.ask_json(FOLLOWED_PAGE_PROMPT.format(title=title or url, text=text),
+                              prefer="bulk", spread=spread, step="read_price")
     price = data.get("price")
     cur = str(data.get("currency") or "").strip().upper()
     mk = market.current()
@@ -1283,8 +1291,9 @@ VERIFY_PICKS = True    # open each result's own page before showing it (tests tu
 VERIFY_MAX = 25        # results checked per search (the cheapest first); the rest aren't shown
 VERIFY_DEADLINE = 8    # opening the result pages ourselves
 VERIFY_READER_DEADLINE = 6  # pages we couldn't open, through the reader service
-VERIFY_LLM_MAX = 12    # pages without clear product data whose main price the LLM reads, per search
-VERIFY_LLM_DEADLINE = 12  # those LLM reads
+VERIFY_LLM_MAX = 16    # pages without clear product data whose main price the LLM reads, per search
+VERIFY_LLM_DEADLINE = 18  # those LLM reads
+VERIFY_LLM_PARALLEL = 6   # read at once (each on another model)
 
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")
@@ -1357,13 +1366,14 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
     # a number somewhere on the page isn't enough (related items, other sellers, sizes): the LLM reads the price of
     # the page's own product, and only that price is shown
     if to_read and llm.available():
-        llm_sem = asyncio.Semaphore(LLM_READ_PARALLEL)
+        llm_sem = asyncio.Semaphore(VERIFY_LLM_PARALLEL)
 
-        async def read(p: Product, page: str):
-            async with llm_sem:
-                return await _read_main_price(p.url, page, p.title)
-        to_read = to_read[:VERIFY_LLM_MAX]
-        reads = await _within(VERIFY_LLM_DEADLINE, [read(p, page) for p, page in to_read])
+        async def read(i: int, p: Product, page: str):
+            async with llm_sem:  # each read starts on another model, so per-minute limits hold
+                return await _read_main_price(p.url, page, p.title, spread=i)
+        # well-known stores first: when time runs out, the offers shoppers trust most are the ones checked
+        to_read = sorted(to_read, key=lambda x: (not x[0].trusted, -(x[0].trust_score or 0), _paid(x[0])))[:VERIFY_LLM_MAX]
+        reads = await _within(VERIFY_LLM_DEADLINE, [read(i, p, page) for i, (p, page) in enumerate(to_read)])
         for (p, _), got in zip(to_read, reads):
             if isinstance(got, Exception) or got is None:
                 continue
