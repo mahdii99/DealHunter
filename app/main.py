@@ -360,12 +360,18 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         log.info("=" * 70 + "\n")
         return {"action": "ask", "question": plan["question"], "options": plan.get("options") or [],
                 "request": turn.request, "results": [], "demo": DEMO}
-    if plan and plan["action"] == "recommend":  # products that fit, from the LLM's knowledge, before any search
-        await agent.price_recommendations(plan, lo, hi)  # ...with today's prices, so none is over the budget
-        log.info("=" * 70 + "\n")
-        return {"action": "recommend", "answer": plan["reply"], "recommendations": plan["recommendations"],
-                "over_budget": plan.get("over_budget") or [],
-                "suggestions": plan["suggestions"], "request": turn.request, "results": [], "demo": DEMO}
+    if plan and plan["action"] == "recommend":
+        # products that fit the need: found in the stores right away, so the shopper sees real offers (checked price,
+        # picture, store), not just names
+        names = [r["name"] for r in plan.get("recommendations") or []]
+        plan["need_based"] = True
+        plan["suggested_products"] = plan.get("suggested_products") or names
+        plan["understood"] = plan.get("reply") or plan.get("understood")
+    shown = [r.model_dump() for r in turn.shown]
+    if plan and plan["action"] == "answer" and agent.unchecked_prices(
+            " ".join([plan["answer"]] + [" ".join(map(str, r)) for r in (plan.get("table") or {}).get("rows", [])]), shown):
+        log.info("chat: the answer names prices no result shows: searching instead")
+        plan["action"] = "search"
     if plan and plan["action"] == "answer":  # a question about the shown results: answer it, no new search
         log.info("=" * 70 + "\n")
         return {"action": "answer", "answer": plan["answer"], "table": plan.get("table"),

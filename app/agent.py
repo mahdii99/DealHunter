@@ -71,13 +71,15 @@ Choose ONE action for the newest message:
   say in one line what you chose and why, and recommend. After two questions in a row stop asking.
 - "recommend": the shopper described a need or asked what to buy ("أنهي موبايل أحسن في حدود 8000؟", "عايز ايربودز
   حلوة"): suggest 3-6 specific products that fit, covering different brands and price levels inside the budget, each
-  with a short "tier" label and one line on what it gives THIS shopper and what it lacks. Use your own knowledge,
-  without searching and without writing prices (we check today's prices ourselves). The shopper then picks one, or
-  asks for prices of all of them (that is a "search" for those products).
+  with a short "tier" label and one line on what it gives THIS shopper and what it lacks, from your own knowledge
+  and without writing prices. We then find all of them in the stores right away with today's checked prices, so
+  ALSO fill the search fields: need_based true, suggested_products = those products, and web_queries that find them.
 - "answer": a QUESTION about results already shown or buying advice ("أول نتيجة دي أصلية؟", "الفرق بين الاتنين إيه؟",
   "أنهي أحسن؟", "عليها ضمان؟", "السعر ده كويس؟") that doesn't ask for different products: reply from the shown results
   (their stores, prices, discounts, trust, price history) and your knowledge, without a new search, and give your
-  honest pick. To compare 2-4 products or offers, also fill "table". If a price looks too low for that product, say it
+  honest pick. To compare 2-4 products or offers, also fill "table". NEVER write a price, price range or estimate
+  that isn't one of the shown results' prices: your memory of prices is old and the shopper must only see prices
+  checked on the store page. Asking the price of something not shown, or where to buy it, is a "search". If a price looks too low for that product, say it
   may be a mistake, a different variant or a used/refurbished listing and how to check; if a store is unverified, say so.
 
 Understand the need before you offer anything. Work out what this use really requires (e.g. local AI work needs a
@@ -105,8 +107,8 @@ Quality words are real requirements, never drop them: "ماركة نضيفة / �
 quality brands, so name those brands in suggested_products and add a requirement like "well-known brand (e.g. ...)",
 so no-name products don't count as a match. The web queries must then NAME the brands (e.g. 'تيشيرت بيزك ديفاكتو',
 'LC Waikiki basic t-shirt'), never generic words like "ماركة مشهورة" or "brand": those find no-name shops.
-The search fields (need_based and everything after "request") are needed ONLY for "search": leave them empty
-for the other actions.
+The search fields (need_based and everything after "request") are needed for "search" and "recommend": leave them
+empty for "ask" and "answer".
 
 {chat}
 Reply JSON (in this order):
@@ -157,6 +159,25 @@ Reply JSON (in this order):
 MAX_HISTORY = 8  # chat messages the planner sees
 _PRICE_TAIL = re.compile(r"\s*[-–—:,(]*\s*(?:EGP|LE|ج\.?م|جنيه)?\s*\d[\d,.]*\s*(?:EGP|LE|ج\.?م|جنيه)\)?\s*$"
                          r"|\s*[-–—:,(]+\s*(?:EGP|LE)\s*\d[\d,.]*\)?\s*$", re.I)
+
+
+_MONEY_NEAR = re.compile(r"(\d[\d,.]*)\s*(?:-|–|لحد|لـ|ل|إلى|الى|to)?\s*(?:\d[\d,.]*\s*)?(?:جنيه|ج\.?\s?م|egp|le\b|ألف|الف)"
+                         r"|(?:egp|le|جنيه)\s*(\d[\d,.]*)", re.I)
+
+
+def unchecked_prices(text: str, shown: list[dict]) -> bool:
+    """The reply names a price that none of the shown results has: a guess from memory, never to be shown."""
+    known = {round(float(r["price"])) for r in shown if isinstance(r.get("price"), (int, float))}
+    text = text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,."))
+    for m in _MONEY_NEAR.finditer(text):
+        for num in re.findall(r"\d[\d,.]*", m.group(0)):
+            try:
+                n = float(num.replace(",", "").rstrip("."))
+            except ValueError:
+                continue
+            if n >= 50 and not any(abs(n - k) <= 1 for k in known):
+                return True
+    return False
 
 
 MAX_SHOWN = 10  # results of the last search the planner sees (to answer and compare)
@@ -328,108 +349,6 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
         plan["understood"] = str(plan.get("understood") or reply).strip()
     log.info("agent: plan %s -> %r", plan["action"], reply if plan["action"] != "search" else plan["request"])
     return plan
-
-
-RECS_PRICE_PROMPT = """You help a salesperson in Egypt check today's prices of the products they just suggested.
-Shopper's request: {request}
-Shopper's budget: {budget}
-Suggested products:
-{recs}
-
-Web search results from Egyptian online stores (product | title | snippet | url):
-{hits}
-
-For each suggested product, find its current price for a NEW, genuine unit of THAT exact model (not a case, not a
-different generation, not a monthly installment) in these results. Use only prices written in the results; null if
-none is shown.
-Reply JSON: {{"prices": [{{"i": <number of the product>, "price": number or null, "store": "store name or null"}}]}}"""
-RECS_PRICE_RESULTS = 5  # search results per suggested product
-RECS_MAX_SEARCHES = 4   # web searches per recommendation at most: the rest use what we know, or show no price
-RECS_PRICE_TTL = 24 * 3600  # a suggested product's price found today is reused for this long (no new search)
-RECS_KNOWN_DAYS = 3     # prices from our own past searches younger than this count as known
-_MODEL_WORD = re.compile(r"[A-Za-z]*\d[A-Za-z\d-]*")
-
-
-def _model_word(name: str) -> str:
-    """The most specific word of a product name, the model number ('Anker Soundcore R50i NC' -> 'r50i'), to find it in
-    titles we saved. '' when the name has none (then only a web search can price it)."""
-    words = [w for w in _MODEL_WORD.findall(name) if len(w) >= 3 and not w.isdigit()]
-    return max(words, key=len).lower() if words else ""
-
-
-def _rec_key(name: str) -> str:
-    return "__recprice__:" + db.cache_key(name, market.current().code)
-
-
-async def price_recommendations(plan: dict, lo: float | None = None, hi: float | None = None) -> None:
-    """Today's price of each suggested product, shown on the card ("حوالي X في Amazon"); a product that is clearly
-    over the shopper's budget is taken out. The LLM's own idea of prices is often old, so it never sets the price itself.
-    Free quotas are kept: a price found in the last day is reused, prices from our own recent searches are read before
-    any web search, and at most RECS_MAX_SEARCHES products get a web search (one each, on the well-known stores).
-    Changes plan["recommendations"]."""
-    recs = plan.get("recommendations") or []
-    if not recs:
-        return
-    mk = market.current().code
-    todo, hits, searched = [], [], 0
-    for i, r in enumerate(recs):
-        if (hit := await asyncio.to_thread(_db_safe, db.cached_search, _rec_key(r["name"]), RECS_PRICE_TTL)) is not None:
-            r.update({k: hit.get(k) for k in ("price", "store") if hit.get(k)})
-            r["_known"] = True
-            continue
-        word = _model_word(r["name"])
-        known = await asyncio.to_thread(_db_safe, db.recent_prices_like, word, mk,
-                                        time.time() - RECS_KNOWN_DAYS * 86400) if word else None
-        if known:
-            hits += [f"{i} | {k['title'][:120]} | {k['price']:g} {market.current().currency} at {k['store']} "
-                     f"(seen in our searches) | {k['url'][:120]}" for k in known]
-        else:
-            todo.append(i)
-    sites = _famous_sites(plan)
-    ask = [i for i in todo][:RECS_MAX_SEARCHES] if websearch.available() else []
-    if ask:
-        _progress("بشوف أسعارهم النهارده في المتاجر...")
-        async with httpx.AsyncClient(timeout=10) as client:
-            found = await asyncio.gather(*(websearch.search(client, f"{recs[i]['name']} سعر",
-                                                            max_results=RECS_PRICE_RESULTS, include_domains=sites)
-                                           for i in ask), return_exceptions=True)
-        searched = len(ask)
-        hits += [f"{i} | {str(h.get('title', ''))[:120]} | {str(h.get('snippet', ''))[:220]} | {h.get('url', '')[:120]}"
-                 for i, res in zip(ask, found) if not isinstance(res, BaseException) for h in res]
-    if hits:
-        budget = price_range_text(lo, hi) or (f"under {plan['max_price']:g}"
-                                              if isinstance(plan.get("max_price"), (int, float)) else "not given")
-        try:
-            out = await llm.ask_json(RECS_PRICE_PROMPT.format(
-                request=plan.get("request", ""), budget=budget,
-                recs="\n".join(f"{i}. {r['name']}" for i, r in enumerate(recs)), hits="\n".join(hits)),
-                timeout=12, budget=15, prefer="strong", step="recs_price")
-        except llm.LLMError as e:
-            log.warning("agent: pricing the suggestions failed: %s", e)
-            out = {}
-        for x in out.get("prices") or []:
-            if isinstance(x, dict) and isinstance(x.get("i"), int) and 0 <= x["i"] < len(recs) \
-                    and isinstance(x.get("price"), (int, float)) and x["price"] > 0 and not recs[x["i"]].get("_known"):
-                r = recs[x["i"]]
-                r["price"], r["store"] = float(x["price"]), str(x.get("store") or "")[:60] or None
-                await asyncio.to_thread(_db_safe, db.save_search, _rec_key(r["name"]), mk,
-                                        {"price": r["price"], "store": r["store"]})
-    # over the budget = a price we found that is clearly outside the range (5% slack: prices move a little)
-    if not hi and isinstance(plan.get("max_price"), (int, float)):  # a budget the shopper said in words
-        hi = plan["max_price"]
-
-    def out_of(p: float) -> bool:
-        return bool((hi and p > hi * 1.05) or (lo and p < lo * 0.95))
-    kept = [r for r in recs if not (r.get("price") and out_of(r["price"]))]
-    dropped = [r for r in recs if r not in kept]
-    if not kept:  # nothing fits: show them anyway, with their prices, rather than an empty answer
-        kept, dropped = recs, []
-    for r in recs:
-        r.pop("_known", None)
-    plan["recommendations"] = kept
-    plan["over_budget"] = [r["name"] for r in dropped]
-    log.info("agent: priced %d of %d suggestions (%d web searches), %d over budget",
-             sum(1 for r in recs if r.get("price")), len(recs), searched, len(dropped))
 
 
 def _db_safe(fn, *args):
