@@ -312,6 +312,19 @@ def notify(user_id: str, kind: str, title: str, body: str, url: str = "") -> dic
     return {"user_id": user_id, "kind": kind, "title": title, "body": body, "url": url, "created_at": now}
 
 
+# price-drop alerts sent before 2026-11-15 15:30 UTC (this fix going live) could carry another item's price (read anywhere on the page):
+# they're removed once; the followed products stay as they are
+LOOSE_ALERTS_BEFORE = 1794756600
+
+
+def drop_loose_price_alerts() -> int:
+    rows = _db.run("SELECT COUNT(*) FROM notifications WHERE kind = 'price_drop' AND created_at < ?",
+                   (LOOSE_ALERTS_BEFORE,))
+    if rows[0][0]:
+        _db.run("DELETE FROM notifications WHERE kind = 'price_drop' AND created_at < ?", (LOOSE_ALERTS_BEFORE,))
+    return rows[0][0]
+
+
 def list_notifications(user_id: str, limit: int = 30) -> list[dict]:
     rows = _db.run("SELECT id, kind, title, body, url, created_at, seen FROM notifications WHERE user_id = ? "
                    "ORDER BY created_at DESC LIMIT ?", (user_id, limit))

@@ -338,3 +338,16 @@ def test_our_own_notes_are_not_shoppers_requests():
     db.save_search(main.READ_AGAIN_KEY + "https://x.com/p", "EG", {"price": 5})
     db.save_search("__recprice__:" + db.cache_key("iphone 15", "EG"), "EG", {})
     assert db.recent_requests("EG") == ["غسالة"]
+
+
+def test_old_loose_price_alerts_are_removed_once(monkeypatch):
+    accounts.upsert_user({"id": "g:1", "email": "a@b.c", "name": "A", "picture": ""})
+    accounts.notify("g:1", "price_drop", "السعر نزل: Puma", "نزل لـ 1,885")
+    accounts.notify("g:1", "welcome", "أهلا", "")
+    accounts._db.run("UPDATE notifications SET created_at = ?", (accounts.LOOSE_ALERTS_BEFORE - 3600,))
+    with TestClient(main.app):  # the site starting up removes them
+        pass
+    assert [n["kind"] for n in accounts.list_notifications("g:1")] == ["welcome"]
+    monkeypatch.setattr(time, "time", lambda: accounts.LOOSE_ALERTS_BEFORE + 60)
+    accounts.notify("g:1", "price_drop", "السعر نزل: X", "")  # a new alert stays
+    assert accounts.drop_loose_price_alerts() == 0 and len(accounts.list_notifications("g:1")) == 2

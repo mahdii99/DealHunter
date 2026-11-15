@@ -9,6 +9,7 @@ import os
 import re
 import time
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from urllib.parse import urlparse
@@ -48,7 +49,17 @@ if DEMO:  # offline demo: stores read saved sample pages instead of the internet
             return _s.parse(_page)
         _s.search = _fake
 
-app = FastAPI(title="Easy Found")
+@asynccontextmanager
+async def _lifespan(app):
+    try:  # a database that's down must not stop the site from starting
+        if n := await asyncio.to_thread(accounts.drop_loose_price_alerts):
+            log.info("removed %d old price-drop alerts", n)
+    except Exception:
+        log.exception("removing old price-drop alerts failed")
+    yield
+
+
+app = FastAPI(title="Easy Found", lifespan=_lifespan)
 # Same request again within this time = answered from the price database (instant, saves the free quotas).
 CACHE_TTL = float(os.getenv("CACHE_HOURS", "6")) * 3600
 # New searches per visitor per day (each costs ~7 web searches and many LLM calls from the shared free quotas).
