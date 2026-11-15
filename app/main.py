@@ -34,7 +34,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, admin, agent, db, fetchers, market, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, affiliate, agent, db, fetchers, market, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -531,6 +531,8 @@ async def admin_stats(request: Request, days: int = Query(7, ge=1, le=db.EVENTS_
     except Exception:
         log.exception("admin stats failed")
         raise HTTPException(503, "database unavailable")
+    for row in stats.get("stores", []):  # which stores can pay us for these clicks (AFFILIATE_TAGS)
+        row["affiliate"] = affiliate.store_has_code(row.get("store") or "")
     return JSONResponse(stats, headers=NO_INDEX)
 
 
@@ -643,24 +645,9 @@ def config():
             "markets": [{"code": m.code, "name_ar": m.country_ar, "name_en": m.country_en, "currency_ar": m.currency_ar,
                          "currency": m.currency, "enabled": m.code in live} for m in market.MARKETS.values()],
             "google_client_id": accounts.google_client_id(), "email_alerts": accounts.email_enabled(),
-            "affiliate": affiliate_tags(),
+            "affiliate": affiliate.rules(),
             "regions": [{"code": c, "name": market.MARKETS[c].country_ar, "currency": market.MARKETS[c].currency_ar,
                          "live": c in live} for c in accounts.REGIONS]}
-
-
-def affiliate_tags() -> dict[str, dict[str, str]]:
-    """AFFILIATE_TAGS = the stores' affiliate codes, added by the page to the store links it opens, e.g.
-    "amazon.eg: tag=mycode-21; noon.com: utm_source=x&utm_medium=y" -> {"amazon.eg": {"tag": "mycode-21"}, ...}.
-    A domain also matches its subdomains. Empty = links are opened as the stores gave them."""
-    tags = {}
-    for part in os.getenv("AFFILIATE_TAGS", "").split(";"):
-        domain, _, params = part.partition(":")
-        domain = domain.strip().lower().removeprefix("www.")
-        pairs = dict(p.split("=", 1) for p in params.strip().split("&") if "=" in p)
-        pairs = {k.strip(): v.strip() for k, v in pairs.items() if k.strip()}
-        if domain and pairs:
-            tags[domain] = pairs
-    return tags
 
 
 class GoogleLogin(BaseModel):

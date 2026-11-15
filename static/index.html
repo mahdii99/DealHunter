@@ -433,7 +433,7 @@
 <footer>
   <div class="bar">
     <span dir="ltr">© <span id="year"></span> Easy Found</span>
-    <nav data-t-aria="links"><span data-t="footerNote"></span><a href="/privacy" data-t="privacy"></a><button class="link" type="button" data-act="feedback" data-t="feedback"></button></nav>
+    <nav data-t-aria="links"><span data-t="footerNote"></span><span data-t="affNote" id="affNote" hidden></span><a href="/privacy" data-t="privacy"></a><button class="link" type="button" data-act="feedback" data-t="feedback"></button></nav>
   </div>
 </footer>
 
@@ -530,7 +530,7 @@ const T = {
     sugs: ['لابتوب للمذاكرة تحت ٢٠ ألف', 'هدية لأمي في حدود ٥٠٠', 'مكنسة روبوت كويسة', 'سماعة بلوتوث للجيم'],
     askLabel: 'اكتب طلبك', placeholder: 'اكتب طلبك أو عدّل على اللي فات...', send: 'ابعت',
     disclaimer: 'الأسعار بتتجاب لحظيًا من المتاجر، اتأكد من السعر النهائي في صفحة المتجر.',
-    links: 'روابط', footerNote: 'الموقع مجاني ومش تبع أي متجر.',
+    links: 'روابط', footerNote: 'الموقع مجاني ومش تبع أي متجر.', affNote: 'بعض لينكات المتاجر فيها كود شراكة بتاعنا: لو اشتريت ممكن ناخد عمولة صغيرة من المتجر، والسعر عليك هو هو.',
     cheap: 'الأرخص', trust: 'الأعلى ثقة', deals: 'عليها خصم', sortLabel: 'ترتيب النتايج', noDeals: 'مفيش نتايج عليها خصم في الطلب ده.',
     open: 'افتح في المتجر', save: 'احفظ', savedOne: 'اتحفظ', share: 'شارك', copied: 'اتنسخ الرابط', report: 'النتيجة دي غلط؟',
     thanks: 'شكرًا، هنراجعها ونصلحها.', understanding: 'بفهم طلبك...', error: 'حصلت مشكلة، جرب تاني.', sec: 'ث',
@@ -563,7 +563,7 @@ const T = {
     sugs: ['Laptop for studying under 20k', 'A gift for mom around 500', 'A good robot vacuum', 'Bluetooth earbuds for the gym'],
     askLabel: 'Type your request', placeholder: 'Type a request or refine the last one...', send: 'Send',
     disclaimer: 'Prices are fetched live from stores. Check the final price on the store’s page.',
-    links: 'Links', footerNote: 'Free to use, not owned by any store.',
+    links: 'Links', footerNote: 'Free to use, not owned by any store.', affNote: 'Some store links carry our affiliate code: we may earn a small commission if you buy, at no extra cost to you.',
     cheap: 'Cheapest', trust: 'Most trusted', deals: 'On sale', sortLabel: 'Sort results', noDeals: 'No discounted results for this request.',
     open: 'Open in store', save: 'Save', savedOne: 'Saved', share: 'Share', copied: 'Link copied', report: 'Wrong result?',
     thanks: 'Thanks, we’ll review and fix it.', understanding: 'Understanding your request...', error: 'Something went wrong, try again.', sec: 's',
@@ -601,13 +601,19 @@ let history = [], currentRequest = '';  // the chat so far + the standalone requ
 let markets = [{code: 'EG', name_ar: 'مصر', name_en: 'Egypt', currency_ar: 'ج.م', currency: 'EGP', enabled: true}], marketCode = 'EG';
 const cur = () => markets.find(m => m.code === marketCode) || markets[0];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let affiliate = {};  // {store domain: {param: value}} from the server (AFFILIATE_TAGS): our code on store links
+let affiliate = {};  // {store domain: {params: {k: v}} or {template: 'https://network/...{url}'}} from AFFILIATE_TAGS (app/affiliate.py)
+const untagged = new Map();  // our link -> the store's own address, so clicks are counted under the store, not the network
 function tagged(u) {
   try {
-    const url = new URL(u), host = url.hostname.replace(/^www\./, '');
-    const d = Object.keys(affiliate).find(k => host === k || host.endsWith('.' + k));
-    if (d) for (const [k, v] of Object.entries(affiliate[d])) url.searchParams.set(k, v);
-    return url.href;
+    const url = new URL(u), host = url.hostname.toLowerCase().replace(/^www\./, '');
+    const d = Object.keys(affiliate).filter(k => host === k || host.endsWith('.' + k)).sort((a, b) => b.length - a.length)[0];
+    if (!d) return url.href;
+    const r = affiliate[d];
+    let out;
+    if (r.template) out = r.template.split('{url}').join(encodeURIComponent(u));
+    else { for (const [k, v] of Object.entries(r.params || {})) url.searchParams.set(k, v); out = url.href; }
+    if (out !== u) untagged.set(new URL(out).href, u);
+    return out;
   } catch (e) { return u; }
 }
 const link = u => /^https?:\/\//i.test(u || '') ? esc(tagged(u)) : '#';  // only web addresses become links (never javascript:)
@@ -672,7 +678,7 @@ function drawSide() {
   const hl = recent.length ? recent.map(r => `<button class="hist" type="button" data-again="${esc(r.q)}"><span dir="auto">${esc(r.q)}</span><small>${ago(r.at)}</small></button>`).join('')
                            : `<div class="empty">${t('noHistory')}</div>`;
   $$('.history-list').forEach(el => { el.innerHTML = hl; });
-  const sl = saved.length ? saved.map(p => `<a class="saved-link" href="${link(p.url)}" target="_blank" rel="noopener nofollow">
+  const sl = saved.length ? saved.map(p => `<a class="saved-link" href="${link(p.url)}" target="_blank" rel="noopener nofollow sponsored">
       ${p.image ? `<img src="${thumb(p.image)}" alt="" width="40" height="40" loading="lazy" decoding="async" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ph'}))">` : '<span class="ph"></span>'}
       <span><span dir="auto">${esc(p.title)}</span><b>${fmt(p.price)} · ${esc(p.store)}</b></span></a>`).join('')
                           : `<div class="empty">${t('noSaved')}</div>`;
@@ -706,7 +712,7 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
   const sv = isSaved(p.url);
   return `
     <div class="wrap ${rank === 0 ? 'best' : ''}" data-t="${turn}" data-i="${i}">
-      <a class="item" href="${link(p.url)}" target="_blank" rel="noopener nofollow">
+      <a class="item" href="${link(p.url)}" target="_blank" rel="noopener nofollow sponsored">
         <span class="thumb ${p.image ? '' : 'noimg'}">${p.image ? `<img src="${thumb(p.image)}" data-orig="${esc(p.image)}" alt="${esc(p.title)}" width="104" height="104" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="imgFail(this)">` : PH}</span>
         <span class="info">
           <span class="t" dir="auto">${esc(p.title)}</span>
@@ -728,7 +734,7 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
         </span>
       </a>
       <div class="actions">
-        <a class="act go" href="${link(p.url)}" target="_blank" rel="noopener nofollow">${t('open')}
+        <a class="act go" href="${link(p.url)}" target="_blank" rel="noopener nofollow sponsored">${t('open')}
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></a>
         <button class="act save" type="button" aria-pressed="${sv}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg><span>${sv ? t('savedOne') : t('save')}</span></button>
@@ -1022,8 +1028,10 @@ document.addEventListener('click', e => {
   }
   const w = el.closest('.wrap');
   if (!w) {  // a store link elsewhere (saved products, followed products, notifications): counted too
-    if (el.tagName === 'A' && /^https?:/i.test(el.href) && new URL(el.href).host !== location.host)
-      beacon({kind: 'click', url: el.href, store: new URL(el.href).hostname.replace(/^www\./, ''), title: (el.querySelector('[dir=auto]') || el).textContent.trim().slice(0, 300)});
+    if (el.tagName === 'A' && /^https?:/i.test(el.href) && new URL(el.href).host !== location.host) {
+      const u = untagged.get(el.href) || el.href;
+      beacon({kind: 'click', url: u, store: new URL(u).hostname.replace(/^www\./, ''), title: (el.querySelector('[dir=auto]') || el).textContent.trim().slice(0, 300)});
+    }
     return;
   }
   const d = shown[+w.dataset.t], p = d.results[+w.dataset.i];
@@ -1103,13 +1111,13 @@ async function drawPanel() {
   try {
     if (tab === 'notes') {
       const d = await api('/api/notifications');
-      body = d.notifications.map(n => `<div class="row ${n.seen ? '' : 'new'}">${n.url ? `<a href="${link(n.url)}" target="_blank" rel="noopener nofollow">${esc(n.title)}</a>` : esc(n.title)}` +
+      body = d.notifications.map(n => `<div class="row ${n.seen ? '' : 'new'}">${n.url ? `<a href="${link(n.url)}" target="_blank" rel="noopener nofollow sponsored">${esc(n.title)}</a>` : esc(n.title)}` +
         `<div>${esc(n.body)}</div><div class="when">${agoSec(n.created_at)}</div></div>`).join('') || `<div class="panel-hint">${t('noNotes')}</div>`;
       if (d.unseen) { api('/api/notifications/seen', {method: 'POST'}); unseen = 0; drawAcct(); }
     } else if (tab === 'watches') {
       const d = await api('/api/watches');
       body = d.watches.map(w => `<div class="row"><button class="x" type="button" data-unwatch="${w.id}">${t('cancelWatch')}</button>` +
-        `<a href="${link(w.url)}" target="_blank" rel="noopener nofollow">${esc(w.title)}</a>` +
+        `<a href="${link(w.url)}" target="_blank" rel="noopener nofollow sponsored">${esc(w.title)}</a>` +
         `<div class="when">${esc(w.store)} · ${t('nowAt')} ${fmt(w.price)}${w.price < w.first_price ? ` (${t('was')} ${fmt(w.first_price)})` : ''}</div></div>`).join('') ||
         `<div class="panel-hint">${t('noWatches')}</div>`;
     } else {
@@ -1186,6 +1194,7 @@ function drawGoogle() {  // Google's own button: dark in dark mode, only its rou
   try { cfg = await api('/api/config'); } catch (e) { return; }
   if (cfg.markets) { markets = cfg.markets; marketCode = cfg.market; drawRegion(); }
   if (cfg.affiliate) affiliate = cfg.affiliate;
+  $('#affNote').hidden = !Object.keys(affiliate).length;  // the commission is disclosed whenever links carry our code
   if (!cfg.google_client_id) return;  // sign-in is off on this server
   signedIn(await api('/api/me').catch(() => ({user: null})));
   const s = document.createElement('script');
