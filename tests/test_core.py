@@ -1384,7 +1384,7 @@ def test_results_are_checked_on_their_own_page_before_showing(monkeypatch):
     async def fake_read(client, urls, deadline=12):
         return {u: "Olympic Hero 50L 3,999 EGP غير متوفر حاليا" for u in urls if "shop-c" in u}, {}
 
-    async def main_price(url, page, title):  # the LLM reads the price of the page's own product
+    async def main_price(url, page, title, spread=0):  # the LLM reads the price of the page's own product
         return Product("E", title, 4699, url) if "shop-e" in url else None
     monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
     monkeypatch.setattr(fetchers, "read_pages", fake_read)
@@ -1903,3 +1903,17 @@ def test_robots_txt_read_the_standard_way():
     assert not r.can_fetch("https://s.com/a/b.pdf") and r.can_fetch("https://s.com/a/b.pdf?x")
     assert r.rule_for("https://s.com/gp/cart")[1] == "Disallow: /gp/cart"
     assert Robots("").can_fetch("https://s.com/anything")
+
+
+def test_main_price_read_starts_at_the_product_not_at_related_items(monkeypatch):
+    """Related items lower down can name the same words more often; the main-price read gets the top of the page."""
+    page = ("<h1>Nike Revolution 7</h1><p>EGP 2,899</p>" + "<p>filler text</p>" * 400 +
+            "".join(f"<div>Nike Revolution 7 alike {i} EGP 1,{i}99</div>" for i in range(60)))
+    seen = []
+
+    async def fake_ask(prompt, **kw):
+        seen.append(prompt)
+        return {"same_product": True, "price": 2899, "currency": "EGP", "choice_needed": False}
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    p = asyncio.run(agent._read_main_price("https://shop.com/p/rev7", page, "Nike Revolution 7"))
+    assert p.price == 2899 and "2,899" in seen[0]
