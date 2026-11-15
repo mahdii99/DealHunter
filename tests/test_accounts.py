@@ -250,3 +250,91 @@ def test_stores_that_keep_us_off_their_pages_cant_be_followed(monkeypatch):
     r = c.post("/api/watches", json={"url": "https://www.amazon.eg/dp/B0CJZY1CTP", "title": "Puma", "price": 2385})
     assert r.status_code == 422 and "منقدرش نتابع" in r.json()["detail"]
     assert c.get("/api/watches").json()["watches"] == []
+
+
+AMAZON_PAGE = ("<html><body><h1>PUMA Smash 3.0 L Sneaker</h1><span>EGP 2,413</span>"
+               "<div>Products related to this item: PUMA Rebound EGP 1,885 ; PUMA Carina EGP 2,348</div></body></html>")
+
+
+def _amazon_watch(monkeypatch, reads: list[dict]):
+    """A followed page without product data (like Amazon), read by a fake LLM giving `reads` one after another."""
+    c = _signed_in(monkeypatch)
+    url = "https://www.amazon.eg/dp/B0TEST1234"
+
+    async def allowed(u):
+        return True
+    monkeypatch.setattr(main, "_may_open", allowed)
+    c.post("/api/watches", json={"url": url, "title": "PUMA Smash 3.0 L Sneaker", "store": "Amazon.eg", "price": 2413})
+    monkeypatch.setattr(main, "CHECK_HOURS", 0)
+
+    async def fake_fetch(client, sem, u):
+        return [], AMAZON_PAGE
+
+    async def public(host):
+        return True
+    answers = iter(reads)
+
+    async def fake_ask(prompt, **kw):
+        assert "PUMA Smash 3.0 L Sneaker" in prompt and "main buy box" in prompt
+        return next(answers)
+    monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
+    monkeypatch.setattr(main, "_public_host", public)
+    monkeypatch.setattr(agent.llm, "available", lambda: True)
+    monkeypatch.setattr(agent.llm, "ask_json", fake_ask)
+
+    def check():
+        return c.post("/api/cron/check-watches", headers={"X-Cron-Secret": "cron-secret"}).json()
+    return c, url, check
+
+
+def test_followed_page_price_of_another_item_is_never_an_alert(monkeypatch):
+    """The LLM reads only the main product's price: another product, a size-dependent price or a number the page
+    doesn't show gives nothing (the price the shopper follows stays as it was)."""
+    c, url, check = _amazon_watch(monkeypatch, [
+        {"same_product": False, "price": 1885, "currency": "EGP", "choice_needed": False},
+        {"same_product": True, "price": 1885, "currency": "EGP", "choice_needed": True},
+        {"same_product": True, "price": 1500, "currency": "EGP", "choice_needed": False},
+        {"same_product": True, "price": 1885, "currency": "USD", "choice_needed": False},
+    ])
+    for _ in range(4):
+        d = check()
+        assert d["prices"] == 0 and d["alerts"] == 0 and url in d["failed"]
+    assert c.get("/api/watches").json()["watches"][0]["price"] == 2413
+    assert c.get("/api/notifications").json()["notifications"] == []
+
+
+def test_followed_page_new_price_must_be_read_twice(monkeypatch):
+    main_price = {"same_product": True, "price": 1885, "currency": "EGP", "choice_needed": False, "in_stock": True}
+    c, url, check = _amazon_watch(monkeypatch, [main_price, {**main_price, "price": 2348}, main_price, main_price,
+                                                {**main_price, "price": 1885}])
+    assert check()["alerts"] == 0 and "next check" in check()["failed"][url]  # 1885, then 2348: not the same
+    assert check()["alerts"] == 0  # 1885 again after 2348: still one read only
+    d = check()  # read 1885 twice in a row: now it counts
+    assert d["prices"] == 1 and d["alerts"] == 1
+    assert c.get("/api/watches").json()["watches"][0]["price"] == 1885
+    d = check()  # the price followers already saw: taken at once, no new alert
+    assert d["prices"] == 1 and d["alerts"] == 0
+
+
+def test_searches_dont_send_price_alerts(monkeypatch):
+    """A search's price is checked on the page only loosely (the number is somewhere on it): alerts come only
+    from the scheduled check, which reads the followed product's own price."""
+    c = _signed_in(monkeypatch)
+    url = "https://btech.com/ar/kettle-123"
+    c.post("/api/watches", json={"url": url, "title": "Kettle", "store": "B.TECH", "price": 1000})
+
+    async def fake_run(q, plan=None, budget_text=None):
+        return {"results": [{"url": url, "price": 500, "title": "Kettle", "store": "B.TECH"}], "mode": "llm"}
+    monkeypatch.setattr(main, "DEMO", False)
+    monkeypatch.setattr(agent, "run", fake_run)
+    import asyncio
+    asyncio.run(main._search("kettle"))
+    assert c.get("/api/notifications").json()["notifications"] == []
+    assert c.get("/api/watches").json()["watches"][0]["price"] == 1000
+
+
+def test_our_own_notes_are_not_shoppers_requests():
+    db.save_search(db.cache_key("غسالة", "EG"), "EG", {})
+    db.save_search(main.READ_AGAIN_KEY + "https://x.com/p", "EG", {"price": 5})
+    db.save_search("__recprice__:" + db.cache_key("iphone 15", "EG"), "EG", {})
+    assert db.recent_requests("EG") == ["غسالة"]

@@ -714,6 +714,41 @@ async def _llm_read_page(url: str, html: str, query: str, spread: int = 0, focus
     return out
 
 
+FOLLOWED_PAGE_PROMPT = """This is the text of one product page of an online store. A shopper follows this product
+for price drops: {title}
+Read the price of THE product this page is for: the one in its title and main buy box at the top. Prices further down
+belong to other items (related, sponsored, "customers also bought", bundles, accessories, other sellers' offers,
+installments): never use them.
+Reply JSON: {{"same_product": true if the page's main product is the followed product (same model; another size or
+color is fine), "currency": "currency of the price, e.g. EGP",
+"price": number or null (the current price of the main product exactly as written, not the crossed-out old price),
+"choice_needed": true if the page shows a price range or several prices for sizes / colors / options and no single
+price is shown for the product as it opens, "in_stock": true | false | null}}
+price is null when the page writes no single current price for its main product. Never guess.
+PAGE:
+{text}"""
+
+
+async def _read_followed_page(url: str, html: str, title: str) -> Product | None:
+    """A followed product page without its own product data (e.g. Amazon): the LLM reads only the main product's
+    price. None when it isn't the followed product, the price depends on a choice (size, color) the page leaves
+    open, or the page doesn't show that number: a price from a related item lower down must never become an alert."""
+    words = [w for w in re.split(r"\W+", title) if len(w) > 2]
+    data = await llm.ask_json(FOLLOWED_PAGE_PROMPT.format(title=title or url, text=_page_text(html, words, base_url=url)),
+                              prefer="bulk", step="read_followed")
+    price = data.get("price")
+    cur = str(data.get("currency") or "").strip().upper()
+    mk = market.current()
+    if (data.get("same_product") is not True or data.get("choice_needed") is True
+            or not isinstance(price, (int, float)) or isinstance(price, bool) or price < 5
+            or cur and cur not in {c.upper() for c in mk.currency_aliases + (mk.currency,)} | {"ج.م", "جم", "جنيه", "L.E", "L.E."}
+            or not shows(_shown_numbers(html), price)):
+        return None
+    stock = data.get("in_stock")
+    return Product(store=trust.store_name(url), title=title or url, price=float(price), url=url,
+                   trusted=trust.is_known(url), in_stock=stock if isinstance(stock, bool) else None)
+
+
 class NotAStore(Exception):
     """The LLM read the page: it isn't a place to buy (news, blog, review) or its prices are another currency."""
 

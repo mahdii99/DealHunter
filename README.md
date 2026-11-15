@@ -29,7 +29,7 @@ The project runs entirely on free tiers: no paid API is needed.
 - **Real discounts only.** Discount % comes from the store's own old price or checkout coupon, and every price is sanity-checked against the market (a 2,000 EGP fridge is a wrong currency or an installment, not a deal).
 - **Price history.** Every price shown is saved, so results show the lowest price seen before and when a price dropped. This is the base for price-drop alerts.
 - **Accounts with Google sign-in.** Shoppers pick their region at sign-up (Egypt, Saudi Arabia, UAE), save preferences (e.g. trusted shops only) and get a higher daily limit.
-- **Price-drop alerts.** "Follow price" on any result; when the product gets cheaper (seen in any search, or in a scheduled re-check every 6 hours) the shopper gets a notification on the site, and optionally an email.
+- **Price-drop alerts.** "Follow price" on any result; a scheduled re-check (every 6 hours) opens the product's own page, and when it got cheaper the shopper gets a notification on the site, and optionally an email. Only the price of the page's main product counts (never a related item's, or a size-dependent price the page leaves open); a page without product data is read by the LLM, and a new price read that way must be read again on the next check before it counts.
 - **Live progress.** The page streams what the agent is doing ("found 16 pages in 11 stores", "comparing 30 offers...").
 
 ## How it works

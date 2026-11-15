@@ -258,9 +258,10 @@ def urls_to_check(older_than: float, limit: int) -> list[str]:
     return [r[0] for r in rows]
 
 
-def watch_title(url: str) -> str:
-    row = next(iter(_db.run("SELECT title FROM watches WHERE url = ? LIMIT 1", (url,))), None)
-    return row[0] if row else ""
+def followed(url: str) -> tuple[str, set[float]]:
+    """A followed page's title and the prices its followers last saw (for the scheduled re-check)."""
+    rows = _db.run("SELECT title, price FROM watches WHERE url = ?", (url,))
+    return (rows[0][0] if rows else ""), {r[1] for r in rows}
 
 
 def _money(n: float, mk: str) -> str:
