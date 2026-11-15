@@ -1,11 +1,13 @@
 """The owner's /admin page: password, usage counting (visits, chat messages, store clicks), the stats."""
+import asyncio
 import os
 import time
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 
-from app import admin, db, llm, main
+from app import accounts, admin, affiliate, db, llm, main
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +102,7 @@ def test_visits_chat_messages_and_store_clicks_are_counted(monkeypatch):
     assert s["searches"][0]["request"] == "شاحن ابل اصلي" and s["searches"][0]["n"] == 2
     assert s["searches"][0]["avg_results"] == 2.0 and s["searches"][0]["cached"] == 1
     assert [e["request"] for e in s["empty_searches"]] == ["شاحن ابل اصلي"]
-    assert s["stores"] == [{"store": "Amazon.eg", "n": 1, "people": 1}]
+    assert s["stores"] == [{"store": "Amazon.eg", "n": 1, "people": 1, "affiliate": False}]
     assert s["products"][0]["url"] == click["url"] and s["products"][0]["price"] == 1500
     assert s["ranks"] == [{"rank": 0, "n": 1}]
     assert {r["source"] for r in s["sources"]} == {"facebook.com", ""}
@@ -120,10 +122,49 @@ def test_old_events_are_deleted(monkeypatch):
 
 
 def test_affiliate_codes_reach_the_page(monkeypatch):
-    monkeypatch.setenv("AFFILIATE_TAGS", "www.Amazon.eg: tag=easyfound-21; noon.com: utm_source=x&utm_medium=aff; bad")
-    assert main.affiliate_tags() == {"amazon.eg": {"tag": "easyfound-21"},
-                                     "noon.com": {"utm_source": "x", "utm_medium": "aff"}}
-    assert TestClient(main.app).get("/api/config").json()["affiliate"]["amazon.eg"] == {"tag": "easyfound-21"}
+    monkeypatch.setenv("AFFILIATE_TAGS", "www.Amazon.eg: tag=easyfound-21; noon.com: utm_source=x&utm_medium=aff; bad; "
+                       "jumia.com.eg: https://ad.admitad.com/g/abc/?ulp={url}; "
+                       "btech.com: http://insecure.example/?u={url}; raya.com: https://net.example/no-placeholder")
+    assert affiliate.rules() == {"amazon.eg": {"params": {"tag": "easyfound-21"}},
+                                 "noon.com": {"params": {"utm_source": "x", "utm_medium": "aff"}},
+                                 "jumia.com.eg": {"template": "https://ad.admitad.com/g/abc/?ulp={url}"}}
+    assert TestClient(main.app).get("/api/config").json()["affiliate"]["amazon.eg"] == {"params": {"tag": "easyfound-21"}}
+
+
+def test_affiliate_links(monkeypatch):
+    monkeypatch.setenv("AFFILIATE_TAGS", "amazon.eg: tag=ef-21; jumia.com.eg: https://ad.admitad.com/g/abc/?ulp={url}")
+    assert affiliate.link("https://www.amazon.eg/dp/B0X?th=1&tag=old") == "https://www.amazon.eg/dp/B0X?th=1&tag=ef-21"
+    assert (affiliate.link("https://www.jumia.com.eg/p-1.html?a=1&b=2")
+            == "https://ad.admitad.com/g/abc/?ulp=https%3A%2F%2Fwww.jumia.com.eg%2Fp-1.html%3Fa%3D1%26b%3D2")
+    assert affiliate.link("https://btech.com/x") == "https://btech.com/x"  # no code for this store: left alone
+    assert affiliate.link("https://fakeamazon.eg/x") == "https://fakeamazon.eg/x"  # only the domain and its subdomains
+    assert affiliate.link("javascript:alert(1)") == "javascript:alert(1)"
+    assert affiliate.store_has_code("amazon.eg") and affiliate.store_has_code("www.jumia.com.eg")
+    assert not affiliate.store_has_code("btech.com") and not affiliate.store_has_code("")
+
+
+def test_alert_email_link_carries_the_code(monkeypatch):
+    monkeypatch.setenv("AFFILIATE_TAGS", "amazon.eg: tag=ef-21")
+    monkeypatch.setenv("BREVO_API_KEY", "k")
+    monkeypatch.setenv("MAIL_FROM", "a@b.c")
+    sent = {}
+
+    class Client:
+        async def post(self, url, **kw):
+            sent.update(kw["json"])
+            return httpx.Response(201, request=httpx.Request("POST", url))
+
+    assert asyncio.run(accounts.send_email(Client(), "x@y.z", "Mona", "s", "t", "https://www.amazon.eg/dp/B0X"))
+    assert "https://www.amazon.eg/dp/B0X?tag=ef-21" in sent["htmlContent"]
+
+
+def test_admin_marks_stores_with_a_code(monkeypatch):
+    monkeypatch.setenv("AFFILIATE_TAGS", "amazon.eg: tag=ef-21")
+    monkeypatch.setattr(main.admin, "is_admin", lambda c: True)
+    monkeypatch.setattr(main.db, "usage_stats", lambda days, tz: {"stores": [{"store": "amazon.eg", "n": 3, "people": 2},
+                                                                              {"store": "btech.com", "n": 1, "people": 1}]})
+    stores = TestClient(main.app).get("/api/admin/stats").json()["stores"]
+    assert [s["affiliate"] for s in stores] == [True, False]
 
 
 def test_every_schema_statement_is_whole():

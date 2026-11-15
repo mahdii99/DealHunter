@@ -120,6 +120,9 @@
         الشرا نفسه بيحصل في موقع المتجر، فالمتجر بس هو اللي يعرفه. الحل إنك تشترك في برنامج التسويق بالعمولة
         (Affiliate) بتاع كل متجر (أمازون مصر، نون، جوميا...)، وتحط كود الشراكة في <code>AFFILIATE_TAGS</code> على Render،
         والموقع هيضيفه لوحده على كل لينك. بعدها لوحة المتجر هتوريك المشتريات والعمولة، وتقارنها بالضغطات اللي هنا.
+        فيه شكلين: كود في اللينك <code>amazon.eg: tag=كودك-21</code>، أو لينك تتبع شبكة (Admitad وArabClicks وDCM)
+        ومكان لينك المنتج فيه <code>{url}</code> زي <code>jumia.com.eg: https://ad.admitad.com/g/xxxx/?ulp={url}</code>.
+        افصل بين المتاجر بـ <code>;</code>. المتاجر اللي عليها كود بتظهر قدامها «💰 عمولة» في جدول المتاجر.
       </section>
     </div>
   </div>
@@ -223,7 +226,7 @@ function draw() {
     ['آخر مرة', r => `<td class="n muted">${when(r.last)}</td>`]]);
   const maxC = Math.max(0, ...data.stores.map(r => r.n));
   $('#stores').innerHTML = table(data.stores, [
-    ['المتجر', r => `<td class="t">${esc(r.store || '؟')}${bar(r.n, maxC)}</td>`],
+    ['المتجر', r => `<td class="t">${esc(r.store || '؟')}${r.affiliate ? ' <span class="pill search">💰 عمولة</span>' : ''}${bar(r.n, maxC)}</td>`],
     ['ضغطات', r => `<td class="n">${num(r.n)}</td>`],
     ['زوار', r => `<td class="n">${num(r.people)}</td>`]], 'محدش ضغط على لينك متجر لسه.');
   $('#products').innerHTML = table(data.products, [
