@@ -9,6 +9,7 @@ import os
 import re
 import time
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from urllib.parse import urlparse
@@ -48,7 +49,17 @@ if DEMO:  # offline demo: stores read saved sample pages instead of the internet
             return _s.parse(_page)
         _s.search = _fake
 
-app = FastAPI(title="Easy Found")
+@asynccontextmanager
+async def _lifespan(app):
+    try:  # a database that's down must not stop the site from starting
+        if n := await asyncio.to_thread(accounts.drop_loose_price_alerts):
+            log.info("removed %d old price-drop alerts", n)
+    except Exception:
+        log.exception("removing old price-drop alerts failed")
+    yield
+
+
+app = FastAPI(title="Easy Found", lifespan=_lifespan)
 # Same request again within this time = answered from the price database (instant, saves the free quotas).
 CACHE_TTL = float(os.getenv("CACHE_HOURS", "6")) * 3600
 # New searches per visitor per day (each costs ~7 web searches and many LLM calls from the shared free quotas).
@@ -183,7 +194,7 @@ async def _search(q: str, plan: dict | None = None, budget_text: str | None = No
     if not DEMO and payload["results"]:
         await _db(db.add_price_context, payload["results"])  # before saving today's prices
         await _db(db.record_prices, payload["results"], mk)
-        await _alert_followers(payload["results"])
+        # no price-drop alerts from a search: only the scheduled check reads a followed page for its own product
         if payload["mode"] == "llm":
             await _db(db.save_search, key, mk, payload)
     return payload
@@ -835,6 +846,19 @@ def _same_page(a: str, b: str) -> bool:
     return norm(a) == norm(b)
 
 
+READ_AGAIN_KEY = "__followed_read__:"  # a followed page's last LLM-read price, kept in `searches`
+READ_AGAIN_DAYS = 2  # an older read doesn't confirm a new one
+
+
+async def _read_twice(url: str, price: float) -> bool:
+    """True when the previous check of this page read the same price; otherwise this read is kept for the next one."""
+    before = await _db(db.cached_search, READ_AGAIN_KEY + url, READ_AGAIN_DAYS * 86400)
+    if before and abs(before.get("price", 0) - price) < 1:
+        return True
+    await _db(db.save_search, READ_AGAIN_KEY + url, market.current().code, {"price": price})
+    return False
+
+
 @app.post("/api/cron/check-watches")
 async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), every: bool = False):
     """Opens followed product pages again to catch price drops nobody searched for. Called on a schedule by
@@ -854,20 +878,22 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
                 products, html = await asyncio.wait_for(agent._fetch_page(client, sem, url), timeout=25)
             except Exception as e:  # a slow / blocked page: tried again next time
                 return url, None, f"{type(e).__name__}: {e}"[:200]
-            read_by_llm = False
             if not products and agent.llm.available():  # no product data in the page (e.g. Amazon): the LLM reads it
-                title = await asyncio.to_thread(accounts.watch_title, url)
+                title, last = await asyncio.to_thread(accounts.followed, url)
                 try:
-                    products = await agent._llm_read_page(url, html, title or url, focus=title)
+                    p = await agent._read_main_price(url, html, title)
                 except Exception as e:
                     return url, None, f"LLM read failed: {type(e).__name__}"
-                read_by_llm = True
-            # only a price the page itself gives for this product: its own product data, or the one product
-            # on it when the page shows that price (never a copy kept elsewhere, which can be old). What the LLM
-            # read must also be a price the page shows.
+                if not p:
+                    return url, None, "no single price of this product on its page"
+                # a read can still be wrong: a new price counts only once a later check reads the same number
+                if p.price not in last and not await _read_twice(url, p.price):
+                    return url, None, f"read {p.price:g}: waiting for the next check to read it again"
+                return url, p, None
+            # only a price the page itself gives for this product: its own product data, or the one product on it
+            # when the page shows that price (never a copy kept elsewhere, which can be old)
             shown = agent._shown_numbers(html)
-            same = [p for p in products if (_same_page(p.url, url) or read_by_llm and len(products) == 1)
-                    and (not read_by_llm or agent.shows(shown, p.price))]
+            same = [p for p in products if _same_page(p.url, url)]
             single = products[0] if len(products) == 1 and agent.shows(shown, products[0].price) else None
             p = same[0] if same else single
             if p:

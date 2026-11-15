@@ -1371,7 +1371,7 @@ def test_results_are_checked_on_their_own_page_before_showing(monkeypatch):
     from app.models import Product
     pages = {"https://shop-a.com/p/olympic-hero-50": _jsonld_page("Olympic Hero 50L", 3849, "InStock")
              .replace("</h1>", "</h1><p>٣٬٨٤٩ جنيه</p>"),
-             # the page's data says 3599 (another option), but the page shows the price we had: keep 4699
+             # the page's data says 3599 (another option): the LLM reads the page's own price, 4699
              "https://shop-e.com/p/olympic-hero-50": _jsonld_page("Olympic Hero 50L", 3599, "InStock")
              .replace("</h1>", "</h1><p>4,699 EGP</p><p>هيرو 3,599</p>"),
              "https://shop-b.com/p/olympic-hero-50": _jsonld_page("Olympic Hero 50L", 3700, "OutOfStock")}
@@ -1384,8 +1384,12 @@ def test_results_are_checked_on_their_own_page_before_showing(monkeypatch):
     async def fake_read(client, urls, deadline=12):
         return {u: "Olympic Hero 50L 3,999 EGP غير متوفر حاليا" for u in urls if "shop-c" in u}, {}
 
+    async def main_price(url, page, title):  # the LLM reads the price of the page's own product
+        return Product("E", title, 4699, url) if "shop-e" in url else None
     monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
     monkeypatch.setattr(fetchers, "read_pages", fake_read)
+    monkeypatch.setattr(agent, "_read_main_price", main_price)
+    monkeypatch.setattr(agent.llm, "available", lambda: True)
     picks = [Product("A", "Olympic Hero 50L", 3999, "https://shop-a.com/p/olympic-hero-50"),
              Product("B", "Olympic Hero 50L", 3700, "https://shop-b.com/p/olympic-hero-50"),
              Product("C", "Olympic Hero 50L", 3999, "https://shop-c.com/p/olympic-hero-50"),
@@ -1395,7 +1399,7 @@ def test_results_are_checked_on_their_own_page_before_showing(monkeypatch):
     assert gone == 2 and [p.store for p in kept] == ["A", "D", "E"]
     assert kept[2].price == 4699 and kept[2].verified is True
     assert kept[0].price == 3849 and kept[0].verified is True and kept[0].in_stock is True
-    assert kept[1].verified is False  # couldn't open it: still shown, the page asks the shopper to check
+    assert kept[1].verified is False  # couldn't open it: not shown (checked_only keeps only verified ones)
 
 
 def test_store_the_shopper_names_is_searched_on_its_own(monkeypatch):
@@ -1860,20 +1864,29 @@ def test_only_prices_confirmed_on_the_store_page_are_shown(monkeypatch):
 
     async def no_reader(client, urls, deadline=12):
         return {}, {}
+    reads = []
+
+    async def fake_ask(prompt, **kw):  # the LLM reads the main product's price on each page
+        reads.append(prompt)
+        price = 3999 if "٣٬٩٩٩" in prompt else 4850 if "4,850" in prompt else 1200
+        return {"same_product": True, "price": price, "currency": "EGP", "choice_needed": False}
     monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
     monkeypatch.setattr(agent.fetchers, "read_pages", no_reader)
+    monkeypatch.setattr(agent.llm, "available", lambda: True)
+    monkeypatch.setattr(agent.llm, "ask_json", fake_ask)
     picks = [Product("A", "Heater 50L", 3999, "https://a.com/p/heater-50"),
              Product("B", "Heater 50L", 3599, "https://b.com/p/heater-50"),
              Product("C", "Heater 50L", 3500, "https://c.com/p/heater-50")]
     shown, unchecked, gone = asyncio.run(agent.checked_only(picks))
-    assert [p.store for p in shown] == ["A"] and shown[0].verified is True and gone == 0
-    assert [u["store"] for u in unchecked] == ["B", "C"] and "price" not in unchecked[0]
+    # B's page shows 4,850 for its product: that is the price shown; C's page couldn't be opened: not shown
+    assert [(p.store, p.price, p.verified) for p in shown] == [("A", 3999, True), ("B", 4850, True)] and gone == 0
+    assert [u["store"] for u in unchecked] == ["C"] and "price" not in unchecked[0] and len(reads) == 2
     s = agent._honest_summary("أرخص عرض في C بـ 3500. اختار ماركة معروفة.", shown)
     assert "3500" not in s and "3,999" in s and "اختار ماركة معروفة." in s
     saved = {"results": [dict(p.to_dict(), price_context="x") for p in picks], "summary": "C بـ 3500", "count": 3}
     again = asyncio.run(agent.recheck(saved))
-    assert [r["store"] for r in again["results"]] == ["A"] and again["results"][0]["price_context"] == "x"
-    assert again["count"] == 1 and {u["store"] for u in again["unchecked"]} == {"B", "C"}
+    assert [r["store"] for r in again["results"]] == ["A", "B"] and again["results"][0]["price_context"] == "x"
+    assert again["count"] == 2 and {u["store"] for u in again["unchecked"]} == {"C"}
 
 
 def test_robots_txt_read_the_standard_way():

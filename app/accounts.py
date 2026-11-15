@@ -258,9 +258,10 @@ def urls_to_check(older_than: float, limit: int) -> list[str]:
     return [r[0] for r in rows]
 
 
-def watch_title(url: str) -> str:
-    row = next(iter(_db.run("SELECT title FROM watches WHERE url = ? LIMIT 1", (url,))), None)
-    return row[0] if row else ""
+def followed(url: str) -> tuple[str, set[float]]:
+    """A followed page's title and the prices its followers last saw (for the scheduled re-check)."""
+    rows = _db.run("SELECT title, price FROM watches WHERE url = ?", (url,))
+    return (rows[0][0] if rows else ""), {r[1] for r in rows}
 
 
 def _money(n: float, mk: str) -> str:
@@ -309,6 +310,19 @@ def notify(user_id: str, kind: str, title: str, body: str, url: str = "") -> dic
     _db.run("INSERT INTO notifications (user_id, kind, title, body, url, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             (user_id, kind, title[:200], body[:500], url[:1000], now))
     return {"user_id": user_id, "kind": kind, "title": title, "body": body, "url": url, "created_at": now}
+
+
+# price-drop alerts sent before 2026-11-15 15:30 UTC (this fix going live) could carry another item's price (read anywhere on the page):
+# they're removed once; the followed products stay as they are
+LOOSE_ALERTS_BEFORE = 1794756600
+
+
+def drop_loose_price_alerts() -> int:
+    rows = _db.run("SELECT COUNT(*) FROM notifications WHERE kind = 'price_drop' AND created_at < ?",
+                   (LOOSE_ALERTS_BEFORE,))
+    if rows[0][0]:
+        _db.run("DELETE FROM notifications WHERE kind = 'price_drop' AND created_at < ?", (LOOSE_ALERTS_BEFORE,))
+    return rows[0][0]
 
 
 def list_notifications(user_id: str, limit: int = 30) -> list[dict]:

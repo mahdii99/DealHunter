@@ -252,7 +252,9 @@ def recent_requests(market: str, days: int = 14, limit: int = 80) -> list[str]:
     rows = _db.run("SELECT key FROM searches WHERE market = ? AND saved_at > ? ORDER BY saved_at DESC LIMIT ?",
                    (market, time.time() - days * 86400, limit + 1))
     prefix = f"{market}:"
-    return [k.removeprefix(prefix) for (k,) in rows if k != cache_key(TRENDING_KEY, market)][:limit]
+    # only shoppers' requests: other keys keep our own notes (checked prices, re-read pages)
+    return [k.removeprefix(prefix) for (k,) in rows
+            if k.startswith(prefix) and k != cache_key(TRENDING_KEY, market)][:limit]
 
 
 def save_search(key: str, market: str, payload: dict) -> None:
