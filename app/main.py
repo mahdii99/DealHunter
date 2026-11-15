@@ -870,7 +870,7 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
             if not products and agent.llm.available():  # no product data in the page (e.g. Amazon): the LLM reads it
                 title, last = await asyncio.to_thread(accounts.followed, url)
                 try:
-                    p = await agent._read_followed_page(url, html, title)
+                    p = await agent._read_main_price(url, html, title)
                 except Exception as e:
                     return url, None, f"LLM read failed: {type(e).__name__}"
                 if not p:

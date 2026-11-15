@@ -714,8 +714,8 @@ async def _llm_read_page(url: str, html: str, query: str, spread: int = 0, focus
     return out
 
 
-FOLLOWED_PAGE_PROMPT = """This is the text of one product page of an online store. A shopper follows this product
-for price drops: {title}
+FOLLOWED_PAGE_PROMPT = """This is the text of one product page of an online store. A shopper wants the current price
+of this product: {title}
 Read the price of THE product this page is for: the one in its title and main buy box at the top. Prices further down
 belong to other items (related, sponsored, "customers also bought", bundles, accessories, other sellers' offers,
 installments): never use them.
@@ -729,13 +729,13 @@ PAGE:
 {text}"""
 
 
-async def _read_followed_page(url: str, html: str, title: str) -> Product | None:
-    """A followed product page without its own product data (e.g. Amazon): the LLM reads only the main product's
-    price. None when it isn't the followed product, the price depends on a choice (size, color) the page leaves
+async def _read_main_price(url: str, html: str, title: str) -> Product | None:
+    """A product page whose own product data doesn't settle the price (e.g. Amazon): the LLM reads only the main
+    product's price. None when it isn't the followed product, the price depends on a choice (size, color) the page leaves
     open, or the page doesn't show that number: a price from a related item lower down must never become an alert."""
     words = [w for w in re.split(r"\W+", title) if len(w) > 2]
     data = await llm.ask_json(FOLLOWED_PAGE_PROMPT.format(title=title or url, text=_page_text(html, words, base_url=url)),
-                              prefer="bulk", step="read_followed")
+                              prefer="bulk", step="read_price")
     price = data.get("price")
     cur = str(data.get("currency") or "").strip().upper()
     mk = market.current()
@@ -1274,15 +1274,17 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "candidates_checked": len(pool),
         "sold_out_dropped": gone,
         "results": [p.to_dict() for p in picks],
-        "unchecked": unchecked,  # offers whose price we couldn't confirm on their own page: links only, no price
+        "unchecked": unchecked,  # offers whose price we couldn't confirm on their own page: never shown (kept for the logs)
         "store_errors": errors,
     }
 
 
 VERIFY_PICKS = True    # open each result's own page before showing it (tests turn it off unless they check it)
-VERIFY_MAX = 25        # results checked per search (the cheapest first); the rest are shown as links only
+VERIFY_MAX = 25        # results checked per search (the cheapest first); the rest aren't shown
 VERIFY_DEADLINE = 8    # opening the result pages ourselves
 VERIFY_READER_DEADLINE = 6  # pages we couldn't open, through the reader service
+VERIFY_LLM_MAX = 12    # pages without clear product data whose main price the LLM reads, per search
+VERIFY_LLM_DEADLINE = 12  # those LLM reads
 
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")
@@ -1310,6 +1312,7 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
     if not todo:
         return picks, 0
     sold: set[int] = set()
+    to_read: list[tuple[Product, str]] = []  # pages the LLM reads for their main product's price
     async with httpx.AsyncClient() as client:
         sem = asyncio.Semaphore(8)
         pages = await _within(VERIFY_DEADLINE, [_fetch_page(client, sem, p.url) for p in todo])
@@ -1319,7 +1322,6 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
                 retry.append(p)
                 continue
             products, html = res
-            shown = _shown_numbers(html)
             pid = _page_id(p.url)
             by_link = [q for q in products if _page_id(q.url) == pid]
             same = by_link or (products if len(products) == 1 else [])
@@ -1333,24 +1335,52 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
                     p.price, p.old_price, p.coupon_price = q.price, q.old_price, q.coupon_price
                     p.discount_pct = _discount(p)
                 p.in_stock = True if q.in_stock is None else q.in_stock
-                p.verified = shows(shown, p.price) or (bool(by_link) and abs(q.price - p.price) < 1)
-            else:
-                said = extract_mod._page_says_sold_out(html, extract_mod._visible_text(html), p.title)
-                if said:
-                    sold.add(id(p))
-                    continue
-                p.verified = said is False and shows(shown, p.price)
-            if not p.verified:
-                log.info("agent: %s page doesn't show %g: not shown as checked", p.store, p.price)
+                # the page's own data says this price for this product (a single product on the page must
+                # also show it: it may be the page's main item or something else)
+                p.verified = abs(q.price - p.price) < 1 and (bool(by_link) or shows(_shown_numbers(html), p.price))
+                if not p.verified:
+                    to_read.append((p, html))
+                continue
+            if extract_mod._page_says_sold_out(html, extract_mod._visible_text(html), p.title):
+                sold.add(id(p))
+                continue
+            to_read.append((p, html))
         if retry:  # the reader service opens the page now (where robots.txt allows): live, not a stored copy
             texts, _ = await fetchers.read_pages(client, [p.url for p in retry], deadline=VERIFY_READER_DEADLINE)
             for p in retry:
-                if (text := texts.get(p.url)) is not None:
-                    said = extract_mod._page_says_sold_out(text, text, p.title)
-                    if said:
-                        sold.add(id(p))
-                    else:
-                        p.verified = said is False and shows(_shown_numbers(text), p.price)
+                if (text := texts.get(p.url)) is None:
+                    continue
+                if extract_mod._page_says_sold_out(text, text, p.title):
+                    sold.add(id(p))
+                else:
+                    to_read.append((p, text))
+    # a number somewhere on the page isn't enough (related items, other sellers, sizes): the LLM reads the price of
+    # the page's own product, and only that price is shown
+    if to_read and llm.available():
+        llm_sem = asyncio.Semaphore(LLM_READ_PARALLEL)
+
+        async def read(p: Product, page: str):
+            async with llm_sem:
+                return await _read_main_price(p.url, page, p.title)
+        to_read = to_read[:VERIFY_LLM_MAX]
+        reads = await _within(VERIFY_LLM_DEADLINE, [read(p, page) for p, page in to_read])
+        for (p, _), got in zip(to_read, reads):
+            if isinstance(got, Exception) or got is None:
+                continue
+            if got.in_stock is False:
+                sold.add(id(p))
+                continue
+            if abs(got.price - p.price) >= 1:
+                if not p.price / 2 <= got.price <= p.price * 2:  # far off: another item, not this offer
+                    continue
+                log.info("agent: %s page price %g (was %g)", p.store, got.price, p.price)
+                p.price, p.old_price, p.coupon_price = got.price, None, None
+                p.discount_pct = _discount(p)
+            p.in_stock = True if got.in_stock is None else got.in_stock
+            p.verified = True
+    for p in todo:
+        if not p.verified and id(p) not in sold:
+            log.info("agent: %s: no confirmed price on its page, not shown", p.store)
     if sold:
         log.info("agent: %d results sold out on their own page: %s", len(sold),
                  [p.store for p in picks if id(p) in sold])
@@ -1369,7 +1399,7 @@ def _shown_numbers(page: str) -> set[float]:
 
 async def checked_only(picks: list[Product]) -> tuple[list[Product], list[dict], int]:
     """What may be shown with a price: only offers whose own page, opened just now, shows that price.
-    Returns (those offers, the others as plain links without a price, how many were sold out)."""
+    Returns (those offers, the others (never shown to the shopper), how many were sold out)."""
     if not (picks and VERIFY_PICKS):
         return picks, [], 0
     picks, gone = await _verify_stock(picks)
