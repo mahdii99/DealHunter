@@ -57,3 +57,12 @@ def _stores_allow_us(monkeypatch):
     async def allowed(url):
         return True
     monkeypatch.setattr(main, "_may_open", allowed)
+
+
+@pytest.fixture(autouse=True)
+def _problems_in_memory(monkeypatch):
+    """Problems noted during tests go to a list (tests can read it), not to the real database."""
+    from app import problems
+    seen: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(problems, "note", lambda kind, detail="", request="": seen.append((kind, detail, request)))
+    return seen

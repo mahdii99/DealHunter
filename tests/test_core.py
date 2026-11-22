@@ -1859,3 +1859,87 @@ def test_main_price_read_starts_at_the_product_not_at_related_items(monkeypatch)
     monkeypatch.setattr(llm, "ask_json", fake_ask)
     p = asyncio.run(agent._read_main_price("https://shop.com/p/rev7", page, "Nike Revolution 7"))
     assert p.price == 2899 and "2,899" in seen[0]
+
+
+def test_a_slow_model_does_not_use_up_the_whole_budget(monkeypatch):
+    """Live chat 22 Nov: gemini-flash and a 550B nvidia model each timed out after 12 s, so the planner gave up after
+    four models. A model that is slow now gets company: the next one is asked too, the first answer wins."""
+    used = _groq_only(monkeypatch, {"groq": ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"]})
+
+    async def answer(client, model, prompt):
+        used.append(model)
+        if model == "openai/gpt-oss-120b":
+            await asyncio.sleep(5)
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": "%s"}' % model}}]})
+    monkeypatch.setattr(llm, "_caller", lambda p: answer)
+    monkeypatch.setattr(llm, "_groq", answer)
+    monkeypatch.setattr(llm, "HEDGE_MIN", 0.2)
+    monkeypatch.setattr(llm, "HEDGE_SHARE", 0.01)
+    t = time.monotonic()
+    assert asyncio.run(llm.ask_json("x", prefer="strong", timeout=10, budget=20)) == {"ok": "llama-3.3-70b-versatile"}
+    assert time.monotonic() - t < 2 and used == ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"]
+    llm._COOLDOWN.clear(); llm._LAST_GOOD.clear()
+
+
+def test_model_that_keeps_timing_out_rests_longer_each_time():
+    llm._COOLDOWN.clear(); llm._SLOW_COUNT.clear()
+    llm._rest("nvidia/nemotron-ultra", slow=True)
+    first = llm._COOLDOWN["nvidia/nemotron-ultra"] - time.time()
+    llm._rest("nvidia/nemotron-ultra", slow=True)
+    assert llm._COOLDOWN["nvidia/nemotron-ultra"] - time.time() > first * 1.8
+    llm._COOLDOWN.clear(); llm._SLOW_COUNT.clear()
+
+
+def test_when_no_model_answers_the_shopper_sees_no_model_names(monkeypatch, _problems_in_memory):
+    used = _groq_only(monkeypatch, {"groq": ["openai/gpt-oss-120b"]})
+
+    async def busy(client, model, prompt):
+        used.append(model)
+        return httpx.Response(429, json={"error": "rate limit"})
+    monkeypatch.setattr(llm, "_caller", lambda p: busy)
+    monkeypatch.setattr(llm, "_groq", busy)
+    with pytest.raises(llm.LLMError) as e:
+        asyncio.run(llm.ask_json("x", budget=3))
+    assert "gpt-oss" not in str(e.value) and "429" not in str(e.value) and "gpt-oss-120b: 429" in e.value.details
+    assert _problems_in_memory and _problems_in_memory[-1][0] == "llm_busy"
+    llm._COOLDOWN.clear(); llm._LAST_GOOD.clear()
+
+
+def test_planner_down_searches_the_product_not_the_tapped_option(monkeypatch):
+    """Live chat 22 Nov: 'عايز كوتشي بوما مقاس 46', a question, the shopper tapped 'دوّرلي على طول', then every model
+    was busy: the simple search looked for 'دوّرلي على طول' only, and the model errors were shown to the shopper."""
+    seen = []
+
+    async def down(*a, **k):
+        raise llm.LLMError(details="openai/gpt-oss-120b: 429")
+
+    async def fake_rules(raw, note):
+        seen.append((raw, note))
+        return {"mode": "rules", "results": [], "request": raw, "store_errors": {}, "candidates_checked": 0,
+                "understood": note}
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", down)
+    monkeypatch.setattr(agent, "run_rules", fake_rules)
+    from app import main
+    d = TestClient(main.app).post("/api/chat", json={"messages": [
+        {"role": "user", "text": "عايز كوتشي بوما مقاس 46"}, {"role": "assistant", "text": "عايزه للنوع إيه؟"},
+        {"role": "user", "text": "عايز كوتشي بوما مقاس 46"}, {"role": "assistant", "text": "عايزه للنوع إيه؟"},
+        {"role": "user", "text": "دوّرلي على طول"}]}).json()
+    assert seen[0][0] == "كوتشي بوما مقاس 46"
+    assert "429" not in d["understood"] and "gpt" not in d["understood"]
+
+
+def test_no_model_falls_back_to_the_web_search_for_the_shoppers_words(monkeypatch):
+    """With a search key, the no-model path uses the normal web search (search engines understand Arabic slang),
+    not only the two built-in stores."""
+    from app import websearch
+    got = {}
+
+    async def fake_run(raw, plan=None, budget_text=None):
+        got.update(raw=raw, plan=plan)
+        return {"mode": "llm", "results": [], "understood": "", "request": raw}
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(agent, "run", fake_run)
+    out = asyncio.run(agent.run_rules("عايز كوتشي بوما مقاس 46", note=agent.BUSY_NOTE))
+    assert got["raw"] == "كوتشي بوما مقاس 46" and got["plan"]["simple"] and got["plan"]["web_queries"] == [got["raw"]]
+    assert out["understood"] == agent.BUSY_NOTE

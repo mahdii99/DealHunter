@@ -34,7 +34,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, admin, affiliate, agent, db, fetchers, market, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, affiliate, agent, db, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -240,6 +240,9 @@ async def chat(turn: ChatTurn, request: Request):
     return d
 
 
+KEEPALIVE_SECONDS = 8
+
+
 @app.post("/api/chat/stream")
 async def chat_stream(turn: ChatTurn, request: Request):
     """Same as /api/chat, but sends progress lines while it works (NDJSON: one JSON object per line):
@@ -259,8 +262,9 @@ async def chat_stream(turn: ChatTurn, request: Request):
             _later(_track_turn(request, turn.messages[-1].text, d))
         except HTTPException as e:
             queue.put_nowait({"type": "error", "status": e.status_code})
-        except Exception:  # the page shows a friendly error; the details are in the server log
+        except Exception as e:  # the page shows a friendly error; the details are in the server log and /admin
             log.exception("chat stream failed")
+            problems.note("server_error", f"chat: {type(e).__name__}: {e}"[:300], request=turn.messages[-1].text)
             queue.put_nowait({"type": "error", "status": 500})
         finally:
             agent.REPLY.reset(said)
@@ -270,7 +274,13 @@ async def chat_stream(turn: ChatTurn, request: Request):
         task = asyncio.create_task(work())
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    # nothing new for a while (a slow model): a small line keeps proxies and phones from
+                    # closing a connection that looks idle, which the page showed as an error
+                    yield '{"type": "ping"}\n'
+                    continue
                 yield json.dumps(event, ensure_ascii=False) + "\n"
                 if event["type"] in ("done", "error"):
                     break
@@ -354,7 +364,11 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         try:
             plan = await agent.plan_turn(messages, turn.request, [r.model_dump() for r in turn.shown], (lo, hi))
         except agent.llm.LLMError as e:
-            log.warning("chat planner failed: %s", e)
+            log.warning("chat planner failed: %s", e.details or e)
+            failed = e
+        except Exception as e:  # a provider's odd reply must not end the turn with an error: search without it
+            log.exception("chat planner crashed")
+            problems.note("server_error", f"planner: {type(e).__name__}: {e}"[:300], request=newest)
             failed = e
     if plan and plan["action"] == "ask":  # like a salesperson: one question first, to recommend the right thing
         log.info("=" * 70 + "\n")
@@ -382,7 +396,10 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         log.info("=" * 70 + "\n")
         return {"action": "answer", "request": turn.request, "results": [], "demo": DEMO,
                 "answer": "معلش، الموديلات المجانية مشغولة دلوقتي فمقدرتش أرد على سؤالك. ابعته تاني كمان دقيقة."}
-    request = plan["request"] if plan else " ".join(filter(None, [turn.request, newest]))  # no LLM: just append
+    # no LLM: the earlier request plus the new message; at the start, all their messages (the product is often in
+    # the first one and the newest is a tapped option like 'دورلي على طول')
+    request = plan["request"] if plan else " ".join(filter(None, [turn.request, newest])) if turn.request else \
+        agent.plain_request([m["text"] for m in messages if m["role"] == "user"])
     if rng:  # the range set in the box is the budget: always applied, and part of the request (and its cache key)
         if plan:
             plan["max_price"], plan["min_price"] = hi, lo
@@ -397,7 +414,7 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
     if plan and plan.get("understood"):
         agent._progress(plan["understood"])
     if failed:  # don't wait for the LLM a second time: simple rules for this turn
-        payload = await agent.run_rules(request, note=f"الـ LLM مردش ({failed})، فاستخدمنا الفهم البسيط.")
+        payload = await agent.run_rules(request, note=agent.BUSY_NOTE)
         payload.update(query=request, count=len(payload["results"]), cached=False, demo=DEMO)
     else:
         cached = await _db(db.cached_search, db.cache_key(request, market.current().code), CACHE_TTL)

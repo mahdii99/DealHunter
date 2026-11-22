@@ -3,7 +3,7 @@
 Tries, in order, until one answers:
   1. Google Gemini (GEMINI_API_KEY, https://aistudio.google.com/apikey), several models
   2. Groq (GROQ_API_KEY, https://console.groq.com/keys), optional backup
-A model that is busy (429/5xx) or times out is skipped for 3 minutes; one whose free DAILY quota is used up is
+A model that is busy (429/5xx) or times out is skipped for a few minutes (longer each time it keeps timing out); one whose free DAILY quota is used up is
 skipped until the quota resets (midnight US Pacific time). The last model that worked is tried first.
 Both are saved to debug/llm_state.json, so a server restart (--reload) doesn't retry dead models again.
 """
@@ -19,6 +19,8 @@ from pathlib import Path
 
 import httpx
 
+from . import problems
+
 RETRY_STATUS = {429, 500, 502, 503, 504}
 log = logging.getLogger("uvicorn.error")
 TOTAL_BUDGET = float(os.getenv("LLM_BUDGET_SECONDS", "25"))  # give up and use the simple fallback after this
@@ -27,8 +29,14 @@ TOTAL_BUDGET = float(os.getenv("LLM_BUDGET_SECONDS", "25"))  # give up and use t
 _TEMPERATURE: contextvars.ContextVar = contextvars.ContextVar("temperature", default=0.0)  # set per ask_json call
 
 
+BUSY_TEXT = "الموديلات المجانية مشغولة دلوقتي"
+
+
 class LLMError(Exception):
-    pass
+    """No model answered. str(e) is safe to show a shopper; e.details (which models failed, how) is for the log."""
+    def __init__(self, message: str = BUSY_TEXT, details: str = ""):
+        super().__init__(message)
+        self.details = details
 
 
 USAGE = {"calls": 0, "tokens": 0, "by_step": {}}  # LLM use since the last reset (the agent resets it per search)
@@ -95,9 +103,14 @@ def _configured(provider: str) -> bool:
 _MODEL_CACHE: dict[str, tuple[float, list[str]]] = {}
 _COOLDOWN: dict[str, float] = {}  # model -> time until which we skip it (it was busy / timed out)
 _LAST_GOOD: list[str] = []        # the model that answered last time is tried first
+_SLOW_COUNT: dict[str, int] = {}  # model -> timeouts in a row
 COOLDOWN_SECONDS = 180   # timed out (busy right now, or the prompt was big): try others for a few minutes
 GONE_SECONDS = 30 * 86400  # 410: the provider retired the model
 BUSY_SECONDS = 60        # 429 per-minute limit / 503 overloaded: usually fine again within a minute
+SLOW_MAX = 3600         # a model that keeps timing out rests longer each time (3, 6, 12... min), up to an hour
+HEDGE_MIN = 4           # a model that hasn't answered after this long (or 40% of its timeout): ask the next one too,
+HEDGE_SHARE = 0.4       # and take whichever answers first, so one slow model can't use up the whole budget
+MAX_PARALLEL = 3        # at most this many models asked at once for one call
 STRONG_WAIT = 15         # the judge waits up to this for a strong model to free up before using a weaker one (planning: 3 s)
 STATE_FILE = Path(__file__).resolve().parent.parent / "debug" / "llm_state.json"
 
@@ -148,9 +161,10 @@ def retry_hint(r: httpx.Response) -> float | None:
     return None
 
 
-def _rest(model: str, r: httpx.Response | None = None) -> None:
+def _rest(model: str, r: httpx.Response | None = None, slow: bool = False) -> None:
     """Skip a model for a while: until tomorrow if its daily quota is gone, else a few minutes (or as long as the
-    provider says, when it says)."""
+    provider says, when it says). slow=True: it timed out with its full time; each time in a row it rests twice
+    as long, so a model that is always too slow on the free tier stops taking time from every request."""
     body = r.text.lower() if r is not None else ""
     daily = r is not None and r.status_code == 429 and any(x in body for x in (
         "perday", "per day", "per-day", "(rpd)", "(tpd)",
@@ -165,8 +179,12 @@ def _rest(model: str, r: httpx.Response | None = None) -> None:
         _COOLDOWN[model] = (_daily_quota_reset(utc_midnight=model.startswith("@cf/")) if daily or refused
                             else time.time() + min(BUSY_SECONDS, hint + 0.5) if hint is not None
                             else time.time() + (BUSY_SECONDS if busy else COOLDOWN_SECONDS))
+    if slow:
+        _SLOW_COUNT[model] = n = _SLOW_COUNT.get(model, 0) + 1
+        _COOLDOWN[model] = time.time() + min(SLOW_MAX, COOLDOWN_SECONDS * 2 ** (n - 1))
     if daily:
         log.warning("LLM %s: daily free quota used up, skipping it until it resets", model)
+        problems.note("llm_quota", f"{model}: daily free quota used up (429)")
     _save_state()
 
 
@@ -353,7 +371,7 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
     on_text(text so far): called while the answer arrives (OpenAI-style providers stream it; Gemini answers at once).
     temperature: 0 (default) = the same answer every time, for planning searches and judging; a bit more for talk."""
     if not available():
-        raise LLMError("مفيش مفتاح LLM في ملف .env")
+        raise LLMError(details="no LLM key in .env")
     token = _TEMPERATURE.set(temperature)
     try:
         return await _ask_json(prompt, timeout, prefer, spread, budget, step, on_text)
@@ -403,68 +421,132 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
                 ready = mine[k:] + mine[:k] + [a for a in ready if a not in mine]
 
         queue, tries, busy = list(ready), {}, set()
-        while True:
-            left = (budget or TOTAL_BUDGET) - (time.monotonic() - start)
-            if left < 2:
-                break
+        budget_s = budget or TOTAL_BUDGET
+        hedge = max(HEDGE_MIN, timeout * HEDGE_SHARE)
+        leader: list = [None]  # with two models answering at once, only one of them types the live reply
+
+        def left_now() -> float:
+            return budget_s - (time.monotonic() - start)
+
+        async def choose(idle: bool):
+            """The next model to try, or None. Waits for a resting model only when nothing else is running."""
+            nonlocal queue
+            left = left_now()
             if queue:
-                provider, model, call = queue.pop(0)
-                if prefer == "strong" and not preferred((provider, model, call)):
+                a = queue.pop(0)
+                if prefer == "strong" and not preferred(a):
                     # the judge: a strong model that is only resting a few seconds (per-minute limit) beats a weak
                     # model right now, which lets wrong or no-name items through
                     now = time.time()
-                    soon = [a for a in attempts if preferred(a) and tries.get(a[1], 0) < 2
-                            and 0 < _COOLDOWN.get(a[1], 0) - now < min(STRONG_WAIT if step == "judge" else 3, left - 5)]
+                    soon = [x for x in attempts if preferred(x) and tries.get(x[1], 0) < 2
+                            and 0 < _COOLDOWN.get(x[1], 0) - now < min(STRONG_WAIT if step == "judge" else 3, left - 5)]
                     if soon:
-                        queue.insert(0, (provider, model, call))
-                        provider, model, call = min(soon, key=lambda a: _COOLDOWN.get(a[1], 0))
-                        wait = _COOLDOWN.get(model, 0) - now
-                        log.info("LLM: waiting %.1fs for strong model %s instead of a weaker one", wait, model)
+                        queue.insert(0, a)
+                        if not idle:
+                            return None
+                        a = min(soon, key=lambda x: _COOLDOWN.get(x[1], 0))
+                        wait = _COOLDOWN.get(a[1], 0) - now
+                        log.info("LLM: waiting %.1fs for strong model %s instead of a weaker one", wait, a[1])
                         await asyncio.sleep(wait)
-                        left = (budget or TOTAL_BUDGET) - (time.monotonic() - start)
-            else:
-                # Every model is resting. Per-minute limits free up within seconds, so wait for the one that is
-                # free soonest (if it is within our time) instead of giving up while there's time left.
-                now = time.time()
-                soon = [a for a in attempts if (a[1] not in tries or (a[1] in busy and tries[a[1]] < 2))
-                        and _COOLDOWN.get(a[1], 0) - now < left - 3]
-                if not soon:
-                    break
-                provider, model, call = min(soon, key=lambda a: (_COOLDOWN.get(a[1], 0), not preferred(a)))
-                wait = _COOLDOWN.get(model, 0) - now
-                if wait > 0:
-                    log.info("LLM: all models busy, waiting %.1fs for %s", wait, model)
-                    await asyncio.sleep(wait)
-                left = (budget or TOTAL_BUDGET) - (time.monotonic() - start)
-            tries[model] = tries.get(model, 0) + 1
+                return a
+            if not idle:
+                return None
+            # Every model is resting. Per-minute limits free up within seconds, so wait for the one that is
+            # free soonest (if it is within our time) instead of giving up while there's time left.
+            now = time.time()
+            soon = [x for x in attempts if (x[1] not in tries or (x[1] in busy and tries[x[1]] < 2))
+                    and _COOLDOWN.get(x[1], 0) - now < left - 3]
+            if not soon:
+                return None
+            a = min(soon, key=lambda x: (_COOLDOWN.get(x[1], 0), not preferred(x)))
+            wait = _COOLDOWN.get(a[1], 0) - now
+            if wait > 0:
+                log.info("LLM: all models busy, waiting %.1fs for %s", wait, a[1])
+                await asyncio.sleep(wait)
+            return a
+
+        async def attempt(provider, model, call):
+            """One model, one request. Never raises (except when cancelled): the result says what happened."""
+            def typed(text: str) -> None:
+                if leader[0] in (None, model):
+                    leader[0] = model
+                    on_text(text)
+            limit = max(1.0, min(timeout, left_now()))
             t = time.monotonic()
             try:
-                r = await asyncio.wait_for(call(client, model, prompt, on_text) if on_text and provider != "gemini"
-                                           else call(client, model, prompt), timeout=min(timeout, left))
-            except (httpx.HTTPError, asyncio.TimeoutError) as e:
-                errors.append(f"{model}: {type(e).__name__}")
-                log.warning("LLM %s failed after %.1fs: %s (skipping it for %ds)",
-                            model, time.monotonic() - t, type(e).__name__, COOLDOWN_SECONDS)
-                _rest(model)
-                continue
-            log.info("LLM %s -> %s in %.1fs", model, r.status_code, time.monotonic() - t)
-            if r.status_code == 200:
-                _count(provider, r, step, model)
-                try:
-                    data = _json(_text(provider, r))
-                except (KeyError, IndexError, ValueError, TypeError):  # TypeError: no text in the reply (cut off)
-                    errors.append(f"{model}: bad reply")
-                    continue
-                if not isinstance(data, dict):  # e.g. a bare list: callers expect an object
-                    data = {"products": data} if isinstance(data, list) else {}
-                if _LAST_GOOD != [model] and not bulk:  # page reads don't decide who judges next
-                    _LAST_GOOD[:] = [model]
-                    _save_state()
-                return data
-            errors.append(f"{model}: {r.status_code}")
-            log.warning("LLM %s said: %s", model, r.text[:200].replace("\n", " "))
-            if r.status_code in RETRY_STATUS or r.status_code in (401, 403, 404, 410):  # busy/quota/not allowed/gone
-                _rest(model, r)
-                if r.status_code in (429, 503):
-                    busy.add(model)
-    raise LLMError("مفيش موديل رد في الوقت: " + ", ".join(errors[-4:] or ["timeout"]))
+                r = await asyncio.wait_for(call(client, model, prompt, typed) if on_text and provider != "gemini"
+                                           else call(client, model, prompt), timeout=limit)
+                return provider, model, r, None, time.monotonic() - t, limit
+            except Exception as e:  # timeout, network, a provider's odd reply: just try another model
+                return provider, model, None, e, time.monotonic() - t, limit
+
+        running: dict[asyncio.Task, tuple[str, float]] = {}
+        last_launch, exhausted = -1e9, False
+        try:
+            while True:
+                left = left_now()
+                if left <= 0.5 or (not running and (left < 2 or exhausted)):
+                    break
+                can_launch = (not running or (len(running) < MAX_PARALLEL and not exhausted
+                                              and time.monotonic() - last_launch >= hedge)) and left >= 2
+                if can_launch:
+                    nxt = await choose(idle=not running)
+                    if nxt is not None:
+                        provider, model, call = nxt
+                        tries[model] = tries.get(model, 0) + 1
+                        if running:
+                            log.info("LLM: %s is slow, also asking %s", ", ".join(m for m, _ in running.values()), model)
+                        last_launch = time.monotonic()
+                        running[asyncio.ensure_future(attempt(provider, model, call))] = (model, last_launch)
+                        continue
+                    if not running:
+                        break
+                    exhausted = not queue  # nothing more to start for now: just wait for the ones running
+                wait = left if len(running) >= MAX_PARALLEL or exhausted else max(0.05, last_launch + hedge - time.monotonic())
+                done, _ = await asyncio.wait(list(running), timeout=min(wait, left_now()),
+                                             return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    running.pop(task)
+                    provider, model, r, err, took, limit = task.result()
+                    if err is not None:
+                        if leader[0] == model:
+                            leader[0] = None
+                        errors.append(f"{model}: {type(err).__name__}")
+                        timed_out = isinstance(err, (asyncio.TimeoutError, httpx.TimeoutException))
+                        log.warning("LLM %s failed after %.1fs: %s", model, took, type(err).__name__)
+                        _rest(model, slow=timed_out and limit >= timeout - 0.5)
+                        exhausted, last_launch = False, -1e9  # failed fast: ask the next one right away
+                        continue
+                    log.info("LLM %s -> %s in %.1fs", model, r.status_code, took)
+                    if r.status_code == 200:
+                        _count(provider, r, step, model)
+                        try:
+                            data = _json(_text(provider, r))
+                        except (KeyError, IndexError, ValueError, TypeError):  # TypeError: no text in the reply (cut off)
+                            errors.append(f"{model}: bad reply")
+                            exhausted, last_launch = False, -1e9
+                            continue
+                        if not isinstance(data, dict):  # e.g. a bare list: callers expect an object
+                            data = {"products": data} if isinstance(data, list) else {}
+                        _SLOW_COUNT.pop(model, None)
+                        if _LAST_GOOD != [model] and not bulk:  # page reads don't decide who judges next
+                            _LAST_GOOD[:] = [model]
+                            _save_state()
+                        return data
+                    errors.append(f"{model}: {r.status_code}")
+                    log.warning("LLM %s said: %s", model, r.text[:200].replace("\n", " "))
+                    if r.status_code in RETRY_STATUS or r.status_code in (401, 403, 404, 410):  # busy/quota/not allowed/gone
+                        _rest(model, r)
+                        if r.status_code in (429, 503):
+                            busy.add(model)
+                    exhausted, last_launch = False, -1e9
+        finally:
+            for task, (model, since) in running.items():
+                task.cancel()
+                errors.append(f"{model}: out of time")
+                if time.monotonic() - since >= hedge:  # it was slow too: let the others go first next time
+                    _rest(model)
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)  # let them stop before the client closes
+    problems.note("llm_busy", f"step {step}: " + ", ".join(errors[-8:] or ["timeout"]))
+    raise LLMError(BUSY_TEXT, details=", ".join(errors[-8:] or ["timeout"]))
