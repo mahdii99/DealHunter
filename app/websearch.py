@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from . import market
+from . import market, problems
 
 log = logging.getLogger("uvicorn.error")
 PROVIDERS = ("tavily", "exa", "firecrawl", "brave")
@@ -119,5 +119,9 @@ async def search(client: httpx.AsyncClient, query: str, max_results: int = 8,
         errors.append(f"{p} {r.status_code}")
         log.warning("search %s said %s: %s", p, r.status_code, r.text[:150].replace("\n", " "))
         # 401/402/403/432/433 = bad key or the free quota is used up; 429/5xx = busy for now
-        _REST[p] = time.time() + (QUOTA_REST if r.status_code in (401, 402, 403, 432, 433) else BUSY_REST)
+        quota = r.status_code in (401, 402, 403, 432, 433)
+        _REST[p] = time.time() + (QUOTA_REST if quota else BUSY_REST)
+        if quota:
+            problems.note("search_error", f"{p} {r.status_code}: free quota used up or key refused")
+    problems.note("search_error", "every search service failed: " + ", ".join(errors), request=query)
     raise SearchError("البحث فشل: " + ", ".join(errors))

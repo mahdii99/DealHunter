@@ -189,3 +189,16 @@ def test_streamed_chat_messages_are_counted(monkeypatch):
                 break
             time.sleep(0.05)
     assert [r[0] for r in db._db.run("SELECT detail FROM events WHERE kind = 'turn'")] == ["عايز كوتشي"]
+
+
+def test_server_problems_go_to_the_admin_page_not_to_the_shopper(monkeypatch):
+    """mahdy, 22 Nov: LLM limits and search failures belong on /admin; the shopper sees a plain message."""
+    from app import problems
+    real = problems.__dict__["_save"]
+    monkeypatch.setattr(problems, "_last", {})
+    real("llm_busy", "step plan: openai/gpt-oss-120b: 429, gemini-flash-latest: TimeoutError", "كوتشي بوما")
+    db.add_event("turn", "abc", False, detail="hi", request="hi", action="search", results=0)
+    s = _admin(monkeypatch).get("/api/admin/stats?days=7").json()
+    assert s["problems"][0]["kind"] == "llm_busy" and s["problems"][0]["n"] == 1
+    assert "429" in s["problem_log"][0]["detail"] and s["problem_log"][0]["request"] == "كوتشي بوما"
+    assert all(r["kind"] != "problem" for r in s["recent"])

@@ -1088,9 +1088,10 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             log.info("agent: understanding %r", raw)
             plan = await plan_turn([{"role": "user", "text": raw}])
         except llm.LLMError as e:
-            return await run_rules(raw, note=f"الـ LLM مردش ({e})، فاستخدمنا الفهم البسيط.")
+            log.warning("agent: planner failed: %s", e.details or e)
+            return await run_rules(raw, note=BUSY_NOTE)
     seed: list[dict] = []
-    if websearch.available() and llm.available():
+    if websearch.available() and llm.available() and not plan.get("simple"):
         plan, seed = await _check_plan(plan, plan.get("request") or raw)
     queries = [q for q in plan.get("queries", []) if isinstance(q, str) and q.strip()][:2] or [raw]
     web_queries = [q for q in plan.get("web_queries", []) if isinstance(q, str) and q.strip()][:MAX_WEB_QUERIES] or queries
@@ -1145,7 +1146,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
                 avoid=json.dumps(plan.get("avoid", []), ensure_ascii=False), minp=minp, maxp=maxp, items=items,
                 codes=json.dumps(codes, ensure_ascii=False),
                 suggested=json.dumps(plan.get("suggested_products") or [], ensure_ascii=False))
-            verdict = await llm.ask_json(prompt, timeout=20, budget=40, prefer="strong", step="judge")  # the big call: give it time, it decides quality
+            verdict = await llm.ask_json(prompt, timeout=20, budget=plan.get("judge_budget") or 40, prefer="strong",
+                                         step="judge")  # the big call: give it time, it decides quality
             TIMES["judge"] = round(time.monotonic() - tj, 1)
             _save_debug("last_judge.json", {"request": raw, "plan": plan, "prompt": prompt, "verdict": verdict})
             log.info("agent: judge kept %d of %d (model %s)", len(verdict.get("matches") or []), len(pool),
@@ -1172,7 +1174,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             picks = _fallback_pick(pool, [raw, plan.get("request") or ""] + web_queries)[:JUDGE_DOWN_RESULTS]
             for p in picks:
                 p.unconfirmed = True
-            log.warning("agent: judge failed: %s", e)
+            log.warning("agent: judge failed: %s", e.details or e)
             summary = ("الموديلات المجانية مشغولة دلوقتي فمقدرتش أراجع النتايج بدقة، فدي مرتبة بالسعر بس "
                        "واتأكد من الموديل في كل واحدة. جرب تاني كمان دقيقة لنتيجة أدق.")
     picks = list({id(p): p for p in picks}.values())
@@ -1435,7 +1437,37 @@ def _flag_price_outliers(picks: list[Product], typical: float | None = None) -> 
         log.info("agent: price outlier %s %s (reference %s)", p.store, _paid(p), ref)
 
 
+BUSY_NOTE = "الموديلات الذكية مشغولة دلوقتي، فدورتلك بالكلام اللي كتبته زي ما هو."
+FILLER = {"دورلي", "دورلى", "شوفلي", "شوفلى", "هاتلي", "هاتلى", "ابحثلي", "ابحث", "دور", "طول", "بسرعه", "بسرعة",
+          "حاجه", "حاجة", "انا", "عايزه", "عاوزه", "محتاج", "محتاجه", "لو", "سمحت", "please", "search"}
+_DIACRITICS = re.compile(r"[\u064b-\u0652\u0640]")  # tashkeel and tatweel: "دوّرلي" -> "دورلي"
+
+
+def plain_request(texts: list[str]) -> str:
+    """What the shopper asked for, without a model: their messages in order (each once), without filler words
+    like 'دورلي على طول' (often a tapped option), so a web search finds the product itself."""
+    from .query import STOPWORDS
+    seen, words = set(), []
+    for text in texts:
+        for w in _DIACRITICS.sub("", text or "").split():
+            k = w.strip(".,!?؟،").lower()
+            if k and k not in FILLER and k not in STOPWORDS and k not in seen:
+                seen.add(k)
+                words.append(w.strip(".,!?؟،"))
+    return " ".join(words)[:300] or " ".join(texts)[:300]
+
+
 async def run_rules(raw: str, note: str) -> dict:
+    """No model could plan the search. With a web-search key: the normal web search for the shopper's own words
+    (search engines understand them), with a shorter judge; if no model judges either, the word rules pick. Without
+    one: the built-in store searches with simple word rules."""
+    if websearch.available():
+        q = plain_request([raw])
+        out = await run(q, plan={"action": "search", "request": q, "queries": [q], "web_queries": [q],
+                                 "simple": True, "judge_budget": 20}, budget_text=raw)
+        out["understood"] = note
+        out["mode"] = "rules"
+        return out
     q: ParsedQuery = parse_query(raw)
     products, errors = await _search_all([q.search_text])
     picks, unchecked, _ = await checked_only(rank(products, q))

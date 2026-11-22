@@ -126,7 +126,7 @@ CREATE INDEX IF NOT EXISTS chats_user ON chats (user_id, updated_at);
 CREATE TABLE IF NOT EXISTS events (
     id {ID},
     at {FLOAT} NOT NULL,
-    kind TEXT NOT NULL,                 -- visit / turn (a chat message or search) / click (a store link opened) / follow
+    kind TEXT NOT NULL,                 -- visit / turn (a chat message or search) / click (a store link opened) / follow / problem (app/problems.py)
     client TEXT NOT NULL,               -- a hash of the visitor's IP, never the IP itself
     member INTEGER NOT NULL,            -- 1 = signed in
     detail TEXT NOT NULL,               -- visit: the site they came from, turn: their message, click: the page
@@ -450,7 +450,7 @@ def usage_stats(days: int, tz_minutes: int = 0, top: int = 25) -> dict:
     devices = _rows("SELECT action, COUNT(DISTINCT client) FROM events WHERE kind = 'visit' AND at > ? "
                     "GROUP BY action", (since,), "device people")
     recent = _rows("SELECT at, kind, client, member, detail, request, store, title, price, action, results, cached "
-                   "FROM events WHERE kind <> 'visit' AND at > ? ORDER BY at DESC LIMIT 80", (since,),
+                   "FROM events WHERE kind NOT IN ('visit', 'problem') AND at > ? ORDER BY at DESC LIMIT 80", (since,),
                    "at kind client member detail request store title price action results cached")
     for r in recent:
         r["client"] = r["client"][:6]  # enough to tell visitors apart on the page
@@ -467,10 +467,16 @@ def usage_stats(days: int, tz_minutes: int = 0, top: int = 25) -> dict:
                      (since,), "at kind message contact")
     reports = _rows("SELECT at, reason, request, store, title, price, url FROM reports WHERE at > ? "
                     "ORDER BY at DESC LIMIT 20", (since,), "at reason request store title price url")
+    # the server's own problems (free quotas used up, every model busy, errors): see app/problems.py
+    problems = _rows("SELECT action, COUNT(*), MAX(at) FROM events WHERE kind = 'problem' AND at > ? GROUP BY action "
+                     "ORDER BY 3 DESC", (since,), "kind n last")
+    problem_log = _rows("SELECT at, action, detail, request FROM events WHERE kind = 'problem' AND at > ? "
+                        "ORDER BY at DESC LIMIT 40", (since,), "at kind detail request")
     for r in searches:  # Postgres gives AVG as a Decimal, which JSON can't carry
         r["avg_results"] = None if r["avg_results"] is None else round(float(r["avg_results"]), 1)
     return {"days": days, "now": now, "tz_minutes": tz_minutes, "daily": daily, "totals": totals,
             "actions": actions, "searches": searches, "empty_searches": empty, "stores": stores,
             "products": products, "ranks": ranks, "sources": sources, "devices": devices, "recent": recent,
             "accounts": accounts, "feedback": feedback, "reports": reports,
+            "problems": problems, "problem_log": problem_log,
             "blocked_sites": _db.run("SELECT COUNT(*) FROM blocked_sites WHERE blocked = 1")[0][0]}

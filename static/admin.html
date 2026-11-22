@@ -105,6 +105,7 @@
     </section>
 
     <div class="grid">
+      <section class="card wide"><h2>مشاكل السيرفر</h2><p class="muted">ليميت الموديلات المجانية وخدمات البحث والأخطاء. الزوار مش بيشوفوا التفاصيل دي، بيشوفوا رسالة بسيطة بس.</p><div id="problems"></div><div class="scroll" id="problemLog" style="margin-top:10px"></div></section>
       <section class="card"><h2>أكتر حاجات اتدور عليها</h2><div class="scroll" id="searches"></div></section>
       <section class="card"><h2>المتاجر اللي الناس فتحت لينكاتها</h2><div class="scroll" id="stores"></div></section>
       <section class="card wide"><h2>المنتجات اللي اتفتحت أكتر</h2><div class="scroll" id="products"></div></section>
@@ -137,6 +138,8 @@ const safeUrl = u => /^https?:\/\//i.test(u || '') ? esc(u) : '#';
 const ACTIONS = {search: 'بحث عن أسعار', ask: 'سأل سؤال يفهم بيه', recommend: 'رشّح منتجات', answer: 'جاوب على سؤال', limit: 'وصل للحد اليومي'};
 const PRODUCT_KINDS = {click: 'فتح لينك', follow: 'تابع السعر', save: 'حفظ منتج', share: 'شارك منتج'};
 const KINDS = {complaint: 'شكوى', suggestion: 'اقتراح', result: 'مشكلة في نتيجة', question: 'سؤال'};
+const PROBLEMS = {llm_busy: 'كل موديلات الـ LLM مشغولة أو بطيئة', llm_quota: 'موديل خلص الحد اليومي المجاني',
+                  search_error: 'مشكلة في خدمة البحث', server_error: 'خطأ في السيرفر'};
 const REASONS = {wrong_product: 'منتج تاني', wrong_price: 'السعر غلط', bad_store: 'متجر مش موثوق', sold_out: 'خلصان', other: 'حاجة تانية'};
 const METRICS = [['visitors', 'الزوار'], ['visits', 'الزيارات'], ['turns', 'رسائل الشات'], ['clicks', 'ضغطات على المتاجر']];
 let data = null, metric = 'visitors';
@@ -261,6 +264,13 @@ function draw() {
     ['التفاصيل', r => r.kind !== 'turn'
       ? `<td class="t" dir="auto"><a href="${safeUrl(r.detail)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.title || r.detail)}</a> <span class="muted">${money(r.price)}</span></td>`
       : `<td class="t" dir="auto">${esc(r.detail)}${r.request && r.request.toLowerCase() !== r.detail.toLowerCase() ? `<div class="muted">← ${esc(r.request)}</div>` : ''}${r.results != null ? ` <span class="muted">(${num(r.results)} نتيجة)</span>` : ''}</td>`]]);
+  const probs = data.problems || [];
+  $('#problems').innerHTML = probs.length ? share(probs, 'n', r => `<span class="pill warn">${esc(PROBLEMS[r.kind] || r.kind)}</span> <span class="muted">آخر مرة ${when(r.last)}</span>`)
+    : '<p class="empty">مفيش مشاكل في المدة دي.</p>';
+  $('#problemLog').innerHTML = probs.length ? table(data.problem_log || [], [
+    ['الوقت', r => `<td class="n muted">${when(r.at)}</td>`],
+    ['المشكلة', r => `<td><span class="pill warn">${esc(PROBLEMS[r.kind] || r.kind)}</span></td>`],
+    ['التفاصيل', r => `<td class="t" dir="auto">${esc(r.detail)}${r.request ? `<div class="muted">${esc(r.request)}</div>` : ''}</td>`]]) : '';
   $('#feedback').innerHTML = table(data.feedback, [
     ['', r => `<td class="n muted">${when(r.at)}<div><span class="pill">${esc(KINDS[r.kind] || r.kind)}</span></div></td>`],
     ['الرسالة', r => `<td class="t" dir="auto">${esc(r.message)}${r.contact ? `<div class="muted">${esc(r.contact)}</div>` : ''}</td>`]], 'مفيش رسايل في المدة دي.');

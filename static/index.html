@@ -533,7 +533,7 @@ const T = {
     links: 'روابط', footerNote: 'الموقع مجاني ومش تبع أي متجر.', affNote: 'بعض لينكات المتاجر فيها كود شراكة بتاعنا: لو اشتريت ممكن ناخد عمولة صغيرة من المتجر، والسعر عليك هو هو.',
     cheap: 'الأرخص', trust: 'الأعلى ثقة', deals: 'عليها خصم', sortLabel: 'ترتيب النتايج', noDeals: 'مفيش نتايج عليها خصم في الطلب ده.',
     open: 'افتح في المتجر', save: 'احفظ', savedOne: 'اتحفظ', share: 'شارك', copied: 'اتنسخ الرابط', report: 'النتيجة دي غلط؟',
-    thanks: 'شكرًا، هنراجعها ونصلحها.', understanding: 'بفهم طلبك...', error: 'حصلت مشكلة، جرب تاني.', sec: 'ث',
+    thanks: 'شكرًا، هنراجعها ونصلحها.', understanding: 'بفهم طلبك...', error: 'حصلت مشكلة، جرب تاني.', retrying: 'ثانية واحدة، بحاول تاني...', sec: 'ث',
     fbTitle: 'صندوق الشكاوى والمقترحات', fbSub: 'رأيك بيفرق معانا، وبنرد على كل رسالة فيها وسيلة تواصل.', fbKind: 'نوع الرسالة',
     kComplaint: 'شكوى', kSuggestion: 'اقتراح', kResult: 'مشكلة في نتيجة', kQuestion: 'سؤال', fbMsg: 'رسالتك',
     fbMsgPh: 'احكيلنا حصل إيه، أو نفسك الموقع يعمل إيه...', fbContact: 'إيميلك أو رقمك', optional: '(اختياري، عشان نرد عليك)',
@@ -566,7 +566,7 @@ const T = {
     links: 'Links', footerNote: 'Free to use, not owned by any store.', affNote: 'Some store links carry our affiliate code: we may earn a small commission if you buy, at no extra cost to you.',
     cheap: 'Cheapest', trust: 'Most trusted', deals: 'On sale', sortLabel: 'Sort results', noDeals: 'No discounted results for this request.',
     open: 'Open in store', save: 'Save', savedOne: 'Saved', share: 'Share', copied: 'Link copied', report: 'Wrong result?',
-    thanks: 'Thanks, we’ll review and fix it.', understanding: 'Understanding your request...', error: 'Something went wrong, try again.', sec: 's',
+    thanks: 'Thanks, we’ll review and fix it.', understanding: 'Understanding your request...', error: 'Something went wrong, try again.', retrying: 'One moment, trying again...', sec: 's',
     fbTitle: 'Complaints & suggestions', fbSub: 'Your opinion matters. We reply to every message that includes a way to reach you.', fbKind: 'Message type',
     kComplaint: 'Complaint', kSuggestion: 'Suggestion', kResult: 'Problem with a result', kQuestion: 'Question', fbMsg: 'Your message',
     fbMsgPh: 'Tell us what happened, or what you wish the site could do...', fbContact: 'Email or phone', optional: '(optional, so we can reply)',
@@ -877,28 +877,40 @@ async function send(text) {
   try {
     // progress arrives line by line (what the agent is doing now, and its reply while it's written),
     // the whole answer comes in the last line
-    const r = await fetch('/api/chat/stream', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                              body: JSON.stringify({messages: history.slice(-12), request: currentRequest, shown: lastResults(),
-                                                                    price_min: price.min, price_max: price.max})});
-    if (!r.ok || !r.body) throw new Error(r.status);
-    const reader = r.body.getReader(), dec = new TextDecoder();
-    let buf = '', d = null;
-    while (!d) {
-      const {value, done} = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, {stream: true});
-      let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-        if (!line) continue;
-        const ev = JSON.parse(line);
-        if (ev.type === 'status') step.textContent = ev.text;
-        else if (ev.type === 'reply') { live.hidden = false; liveText.textContent = ev.text; }
-        else if (ev.type === 'done') d = ev.data;
-        else if (ev.type === 'error') throw new Error(ev.status);
+    const body = JSON.stringify({messages: history.slice(-12), request: currentRequest, shown: lastResults(),
+                                 price_min: price.min, price_max: price.max});
+    const once = async () => {
+      const r = await fetch('/api/chat/stream', {method: 'POST', headers: {'Content-Type': 'application/json'}, body});
+      if (!r.ok || !r.body) throw Object.assign(new Error(r.status), {status: r.status});
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, {stream: true});
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+          if (!line) continue;
+          const ev = JSON.parse(line);
+          if (ev.type === 'status') step.textContent = ev.text;
+          else if (ev.type === 'reply') { live.hidden = false; liveText.textContent = ev.text; }
+          else if (ev.type === 'done') return ev.data;
+          else if (ev.type === 'error') throw Object.assign(new Error(ev.status), {status: ev.status});
+        }
       }
+      throw new Error('no answer');
+    };
+    let d;
+    try { d = await once(); }
+    catch (e) {
+      // a dropped connection or a server hiccup: try once more by itself before showing an error
+      // (not for answers the server meant, like the daily limit or a bad message)
+      if (e.status && e.status < 500) throw e;
+      step.textContent = t('retrying'); live.hidden = true;
+      await new Promise(res => setTimeout(res, 1500));
+      d = await once();
     }
-    if (!d) throw new Error('no answer');
     if (d.action === 'search') currentRequest = d.request || currentRequest;
     history.push({role: 'assistant', text: said(d).slice(0, 1500)});
     a.dataset.turn = shown.length; shown.push(d);
