@@ -214,24 +214,26 @@ def delete_chat(user_id: str, chat_id: str) -> bool:
 
 # ---------- followed products ----------
 
-_WATCH_COLS = "id, url, title, store, image, market, first_price, price, target_price, created_at"
+_WATCH_COLS = "id, url, title, store, image, market, first_price, price, target_price, created_at, wanted"
 
 
 def _watch(row) -> dict:
     return dict(zip(("id", "url", "title", "store", "image", "market", "first_price", "price", "target_price",
-                     "created_at"), row))
+                     "created_at", "wanted"), row))
 
 
 def add_watch(user_id: str, url: str, title: str, store: str, price: float, market: str, image: str = "",
-              target_price: float | None = None) -> dict:
+              target_price: float | None = None, wanted: str = "") -> dict:
+    """`wanted`: the option the shopper searched for (e.g. "مقاس 46"): the scheduled check reads the page for it and
+    alerts only when that option is in stock, at that option's price."""
     if not get_watch(user_id, url) and len(list_watches(user_id)) >= MAX_WATCHES:
         raise ValueError("too many")
     now = time.time()
     _db.run("INSERT INTO watches (user_id, url, title, store, image, market, first_price, price, target_price, "
-            "created_at, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (user_id, url) DO UPDATE SET target_price = excluded.target_price",
+            "created_at, checked_at, wanted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (user_id, url) DO UPDATE SET target_price = excluded.target_price, wanted = excluded.wanted",
             (user_id, url[:1000], title[:300], store[:100], (image or "")[:1000], market, price, price,
-             target_price, now, now))
+             target_price, now, now, (wanted or "").strip()[:80]))
     return get_watch(user_id, url)
 
 
@@ -258,10 +260,14 @@ def urls_to_check(older_than: float, limit: int) -> list[str]:
     return [r[0] for r in rows]
 
 
-def followed(url: str) -> tuple[str, set[float]]:
-    """A followed page's title and the prices its followers last saw (for the scheduled re-check)."""
-    rows = _db.run("SELECT title, price FROM watches WHERE url = ?", (url,))
-    return (rows[0][0] if rows else ""), {r[1] for r in rows}
+def followed(url: str) -> tuple[str, dict[str, set[float]]]:
+    """A followed page's title and, for each option its followers want ("" = none), the prices they last saw
+    (for the scheduled re-check)."""
+    rows = _db.run("SELECT title, price, wanted FROM watches WHERE url = ?", (url,))
+    wanted: dict[str, set[float]] = {}
+    for _, price, w in rows:
+        wanted.setdefault(w or "", set()).add(price)
+    return (rows[0][0] if rows else ""), wanted
 
 
 def _money(n: float, mk: str) -> str:
@@ -270,8 +276,10 @@ def _money(n: float, mk: str) -> str:
 
 
 def prices_seen(results: list[dict]) -> list[dict]:
-    """New prices of product pages (from a search or the re-check). Each follower whose last seen price is higher
-    gets a notification (when at/below their target, if they set one). Returns the notifications made."""
+    """New prices of product pages (from the re-check). Each follower whose last seen price is higher gets a
+    notification (when at/below their target, if they set one). A result is for the followers who want its
+    option ("wanted", "" = none): a page's price for one size isn't news to someone waiting for another size.
+    Returns the notifications made."""
     made = []
     now = time.time()
     urls = list({r["url"] for r in results if r.get("url") and r.get("price")})
@@ -286,10 +294,12 @@ def prices_seen(results: list[dict]) -> list[dict]:
             continue
         rows = _db.run("SELECT w.id, w.user_id, w.title, w.store, w.market, w.price, w.target_price, w.first_price, "
                        "u.email, u.name, u.email_alerts FROM watches w JOIN users u ON u.id = w.user_id "
-                       "WHERE w.url = ?", (url,))
+                       "WHERE w.url = ? AND w.wanted = ?", (url, r.get("wanted") or ""))
         for wid, uid, title, store, mk, last, target, first, email, name, alerts in rows:
             if price < last - 0.5 and (target is None or price <= target):
                 body = f"نزل من {_money(last, mk)} لـ {_money(price, mk)} في {store}"
+                if r.get("wanted"):
+                    body += f"، و{r['wanted']} متاح"
                 if first > price:
                     body += f" (أقل بـ {round((first - price) / first * 100)}% من وقت ما تابعته)"
                 n = notify(uid, "price_drop", f"السعر نزل: {title[:80]}", body, url)

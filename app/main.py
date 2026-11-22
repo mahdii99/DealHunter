@@ -784,6 +784,7 @@ class Watch(BaseModel):
     image: str = Field("", max_length=1000)
     price: float = Field(gt=0)
     target_price: float | None = Field(None, gt=0)
+    option: str = Field("", max_length=80)  # the size/color... the shopper searched for (the result's `option`)
 
 
 @app.get("/api/watches")
@@ -818,7 +819,8 @@ def _add_watch(w: Watch, request: Request) -> dict:
     user = _need_user(request)
     try:
         mk = user["market"] if user["market"] in market.live() else market.current().code  # where it was found
-        watch = accounts.add_watch(user["id"], w.url, w.title, w.store, w.price, mk, w.image, w.target_price)
+        watch = accounts.add_watch(user["id"], w.url, w.title, w.store, w.price, mk, w.image, w.target_price,
+                                   wanted=w.option)
     except ValueError:
         raise HTTPException(409, f"وصلت لأقصى عدد منتجات تتابعها ({accounts.MAX_WATCHES})")
     return {"watch": watch}
@@ -895,48 +897,64 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
     urls = await asyncio.to_thread(accounts.urls_to_check, 0 if every else CHECK_HOURS * 3600 * 0.8, limit)
     sem = asyncio.Semaphore(4)
     async with httpx.AsyncClient() as client:
-        async def one(url: str):
+        async def read(url: str, html: str, title: str, wanted: str, last: set[float]):
+            """The LLM reads the page's own product (and the option its followers want): (product, problem)."""
+            try:
+                p = await agent._read_main_price(url, html, title, wanted=wanted)
+            except Exception as e:
+                return None, f"LLM read failed: {type(e).__name__}"
+            if not p:
+                return None, "no single price of this product on its page"
+            if wanted and p.option_ok is not True:  # an alert only when the page says their size/color is in stock
+                return None, (f"{wanted}: not offered or sold out" if p.option_ok is False
+                              else f"{wanted}: the page doesn't say it's in stock")
+            # a read can still be wrong: a new price counts only once a later check reads the same number
+            if p.price not in last and not await _read_twice(url + ("#" + wanted if wanted else ""), p.price):
+                return None, f"read {p.price:g}: waiting for the next check to read it again"
+            return p, None
+
+        async def one(url: str) -> list[tuple]:
+            """[(url, option wanted, product or None, problem)] for each option this page's followers want."""
             if not url.startswith("https://") or not await _public_host(urlparse(url).hostname or ""):
-                return url, None, "address not allowed"
+                return [(url, "", None, "address not allowed")]
             try:
                 products, html = await asyncio.wait_for(agent._fetch_page(client, sem, url), timeout=25)
             except Exception as e:  # a slow / blocked page: tried again next time
-                return url, None, f"{type(e).__name__}: {e}"[:200]
-            if not products and agent.llm.available():  # no product data in the page (e.g. Amazon): the LLM reads it
-                title, last = await asyncio.to_thread(accounts.followed, url)
-                try:
-                    p = await agent._read_main_price(url, html, title)
-                except Exception as e:
-                    return url, None, f"LLM read failed: {type(e).__name__}"
-                if not p:
-                    return url, None, "no single price of this product on its page"
-                # a read can still be wrong: a new price counts only once a later check reads the same number
-                if p.price not in last and not await _read_twice(url, p.price):
-                    return url, None, f"read {p.price:g}: waiting for the next check to read it again"
-                return url, p, None
-            # only a price the page itself gives for this product: its own product data, or the one product on it
-            # when the page shows that price (never a copy kept elsewhere, which can be old)
-            shown = agent._shown_numbers(html)
-            same = [p for p in products if _same_page(p.url, url)]
-            single = products[0] if len(products) == 1 and agent.shows(shown, products[0].price) else None
-            p = same[0] if same else single
-            if p:
-                return url, p, None
-            found = ", ".join(f"{q.price:g}" for q in products[:5])
-            return url, None, (f"page doesn't show the price read ({found})" if products else
-                               f"no product read on the page ({len(html)} chars, title: {_page_title(html)})")
-        done = await asyncio.gather(*(one(u) for u in urls))
+                return [(url, "", None, f"{type(e).__name__}: {e}"[:200])]
+            title, wants = await asyncio.to_thread(accounts.followed, url)
+            out = []
+            for wanted, last in (wants or {"": set()}).items():
+                # no product data in the page (e.g. Amazon), or a size/color to check: the LLM reads it
+                if wanted or not products:
+                    if not agent.llm.available():
+                        out.append((url, wanted, None, f"no product read on the page ({len(html)} chars, "
+                                                       f"title: {_page_title(html)})"))
+                        continue
+                    p, err = await read(url, html, title, wanted, last)
+                    out.append((url, wanted, p, err))
+                    continue
+                # only a price the page itself gives for this product: its own product data, or the one product on
+                # it when the page shows that price (never a copy kept elsewhere, which can be old)
+                shown = agent._shown_numbers(html)
+                same = [p for p in products if _same_page(p.url, url)]
+                single = products[0] if len(products) == 1 and agent.shows(shown, products[0].price) else None
+                p = same[0] if same else single
+                found = ", ".join(f"{q.price:g}" for q in products[:5])
+                out.append((url, wanted, p, None if p else f"page doesn't show the price read ({found})"))
+            return out
+        done = [row for rows in await asyncio.gather(*(one(u) for u in urls)) for row in rows]
     seen = [{"url": url, "price": p.price, "title": p.title, "store": p.store, "in_stock": p.in_stock,
-             "old_price": p.old_price} for url, p, _ in done if p]
-    for url, p, err in done:
+             "old_price": p.old_price, "wanted": wanted} for url, wanted, p, _ in done if p]
+    for url in {url for url, _, p, _ in done if not p} - {r["url"] for r in seen}:
+        await asyncio.to_thread(accounts.checked, url)
+    for url, wanted, p, err in done:
         if not p:
-            log.info("watch check %s: %s", url[:80], err)
-            await asyncio.to_thread(accounts.checked, url)
-    if seen:
-        await asyncio.to_thread(db.record_prices, seen, market.current().code)
+            log.info("watch check %s%s: %s", url[:80], f" ({wanted})" if wanted else "", err)
+    if general := [r for r in seen if not r["wanted"]]:  # one size's price isn't the page's price history
+        await asyncio.to_thread(db.record_prices, general, market.current().code)
     made = await _alert_followers(seen)
     return {"checked": len(urls), "prices": len(seen), "alerts": len(made),
-            "failed": {url: err for url, p, err in done if not p}}
+            "failed": {url + (f" ({wanted})" if wanted else ""): err for url, wanted, p, err in done if not p}}
 
 
 def _page_title(html: str) -> str:

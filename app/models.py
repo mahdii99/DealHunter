@@ -25,6 +25,8 @@ class Product:
     condition: Optional[str] = None  # 'used' / 'refurbished' / 'open box' when the store data says so
     alternative: bool = False  # not an exact match, offered because nothing exact was found
     coupon_price: Optional[float] = None  # lower price after a store coupon applied at checkout
+    option: Optional[str] = None  # the option the shopper asked for and the price is for, e.g. "مقاس 46"
+    option_ok: Optional[bool] = None  # True = its page says that option is in stock; None = the page doesn't say
 
     def to_dict(self):
         return asdict(self)

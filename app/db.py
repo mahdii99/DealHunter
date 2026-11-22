@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS watches (
     first_price {FLOAT} NOT NULL,       -- when the shopper started following it
     price {FLOAT} NOT NULL,             -- the last price we saw
     target_price {FLOAT},               -- tell me only at or below this (NULL = any drop)
+    wanted TEXT NOT NULL DEFAULT '',    -- the option the shopper wants (e.g. "مقاس 46"): alerts only when it's in stock
     created_at {FLOAT} NOT NULL,
     checked_at {FLOAT} NOT NULL,
     UNIQUE (user_id, url)
@@ -140,6 +141,8 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_at ON events (kind, at)
 """
+# columns added after a table first went live (CREATE TABLE IF NOT EXISTS doesn't add them to an existing table)
+_ADDED_COLUMNS = ["ALTER TABLE watches ADD COLUMN wanted TEXT NOT NULL DEFAULT ''"]
 PG_RETRY = 300  # seconds on the local file after Postgres couldn't be reached, before trying it again
 BLOCK_AFTER = 2  # failed searches in a row before a site is skipped (one failure can be a slow moment)
 
@@ -175,6 +178,11 @@ class _Store:
             DB_PATH.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
             conn.executescript(_SCHEMA.format(ID="INTEGER PRIMARY KEY", FLOAT="REAL"))
+            for stmt in _ADDED_COLUMNS:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError:  # duplicate column: already there
+                    pass
         self._conn, self._key, self.pg = conn, key, bool(url)
         return conn
 
@@ -185,6 +193,8 @@ class _Store:
         conn = psycopg.connect(url, autocommit=True, prepare_threshold=None, connect_timeout=10)
         for stmt in _SCHEMA.format(ID="BIGSERIAL PRIMARY KEY", FLOAT="DOUBLE PRECISION").split(";"):
             conn.execute(stmt)
+        for stmt in _ADDED_COLUMNS:
+            conn.execute(stmt.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS"))
         return conn
 
     def _do(self, work):

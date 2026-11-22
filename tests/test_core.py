@@ -1384,7 +1384,7 @@ def test_results_are_checked_on_their_own_page_before_showing(monkeypatch):
     async def fake_read(client, urls, deadline=12):
         return {u: "Olympic Hero 50L 3,999 EGP غير متوفر حاليا" for u in urls if "shop-c" in u}, {}
 
-    async def main_price(url, page, title, spread=0):  # the LLM reads the price of the page's own product
+    async def main_price(url, page, title, spread=0, wanted=""):  # the LLM reads the price of the page's own product
         return Product("E", title, 4699, url) if "shop-e" in url else None
     monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
     monkeypatch.setattr(fetchers, "read_pages", fake_read)
@@ -1943,3 +1943,49 @@ def test_no_model_falls_back_to_the_web_search_for_the_shoppers_words(monkeypatc
     out = asyncio.run(agent.run_rules("عايز كوتشي بوما مقاس 46", note=agent.BUSY_NOTE))
     assert got["raw"] == "كوتشي بوما مقاس 46" and got["plan"]["simple"] and got["plan"]["web_queries"] == [got["raw"]]
     assert out["understood"] == agent.BUSY_NOTE
+
+
+def test_greyed_out_sizes_are_marked_for_the_llm():
+    """A store's size list keeps which sizes are sold out in tags and classes; the page text the LLM reads must too."""
+    page = ('<select name="size"><option value="">Select</option><option class="dropdownAvailable">40 EU</option>'
+            '<option class="dropdownUnavailable" value="46">46 EU</option></select>'
+            '<ul><li class="swatch out-of-stock">45</li><li class="swatch">41</li></ul><button disabled>Add to cart</button>')
+    marked, choices = agent._mark_choices(page)
+    text = agent._page_text(marked, ["size"])
+    assert "46 EU (unavailable)" in text and "45 (unavailable)" in text and "40 EU (unavailable)" not in text
+    assert "40 EU" in choices and "46 EU (unavailable)" in choices and "41" not in choices
+
+
+def test_results_must_offer_the_shoppers_size(monkeypatch):
+    """Live 22 Nov: a Puma shown for "كوتشي مقاس 46" had only small sizes left. When the shopper names a size, every
+    result's page is read for it, even pages whose own data gives the price: sold out in that size = not shown;
+    a page that doesn't say = shown after the confirmed ones, marked "check the size"."""
+    from app.models import Product
+    pages = {"https://a.com/p/puma-smash-3": _jsonld_page("Puma Smash", 1778, "InStock").replace("</h1>", "</h1><p>1,778 EGP</p>"),
+             "https://b.com/p/puma-smash-3": "<html><h1>Puma Smash</h1><p>1,650 EGP</p><p>sizes 40 41</p></html>",
+             "https://c.com/p/puma-smash-3": "<html><h1>Puma Smash</h1><p>1,900 EGP</p></html>"}
+
+    async def fake_fetch(client, sem, url):
+        return agent._cheapest_variant(extract_products(pages[url], "x", url)), pages[url]
+    asked = []
+
+    async def fake_ask(prompt, **kw):
+        asked.append(prompt)
+        assert "مقاس 46" in prompt
+        price = 1778 if "1,778" in prompt else 1650 if "1,650" in prompt else 1900
+        option = ({"offered": True, "available": True, "price": None} if price == 1778 else
+                  {"offered": False, "available": None, "price": None} if price == 1650 else
+                  {"offered": None, "available": None, "price": None})
+        return {"same_product": True, "price": price, "currency": "EGP", "choice_needed": False, "in_stock": True,
+                "option": option}
+    monkeypatch.setattr(agent, "VERIFY_PICKS", True)
+    monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
+    monkeypatch.setattr(agent.llm, "available", lambda: True)
+    monkeypatch.setattr(agent.llm, "ask_json", fake_ask)
+    picks = [Product("A", "Puma Smash", 1778, "https://a.com/p/puma-smash-3"),
+             Product("B", "Puma Smash", 1650, "https://b.com/p/puma-smash-3"),
+             Product("C", "Puma Smash", 1900, "https://c.com/p/puma-smash-3")]
+    shown, _, gone = asyncio.run(agent.checked_only(picks, "مقاس 46"))
+    assert len(asked) == 3 and gone == 1  # A's page data alone isn't enough: read too
+    assert [(p.store, p.option_ok) for p in agent._ordered(shown, "مقاس 46")] == [("A", True), ("C", None)]
+    assert shown[0].option == "مقاس 46"
