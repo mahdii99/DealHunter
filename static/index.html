@@ -729,6 +729,8 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
             ${trustBadge(p)}
             ${p.verified ? `<span class="badge ok" title="${L('فتحنا صفحة المنتج دلوقتي: متوفر بالسعر ده', 'We just opened its page: in stock at this price')}">${L('متوفر، اتأكدنا', 'In stock, checked')}</span>`
               : p.verified === false ? `<span class="badge warn" title="${L('مقدرناش نفتح صفحة المنتج نفسها، اتأكد إنه متوفر قبل ما تطلب', 'We couldn’t open its own page, check it’s in stock before ordering')}">${L('اتأكد إنه متوفر', 'Check stock')}</span>` : ''}
+            ${p.option ? (p.option_ok ? `<span class="badge ok" title="${L('صفحة المنتج بتقول إنه متاح', 'Its page says this option is in stock')}">${esc(p.option)} ${L('متاح', 'in stock')}</span>`
+              : `<span class="badge warn" title="${L('صفحة المنتج مبتقولش إذا كان متاح، اتأكد قبل ما تطلب', 'Its page doesn’t say if this option is in stock, check before ordering')}">${L('اتأكد من', 'Check')} ${esc(p.option)}</span>`) : ''}
             ${p.unconfirmed ? `<span class="badge warn" title="${L('العنوان مش موضح النوع بالظبط، اتأكد من صفحة المنتج', 'The title doesn’t state the exact model, check the product page')}">${L('اتأكد من الموديل', 'Check the model')}</span>` : ''}
           </span>
         </span>
@@ -860,7 +862,7 @@ function lastResults() {  // the results on screen now, so a question about them
   const d = [...shown].reverse().find(x => x.action === 'search' && x.results && x.results.length);
   return d ? d.results.slice(0, 12).map(p => ({title: p.title, price: p.price, old_price: p.old_price ?? null, discount_pct: p.discount_pct ?? null,
     store: p.store || '', trusted: !!p.trusted, trust_score: p.trust_score ?? null, verified: p.verified ?? null, condition: p.condition || null,
-    unconfirmed: !!p.unconfirmed, lowest_seen: p.lowest_seen ?? null, previous_price: p.previous_price ?? null, note: p.note || null})) : [];
+    unconfirmed: !!p.unconfirmed, option: p.option || null, option_ok: p.option_ok ?? null, lowest_seen: p.lowest_seen ?? null, previous_price: p.previous_price ?? null, note: p.note || null})) : [];
 }
 async function send(text) {
   text = text.trim(); if (text.length < 2 || b.disabled) return;
@@ -1130,7 +1132,7 @@ async function drawPanel() {
       const d = await api('/api/watches');
       body = d.watches.map(w => `<div class="row"><button class="x" type="button" data-unwatch="${w.id}">${t('cancelWatch')}</button>` +
         `<a href="${link(w.url)}" target="_blank" rel="noopener nofollow sponsored">${esc(w.title)}</a>` +
-        `<div class="when">${esc(w.store)} · ${t('nowAt')} ${fmt(w.price)}${w.price < w.first_price ? ` (${t('was')} ${fmt(w.first_price)})` : ''}</div></div>`).join('') ||
+        `<div class="when">${esc(w.store)}${w.wanted ? ' · ' + esc(w.wanted) : ''} · ${t('nowAt')} ${fmt(w.price)}${w.price < w.first_price ? ` (${t('was')} ${fmt(w.first_price)})` : ''}</div></div>`).join('') ||
         `<div class="panel-hint">${t('noWatches')}</div>`;
     } else {
       body = `<div class="set">
@@ -1177,7 +1179,7 @@ document.addEventListener('click', async e => {  // "follow price" on a result
       p.watched = false;
     } else {
       await api('/api/watches', {method: 'POST', body: JSON.stringify({url: p.url, title: p.title, store: p.store || '',
-                                                                     image: p.image || '', price: p.price})});
+                                                                     image: p.image || '', price: p.price, option: p.option || ''})});
       p.watched = true;
     }
     btn.classList.toggle('on', p.watched); lbl.textContent = p.watched ? t('following') : t('follow');

@@ -150,6 +150,9 @@ Reply JSON (in this order):
   "queries": ["1-2 short English store search queries, most specific first"],
   "requirements": ["hard requirements a matching product must meet, in English, from the need too, e.g.
      'battery 5000 mAh or more', 'black', 'crew (round) neck', 'plain, no print'"],
+  "pick_options": ["the options the shopper named that a store page makes them pick for this product (size, color,
+     storage, capacity...), in short Egyptian Arabic, e.g. 'مقاس 46', 'لون أسود', '256 جيجا'; [] if none. Each offer's
+     own page is checked for these: offered, in stock, and its price"],
   "avoid": ["things that must NOT be returned, e.g. 'cases/covers', 'bundles with other products', 'used items'"],
   "max_price": number or null,   // ONLY when the shopper clearly states a price/budget ("تحت 8000", "بحدود 5000 جنيه",
                                  // "budget 3000"). A bare number is a spec or model ("مكواه 650", "2200 وات"): put it
@@ -637,6 +640,7 @@ async def _llm_read_page(url: str, html: str, query: str, spread: int = 0, focus
 
 FOLLOWED_PAGE_PROMPT = """This is the text of one product page of an online store. A shopper wants the current price
 of this product: {title}
+The option the shopper wants of it: {wanted}
 Read the price of THE product this page is for: the one in its title and main buy box at the top. Prices further down
 belong to other items (related, sponsored, "customers also bought", bundles, accessories, other sellers' offers,
 installments): never use them.
@@ -646,7 +650,12 @@ color is fine), "currency": "currency of the price, e.g. EGP",
 "choice_needed": true only if the page shows a price range ("1,500 - 2,400") or only per-option prices and no single
 price for the product as it opens. Sizes or colors to pick don't matter when the page shows one current price (most
 pages do): then false. If the page lists a price per size and the product names a size, give that size's price.
-"in_stock": true | false | null}}
+"in_stock": true | false | null,
+"option": null when no option is wanted above, else {{"offered": true if the page lets you pick that option (or the
+  product only comes in it), false if the page lists its choices (sizes, colors...) and it isn't one of them, null if
+  the page doesn't show the choices; "available": true if that option can be bought now, false if the page marks it
+  unavailable / sold out / greyed out ("(unavailable)" in the text) or only other options are in stock, null if the
+  page doesn't say; "price": that option's own current price if the page writes one, else null}}}}
 price is null when the page writes no current price for its main product. Never guess.
 PAGE:
 {text}"""
@@ -655,25 +664,65 @@ PAGE:
 MAIN_PRICE_CHARS = 6000  # page text for a main-price read: the top of the page, where the product and its price are
 
 
-async def _read_main_price(url: str, html: str, title: str, spread: int = 0) -> Product | None:
+_CHOICE_OFF = re.compile(r"disabled|unavailable|out[-_ ]?of[-_ ]?stock|sold[-_ ]?out|\boos\b|not[-_ ]?available", re.I)
+_CHOICE_TAG = re.compile(r"<(option|button|li|a|span|div|label)\b([^>]*)>([^<>]{1,40})</\1>", re.I)
+
+
+def _mark_choices(html: str) -> tuple[str, str]:
+    """A page's choices (sizes, colors...) keep their state in tags and classes that page text loses: mark the ones
+    the page greys out as "(unavailable)", and list all of them, so the LLM can tell which options can be bought.
+    Returns (the page with marks, "choices: ..." or "")."""
+    seen: list[str] = []
+
+    def mark(m: re.Match) -> str:
+        tag, attrs, text = m.group(1).lower(), m.group(2), " ".join(unescape(m.group(3)).split())
+        off = bool(_CHOICE_OFF.search(attrs))
+        if not text or not (tag == "option" or off):
+            return m.group(0)
+        item = text + (" (unavailable)" if off else "")
+        if item not in seen and len(seen) < 80:
+            seen.append(item)
+        return m.group(0) if not off else f"<{tag}{attrs}>{m.group(3)} (unavailable)</{tag}>"
+    marked = _CHOICE_TAG.sub(mark, html)
+    return marked, ("CHOICES ON THE PAGE: " + " | ".join(seen))[:1500] if seen else ""
+
+
+async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wanted: str = "") -> Product | None:
     """A product page whose own product data doesn't settle the price (e.g. Amazon): the LLM reads only the main
     product's price. None when it isn't the followed product, the price depends on a choice (size, color) the page leaves
-    open, or the page doesn't show that number: a price from a related item lower down must never become an alert."""
+    open, or the page doesn't show that number: a price from a related item lower down must never become an alert.
+    `wanted`: the option the shopper wants (e.g. "مقاس 46"). The page is read for it too: `option_ok` is False when
+    the page doesn't offer it or marks it unavailable (price 0 then: never shown), True when it says it's in stock,
+    None when the page doesn't say; the price is that option's price when the page writes one."""
     words = [w for w in re.split(r"\W+", title) if len(w) > 2]
-    text = _page_text(html, words, MAIN_PRICE_CHARS, base_url=url, top=True)
-    data = await llm.ask_json(FOLLOWED_PAGE_PROMPT.format(title=title or url, text=text),
+    marked, choices = _mark_choices(html) if wanted else (html, "")
+    text = _page_text(marked, words, MAIN_PRICE_CHARS, base_url=url, top=True)
+    if choices:
+        text += "\n" + choices
+    data = await llm.ask_json(FOLLOWED_PAGE_PROMPT.format(title=title or url, wanted=wanted or "none", text=text),
                               prefer="bulk", spread=spread, step="read_price")
-    price = data.get("price")
+    if data.get("same_product") is not True:
+        return None
+    stock = data.get("in_stock")
+    stock = stock if isinstance(stock, bool) else None
+    option_ok, price, choice_needed = None, data.get("price"), data.get("choice_needed") is True
+    if wanted:
+        opt = data.get("option") if isinstance(data.get("option"), dict) else {}
+        if opt.get("offered") is False or opt.get("available") is False:
+            return Product(store=trust.store_name(url), title=title or url, price=0.0, url=url,
+                           trusted=trust.is_known(url), in_stock=stock, option=wanted, option_ok=False)
+        option_ok = True if opt.get("offered") is True and opt.get("available") is True else None
+        own = opt.get("price")
+        if isinstance(own, (int, float)) and not isinstance(own, bool) and own >= 5 and shows(_shown_numbers(html), own):
+            price, choice_needed = own, False  # the price of the shopper's own option
     cur = str(data.get("currency") or "").strip().upper()
     mk = market.current()
-    if (data.get("same_product") is not True or data.get("choice_needed") is True
-            or not isinstance(price, (int, float)) or isinstance(price, bool) or price < 5
+    if (choice_needed or not isinstance(price, (int, float)) or isinstance(price, bool) or price < 5
             or cur and cur not in {c.upper() for c in mk.currency_aliases + (mk.currency,)} | {"ج.م", "جم", "جنيه", "L.E", "L.E."}
             or not shows(_shown_numbers(html), price)):
         return None
-    stock = data.get("in_stock")
     return Product(store=trust.store_name(url), title=title or url, price=float(price), url=url,
-                   trusted=trust.is_known(url), in_stock=stock if isinstance(stock, bool) else None)
+                   trusted=trust.is_known(url), in_stock=stock, option=wanted or None, option_ok=option_ok)
 
 
 class NotAStore(Exception):
@@ -1067,6 +1116,13 @@ def _show_order(picks: list[Product]) -> list[Product]:
     return out
 
 
+def _ordered(picks: list[Product], options: str = "") -> list[Product]:
+    """Show order; when the shopper named a size/color..., offers whose page says it's in stock come first."""
+    if not options:
+        return _show_order(picks)
+    return _show_order([p for p in picks if p.option_ok]) + _show_order([p for p in picks if not p.option_ok])
+
+
 def _discount(p: Product) -> int | None:
     """Real discount in %: against the store's own old price, or the checkout coupon."""
     ref = p.old_price if p.old_price and p.old_price > p.price else p.price
@@ -1178,17 +1234,21 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             summary = ("الموديلات المجانية مشغولة دلوقتي فمقدرتش أراجع النتايج بدقة، فدي مرتبة بالسعر بس "
                        "واتأكد من الموديل في كل واحدة. جرب تاني كمان دقيقة لنتيجة أدق.")
     picks = list({id(p): p for p in picks}.values())
+    options = "، ".join(_strs(plan.get("pick_options"), 4, 60))
     gone, unchecked = 0, []
     if picks and VERIFY_PICKS:
         _progress(f"بفتح صفحة كل نتيجة ({len(picks)}) وبتأكد إنها متوفرة وإن سعرها لسه زي ما هو...")
         tv = time.monotonic()
-        picks, unchecked, gone = await checked_only(picks)
+        picks, unchecked, gone = await checked_only(picks, options)
         TIMES["verify"] = round(time.monotonic() - tv, 1)
         summary = _honest_summary(summary, picks)
         if gone:
-            summary += f" (شلت {gone} عرض لقيته خلصان لما فتحت صفحته.)"
+            summary += (f" (شلت {gone} عرض لما فتحت صفحته: خلصان أو {options} مش متاح فيه.)" if options
+                        else f" (شلت {gone} عرض لقيته خلصان لما فتحت صفحته.)")
+        if options and any(p.option_ok is None for p in picks):
+            summary += f" اللي مكتوب عليه \"اتأكد من {options}\" صفحته مبتقولش إذا كان متاح ولا لا."
     _flag_price_outliers(picks, typical)
-    picks = _show_order(picks)
+    picks = _ordered(picks, options)
     return {
         "mode": "llm", "source": source, "timings": dict(TIMES),
         "llm_usage": {"calls": llm.USAGE["calls"], "tokens": llm.USAGE["tokens"], "by_step": dict(llm.USAGE["by_step"])},
@@ -1197,6 +1257,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "suggested_products": plan.get("suggested_products") or [],
         "queries": web_queries if source == "web" else queries,
         "requirements": plan.get("requirements", []),
+        "options": options,
         "max_price": maxp, "min_price": minp,
         "summary": summary,
         "suggestions": follow_ups,
@@ -1230,12 +1291,14 @@ def _price_moved(html: str, before: float, now: float) -> bool:
     return now in seen and before not in seen
 
 
-async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
+async def _verify_stock(picks: list[Product], options: str = "") -> tuple[list[Product], int]:
     """Before results are shown, open each one's own product page: drop it when the store now says sold out,
     take the page's current price when it changed, and mark it `verified` only when that page, opened just now,
     shows the price we'd show (or its own product data says exactly that price). Anything else - a page we
     can't open, a listing page, a copy kept by a search service - can be old or another option's price.
-    Returns (picks still for sale, how many were dropped as sold out)."""
+    `options`: what the shopper must pick on the page (e.g. "مقاس 46"): then the LLM reads every page for that
+    option, and an offer whose page doesn't offer it or has it sold out is dropped like a sold-out one.
+    Returns (picks still for sale, how many were dropped as sold out or without the shopper's option)."""
     for p in picks:
         p.verified = False
     todo = sorted((p for p in picks if _page_id(p.url)), key=_paid)[:VERIFY_MAX]
@@ -1268,6 +1331,8 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
                 # the page's own data says this price for this product (a single product on the page must
                 # also show it: it may be the page's main item or something else)
                 p.verified = abs(q.price - p.price) < 1 and (bool(by_link) or shows(_shown_numbers(html), p.price))
+                if options:  # the page's data is for the product, not the shopper's size/color: the LLM reads it
+                    p.verified = False
                 if not p.verified:
                     to_read.append((p, html))
                 continue
@@ -1291,16 +1356,19 @@ async def _verify_stock(picks: list[Product]) -> tuple[list[Product], int]:
 
         async def read(i: int, p: Product, page: str):
             async with llm_sem:  # each read starts on another model, so per-minute limits hold
-                return await _read_main_price(p.url, page, p.title, spread=i)
+                return await _read_main_price(p.url, page, p.title, spread=i, wanted=options)
         # well-known stores first: when time runs out, the offers shoppers trust most are the ones checked
         to_read = sorted(to_read, key=lambda x: (not x[0].trusted, -(x[0].trust_score or 0), _paid(x[0])))[:VERIFY_LLM_MAX]
         reads = await _within(VERIFY_LLM_DEADLINE, [read(i, p, page) for i, (p, page) in enumerate(to_read)])
         for (p, _), got in zip(to_read, reads):
             if isinstance(got, Exception) or got is None:
                 continue
-            if got.in_stock is False:
+            if got.in_stock is False or got.option_ok is False:
+                if got.option_ok is False:
+                    log.info("agent: %s: %s not offered or sold out on its page", p.store, options)
                 sold.add(id(p))
                 continue
+            p.option, p.option_ok = got.option, got.option_ok
             if abs(got.price - p.price) >= 1:
                 if not p.price / 2 <= got.price <= p.price * 2:  # far off: another item, not this offer
                     continue
@@ -1328,12 +1396,13 @@ def _shown_numbers(page: str) -> set[float]:
     return extract_mod._visible_numbers(page.translate(_ARABIC_DIGITS))
 
 
-async def checked_only(picks: list[Product]) -> tuple[list[Product], list[dict], int]:
-    """What may be shown with a price: only offers whose own page, opened just now, shows that price.
-    Returns (those offers, the others (never shown to the shopper), how many were sold out)."""
+async def checked_only(picks: list[Product], options: str = "") -> tuple[list[Product], list[dict], int]:
+    """What may be shown with a price: only offers whose own page, opened just now, shows that price (and, when the
+    shopper named a size/color..., offers that option). Returns (those offers, the others (never shown to the
+    shopper), how many were sold out or without that option)."""
     if not (picks and VERIFY_PICKS):
         return picks, [], 0
-    picks, gone = await _verify_stock(picks)
+    picks, gone = await _verify_stock(picks, options)
     unchecked = [{"store": p.store, "title": p.title, "url": p.url} for p in picks if not p.verified]
     return [p for p in picks if p.verified], unchecked, gone
 
@@ -1360,8 +1429,8 @@ async def recheck(payload: dict) -> dict:
     names = {f.name for f in fields(Product)}
     picks = [Product(**{k: v for k, v in r.items() if k in names}) for r in rows]
     extra = {id(p): {k: v for k, v in r.items() if k not in names} for p, r in zip(picks, rows)}
-    shown, unchecked, gone = await checked_only(picks)
-    return {**payload, "results": [extra[id(p)] | p.to_dict() for p in _show_order(shown)],
+    shown, unchecked, gone = await checked_only(picks, payload.get("options") or "")
+    return {**payload, "results": [extra[id(p)] | p.to_dict() for p in _ordered(shown, payload.get("options") or "")],
             "unchecked": unchecked + [u for u in payload.get("unchecked") or [] if u not in unchecked],
             "count": len(shown), "summary": _honest_summary(payload.get("summary", ""), shown),
             "sold_out_dropped": (payload.get("sold_out_dropped") or 0) + gone}

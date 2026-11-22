@@ -258,7 +258,7 @@ AMAZON_PAGE = ("<html><body><h1>PUMA Smash 3.0 L Sneaker</h1><span>EGP 2,413</sp
                "<div>Products related to this item: PUMA Rebound EGP 1,885 ; PUMA Carina EGP 2,348</div></body></html>")
 
 
-def _amazon_watch(monkeypatch, reads: list[dict]):
+def _amazon_watch(monkeypatch, reads: list[dict], option: str = ""):
     """A followed page without product data (like Amazon), read by a fake LLM giving `reads` one after another."""
     c = _signed_in(monkeypatch)
     url = "https://www.amazon.eg/dp/B0TEST1234"
@@ -266,7 +266,8 @@ def _amazon_watch(monkeypatch, reads: list[dict]):
     async def allowed(u):
         return True
     monkeypatch.setattr(main, "_may_open", allowed)
-    c.post("/api/watches", json={"url": url, "title": "PUMA Smash 3.0 L Sneaker", "store": "Amazon.eg", "price": 2413})
+    c.post("/api/watches", json={"url": url, "title": "PUMA Smash 3.0 L Sneaker", "store": "Amazon.eg", "price": 2413,
+                                 "option": option})
     monkeypatch.setattr(main, "CHECK_HOURS", 0)
 
     async def fake_fetch(client, sem, u):
@@ -316,6 +317,37 @@ def test_followed_page_new_price_must_be_read_twice(monkeypatch):
     assert c.get("/api/watches").json()["watches"][0]["price"] == 1885
     d = check()  # the price followers already saw: taken at once, no new alert
     assert d["prices"] == 1 and d["alerts"] == 0
+
+
+def test_followed_size_must_be_in_stock_for_an_alert(monkeypatch):
+    """Live 22 Nov: a Puma followed from a search for size 46 dropped in price, but the page had only small sizes
+    left. The check reads the page for the follower's own size: no alert until that size is in stock."""
+    read = {"same_product": True, "price": 1885, "currency": "EGP", "choice_needed": False, "in_stock": True}
+    gone = {**read, "option": {"offered": True, "available": False, "price": None}}
+    unsure = {**read, "option": {"offered": None, "available": None, "price": None}}
+    there = {**read, "option": {"offered": True, "available": True, "price": None}}
+    c, url, check = _amazon_watch(monkeypatch, [gone, gone, unsure, unsure, there, there], option="مقاس 46")
+    assert c.get("/api/watches").json()["watches"][0]["wanted"] == "مقاس 46"
+    for _ in range(4):
+        d = check()
+        assert d["alerts"] == 0 and "مقاس 46" in d["failed"][url + " (مقاس 46)"]
+    assert check()["alerts"] == 0  # in stock now: the new price still needs a second read
+    d = check()
+    assert d["alerts"] == 1
+    note = c.get("/api/notifications").json()["notifications"][0]
+    assert "1,885" in note["body"] and "مقاس 46 متاح" in note["body"]
+
+
+def test_size_alert_is_only_for_followers_of_that_size():
+    url = "https://shop.com/p/shoe"
+    for uid in ("g:46", "g:40"):
+        accounts.upsert_user({"id": uid, "email": uid + "@x.com", "name": uid, "picture": ""})
+    accounts.add_watch("g:46", url, "Shoe", "Shop", 1000, "EG", wanted="مقاس 46")
+    accounts.add_watch("g:40", url, "Shoe", "Shop", 1000, "EG", wanted="مقاس 40")
+    made = accounts.prices_seen([{"url": url, "price": 800, "wanted": "مقاس 40"}])
+    assert [n["user_id"] for n in made] == ["g:40"]
+    assert accounts.get_watch("g:46", url)["price"] == 1000
+    assert accounts.followed(url)[1] == {"مقاس 46": {1000}, "مقاس 40": {800}}
 
 
 def test_searches_dont_send_price_alerts(monkeypatch):
