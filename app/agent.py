@@ -1390,7 +1390,11 @@ def _price_moved(html: str, before: float, now: float) -> bool:
     return now in seen and before not in seen
 
 
-async def _verify_stock(picks: list[Product], options: str = "") -> tuple[list[Product], int]:
+PATIENT_DEADLINE = 25      # background checks (today's deals list): nobody waits, so pages get more time
+PATIENT_LLM_DEADLINE = 75
+
+
+async def _verify_stock(picks: list[Product], options: str = "", patient: bool = False) -> tuple[list[Product], int]:
     """Before results are shown, open each one's own product page: drop it when the store now says sold out,
     take the page's current price when it changed, and mark it `verified` only when that page, opened just now,
     shows the price we'd show (or its own product data says exactly that price). Anything else - a page we
@@ -1407,7 +1411,8 @@ async def _verify_stock(picks: list[Product], options: str = "") -> tuple[list[P
     to_read: list[tuple[Product, str]] = []  # pages the LLM reads for their main product's price
     async with httpx.AsyncClient() as client:
         sem = asyncio.Semaphore(8)
-        pages = await _within(VERIFY_DEADLINE, [_fetch_page(client, sem, p.url) for p in todo])
+        pages = await _within(PATIENT_DEADLINE if patient else VERIFY_DEADLINE,
+                              [_fetch_page(client, sem, p.url) for p in todo])
         retry = []
         for p, res in zip(todo, pages):
             if isinstance(res, Exception):
@@ -1461,6 +1466,8 @@ async def _verify_stock(picks: list[Product], options: str = "") -> tuple[list[P
         # well-known stores first: when time runs out, the offers shoppers trust most are the ones checked
         # a size/color to check means every page is read (not only those without product data): more reads, more time
         cap, deadline = (VERIFY_LLM_MAX + 8, VERIFY_LLM_DEADLINE + 8) if options else (VERIFY_LLM_MAX, VERIFY_LLM_DEADLINE)
+        if patient:  # every page that needs it is read, with time to spare
+            cap, deadline = VERIFY_MAX, PATIENT_LLM_DEADLINE
         to_read = sorted(to_read, key=lambda x: (not x[0].trusted, -(x[0].trust_score or 0), _paid(x[0])))[:cap]
         reads = await _within(deadline, [read(i, p, page) for i, (p, page) in enumerate(to_read)])
         for (p, _), got in zip(to_read, reads):
@@ -1499,13 +1506,14 @@ def _shown_numbers(page: str) -> set[float]:
     return extract_mod._visible_numbers(page.translate(_ARABIC_DIGITS))
 
 
-async def checked_only(picks: list[Product], options: str = "") -> tuple[list[Product], list[dict], int]:
+async def checked_only(picks: list[Product], options: str = "",
+                       patient: bool = False) -> tuple[list[Product], list[dict], int]:
     """What may be shown with a price: only offers whose own page, opened just now, shows that price (and, when the
     shopper named a size/color..., offers that option). Returns (those offers, the others (never shown to the
     shopper), how many were sold out or without that option)."""
     if not (picks and VERIFY_PICKS):
         return picks, [], 0
-    picks, gone = await _verify_stock(picks, options)
+    picks, gone = await _verify_stock(picks, options, patient)
     unchecked = [{"store": p.store, "title": p.title, "url": p.url} for p in picks if not p.verified]
     return [p for p in picks if p.verified], unchecked, gone
 
