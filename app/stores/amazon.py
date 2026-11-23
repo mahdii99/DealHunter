@@ -30,7 +30,10 @@ def parse_amazon_cards(html: str, store: str, base_url: str) -> list[Product]:
     out, seen = [], set()
     for card in HTMLParser(html).css("[data-asin]"):
         asin = (card.attributes.get("data-asin") or "").strip()
-        if len(asin) != 10 or asin in seen or len(card.css("[data-asin]")) > 1:  # (css() counts the card itself: >1 = a wrapper of other cards)
+        if len(asin) != 10 or asin in seen:
+            continue
+        # a wrapper of several cards (other products inside) isn't a card; a card often repeats its own id inside
+        if any((n.attributes.get("data-asin") or "").strip() not in ("", asin) for n in card.css("[data-asin]")):
             continue
         if "AdHolder" in (card.attributes.get("class") or "") or card.css_first(".puis-sponsored-label-text"):
             continue  # a paid ad: it repeats a product from elsewhere in the list

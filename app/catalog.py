@@ -19,6 +19,7 @@ Rules we keep:
 import asyncio
 import logging
 import os
+import re
 import time
 from urllib.parse import urlparse
 
@@ -56,6 +57,10 @@ CATEGORIES: dict[str, dict] = {
     },
 }
 STORES = sorted({d for c in CATEGORIES.values() for d in c["stores"]})
+
+
+class NothingRead(Exception):
+    """The page opened but no product was read from it (the last page of a category, or a changed page)."""
 
 
 class Blocked(Exception):
@@ -97,6 +102,9 @@ async def _page(client: httpx.AsyncClient, url: str) -> list[Product]:
     products = read_listing(r.text, str(r.url))
     if not products and _robot_check(r.text):
         raise Blocked("robot check page")
+    if not products:  # say what the page was, so a changed or refused page can be told from an empty one
+        m = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S | re.I)
+        raise NothingRead(f"no products read ({len(r.text)} chars, title: {' '.join((m.group(1) if m else '-').split())[:80]})")
     return products
 
 
@@ -122,6 +130,10 @@ async def scrape(stores: list[str] | None = None, categories: list[str] | None =
                     products = await _page(client, url)
                 except Blocked as e:
                     err = str(e)
+                    break
+                except NothingRead as e:
+                    if n == 1:  # past the last page is normal; an empty first page is worth a look
+                        err = str(e)
                     break
                 except Exception as e:  # a slow page: the next run tries again
                     err = f"{type(e).__name__}: {e}"[:200]

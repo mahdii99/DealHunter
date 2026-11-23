@@ -18,7 +18,7 @@ def _own_database(tmp_path, monkeypatch):
 
 
 AMAZON = """<html><body><div class="s-main-slot">
-<div data-asin="B0AAAAAAA1" data-component-type="s-search-result"><div class="puis-card">
+<div data-asin="B0AAAAAAA1" data-component-type="s-search-result"><div class="puis-card" data-asin="B0AAAAAAA1">
   <img class="s-image" src="https://m.media-amazon.com/a1.jpg" alt="x">
   <h2><a href="/Samsung-Galaxy-A56/dp/B0AAAAAAA1/ref=sr_1_1"><span>Samsung Galaxy A56 5G, 256GB, 8GB RAM, Graphite</span></a></h2>
   <span class="a-price"><span class="a-offscreen">EGP 19,999.00</span><span aria-hidden="true">19,999</span></span>
@@ -181,3 +181,13 @@ def test_a_page_that_refuses_a_browser_is_asked_again_under_our_crawler_name(mon
             return await agent._fetch_page(c, asyncio.Semaphore(1), "https://www.jumia.com.eg/mobile-phones/")
     products, html = asyncio.run(go())
     assert seen == ["Mozilla", "DealHunterBot"] and "Honor" in html
+
+
+def test_an_empty_first_page_is_reported_with_its_title(monkeypatch):
+    async def allowed(client, url):
+        return True
+    monkeypatch.setattr(catalog.fetchers, "robots_allows", allowed)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, text="<html><title>Something else</title><body>hi</body></html>")))
+    report = asyncio.run(catalog.scrape(["amazon.eg"], client=client))
+    assert "title: Something else" in report["amazon.eg phones"]["error"]
