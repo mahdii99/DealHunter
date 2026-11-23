@@ -34,7 +34,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, admin, affiliate, agent, db, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, affiliate, agent, catalog, db, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -957,6 +957,38 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
     made = await _alert_followers(seen)
     return {"checked": len(urls), "prices": len(seen), "alerts": len(made),
             "failed": {url + (f" ({wanted})" if wanted else ""): err for url, wanted, p, err in done if not p}}
+
+
+@app.post("/api/cron/scrape")
+async def scrape_catalog(request: Request, store: str = Query("", max_length=40), category: str = Query("", max_length=40),
+                         pages: int = Query(0, ge=0, le=20)):
+    """Reads the big stores' category pages into our own price list (app/catalog.py). Called once or twice a day by
+    .github/workflows/scrape-prices.yml with the CRON_SECRET header, one store per call (short requests suit the
+    free server)."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    stores = [d for d in store.split(",") if d] or None
+    if stores and not set(stores) <= set(catalog.STORES):
+        raise HTTPException(400, f"unknown store, one of: {', '.join(catalog.STORES)}")
+    report = await catalog.scrape(stores, [c for c in category.split(",") if c] or None, pages or None)
+    return {"report": report, "total": sum(r["products"] for r in report.values())}
+
+
+@app.get("/bot")
+def bot_info():
+    """Who our crawler is (its name points here, as stores ask crawlers to say who runs them)."""
+    return Response(BOT_PAGE, media_type="text/html; charset=utf-8")
+
+
+BOT_PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DealHunterBot</title><body style="font-family:system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px;
+line-height:1.6"><h1>DealHunterBot</h1><p>DealHunterBot is the crawler of <a href="/">Easy Found</a>, a price-comparison
+site for shoppers in Egypt. Once or twice a day it reads a few public category pages of large online stores (for
+example the mobile phones category) to know their current prices, and it sends shoppers to the store's own page to
+buy.</p><ul><li>It obeys robots.txt.</li><li>It opens one page at a time per store, with a pause between pages (a
+few dozen pages per store per day).</li><li>It never signs in, never adds to cart and never reads personal data.</li>
+</ul><p>To ask us to slow down or stop, write to us through the feedback box on <a href="/">the site</a>.</p>"""
 
 
 def _page_title(html: str) -> str:

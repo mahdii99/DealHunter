@@ -182,6 +182,8 @@
   .item .save { display:inline-block; width:fit-content; font-size:13px; font-weight:600; color:var(--deal); background:var(--deal-soft); padding:1px 8px; border-radius:6px; }
   .item .old { text-decoration:line-through; color:var(--muted); font:400 13px "IBM Plex Sans Arabic",sans-serif; margin-inline-start:8px; }
   .coupon { font-size:13px; color:var(--deal); }
+  .hist { font-size:12.5px; color:var(--muted); }
+  .hist.down { color:var(--deal); font-weight:600; }
   .note { font-size:13px; color:var(--muted); }
   .badges { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
   .badge { display:inline-block; font-size:12px; font-weight:500; padding:2px 10px; border-radius:20px; border:1px solid var(--border); color:var(--muted); }
@@ -708,6 +710,12 @@ function trustBadge(p) {
 }
 const COND = {used: ['مستعمل', 'Used'], refurbished: ['مجدد', 'Refurbished'], 'open box': ['أوبن بوكس', 'Open box']};
 const L = (ar, en) => lang === 'ar' ? ar : en;
+function histLine(p) {  // what this store's price was before (our own price list + earlier searches)
+  if (p.previous_price && p.previous_price > p.price) return `<span class="hist down">${L(`نزل من ${fmt(p.previous_price)} آخر مرة شفناه`, `Down from ${fmt(p.previous_price)} last time we saw it`)}</span>`;
+  if (p.lowest_seen && p.lowest_seen < p.price - 1) return `<span class="hist">${L(`أقل سعر شفناه في المتجر ده: ${fmt(p.lowest_seen)}`, `Lowest we saw at this store: ${fmt(p.lowest_seen)}`)}</span>`;
+  if (p.previous_price && p.previous_price < p.price) return `<span class="hist">${L(`كان ${fmt(p.previous_price)} آخر مرة شفناه`, `Was ${fmt(p.previous_price)} last time we saw it`)}</span>`;
+  return '';
+}
 function card(p, i, rank, turn) {  // i = position in the agent's list (0 = cheapest), rank = position as shown
   const sv = isSaved(p.url);
   return `
@@ -719,6 +727,7 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
           ${p.note ? `<span class="note">${esc(p.note)}</span>` : ''}
           <span class="p">${fmt(p.price)}${p.old_price && p.old_price > p.price ? `<span class="old" title="${L('السعر قبل الخصم', 'Price before the discount')}">${fmt(p.old_price)}</span>` : ''}</span>
           ${p.old_price && p.old_price > p.price ? `<span class="save">${L(`وفّر ${fmt(p.old_price - p.price)}`, `Save ${fmt(p.old_price - p.price)}`)}${p.discount_pct ? ` · ${L('خصم ' + pct(p.discount_pct), pct(p.discount_pct) + ' off')}` : ''}</span>` : ''}
+          ${histLine(p)}
           ${p.coupon_price ? `<span class="coupon">${L(`${fmt(p.coupon_price)} بعد كوبون ${fmt(p.price - p.coupon_price)} عند الدفع`, `${fmt(p.coupon_price)} after a ${fmt(p.price - p.coupon_price)} coupon at checkout`)}</span>` : ''}
           <span class="badges">
             <span class="badge store">${esc(p.store)}</span>

@@ -21,7 +21,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
-from . import db, fetchers, llm, market, trust, websearch
+from . import catalog, db, fetchers, llm, market, trust, websearch
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
@@ -763,6 +763,10 @@ async def _fetch_page(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: st
         raise RobotsDisallowed(fetchers.robots_reason(url))
     async with sem:
         r = await client.get(url, headers=HEADERS, follow_redirects=True, timeout=PAGE_TIMEOUT)
+        if r.status_code == 403:
+            # some stores (Jumia) refuse browser-looking requests but welcome a crawler that says who it is
+            # (their robots.txt asks for that): ask once more under our own crawler name
+            r = await client.get(url, headers=catalog.BOT_HEADERS, follow_redirects=True, timeout=PAGE_TIMEOUT)
     r.raise_for_status()
     try:  # keep the latest copy of each store page so parsing problems can be checked later
         WEB_DEBUG.mkdir(parents=True, exist_ok=True)
@@ -1236,16 +1240,29 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
 
     TIMES["understand"] = round(time.monotonic() - t0, 1)
     want = plan.get("request") or raw
+    # what our own price list (the big stores' category pages, read every day) already has for this request
+    stocked = await asyncio.to_thread(_catalog_offers, web_queries + queries, codes)
+    covered = {trust.domain(p.url) for p in stocked}
+    famous = _famous_sites(plan)
+    searched = web_queries
     if websearch.available():
         source = "web"
         if reqs := [r for r in plan.get("requirements") or [] if isinstance(r, str)]:
             want += " (" + "; ".join(reqs[:6]) + ")"
-        products, errors = await _web_find(web_queries, seed, _famous_sites(plan), want=want,
+        if len(stocked) >= CATALOG_ENOUGH and len(covered) >= 2:
+            # the big stores' offers are already here: one web search round (not 2-3) for the other shops, and
+            # the well-known group's places go to the big stores we don't read ourselves
+            searched = web_queries[:1]
+            famous = [d for d in famous if not any(trust._match(c, d) for c in covered)] or famous
+            log.info("agent: %d offers from our price list (%s): searching the web with %d query instead of %d",
+                     len(stocked), sorted(covered), len(searched), len(web_queries))
+        products, errors = await _web_find(searched, seed, famous, want=want,
                                            named=_domains(plan.get("shopper_stores")))
-        products = _dedupe(products)
+        products = _dedupe(stocked + products)
     else:
         source = "stores"
         products, errors = await _search_all(queries)
+        products = _dedupe(stocked + products)
 
     maxp, minp = plan.get("max_price"), plan.get("min_price")
     if (maxp is not None or minp is not None) and not _states_budget(budget_text or raw):
@@ -1293,7 +1310,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "understood": plan.get("understood", ""),
         "request": plan.get("request") or raw,
         "suggested_products": plan.get("suggested_products") or [],
-        "queries": web_queries if source == "web" else queries,
+        "queries": searched if source == "web" else queries,
+        "from_catalog": len(stocked),
         "requirements": plan.get("requirements", []),
         "options": options,
         "max_price": maxp, "min_price": minp,
@@ -1519,6 +1537,30 @@ async def recheck(payload: dict) -> dict:
             "unchecked": unchecked + [u for u in payload.get("unchecked") or [] if u not in unchecked],
             "count": len(shown), "summary": _honest_summary(payload.get("summary", ""), shown),
             "sold_out_dropped": (payload.get("sold_out_dropped") or 0) + gone}
+
+
+CATALOG_ENOUGH = 6  # offers from our own price list (in 2+ stores) that make one web search round enough
+CATALOG_MAX = 15     # at most this many of them go to the judge (the web's shops need room too)
+_LATIN_WORD = re.compile(r"[a-z0-9][a-z0-9+-]*[a-z0-9+]|[a-z0-9]")
+
+
+def _catalog_offers(queries: list[str], codes: list[str]) -> list[Product]:
+    """Our price list's products that fit the request's words, best fit first (see catalog.offers). The list is
+    read from the stores' English pages: the model numbers and the Latin words of the searches find them."""
+    words: list[str] = []
+    for text in codes + queries:
+        for w in _LATIN_WORD.findall(str(text).lower()):
+            if w not in _SEARCH_NOISE and (len(w) >= 3 or any(c.isdigit() for c in w)) and w not in words:
+                words.append(w)
+    if not words:
+        return []
+    # the rarest words first: a model number ("a55", "15") or a brand finds the product, "phone" finds everything
+    words.sort(key=lambda w: (not any(c.isdigit() for c in w), -len(w)))
+    pool = _db_safe(catalog.offers, words[:6]) or []
+    if not pool:
+        return []
+    picked = _fallback_pick(pool, codes + queries)
+    return sorted(picked[:CATALOG_MAX], key=_paid)
 
 
 _SEARCH_NOISE = {"price", "prices", "egypt", "سعر", "اسعار", "أسعار", "مصر", "في", "من", "the", "and", "for", "with",

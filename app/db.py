@@ -139,7 +139,22 @@ CREATE TABLE IF NOT EXISTS events (
     results INTEGER,                    -- turn: results shown (search), click: its place in the list (0 = first)
     cached INTEGER                      -- turn: 1 = answered from the price database
 );
-CREATE INDEX IF NOT EXISTS events_at ON events (kind, at)
+CREATE INDEX IF NOT EXISTS events_at ON events (kind, at);
+-- our own price list: the big stores' category pages read on a schedule (app/catalog.py). Latest row per product page,
+-- every price change also goes to `prices`, which keeps the history.
+CREATE TABLE IF NOT EXISTS catalog (
+    url TEXT PRIMARY KEY,               -- the product page: one product at one store
+    market TEXT NOT NULL,
+    category TEXT NOT NULL,             -- phones / tvs / ... (catalog.CATEGORIES)
+    store TEXT NOT NULL,
+    title TEXT NOT NULL,
+    price {FLOAT} NOT NULL,             -- as the store's own listing showed it at seen_at
+    old_price {FLOAT},
+    image TEXT NOT NULL,
+    first_seen {FLOAT} NOT NULL,
+    seen_at {FLOAT} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS catalog_seen ON catalog (market, seen_at)
 """
 # columns added after a table first went live (CREATE TABLE IF NOT EXISTS doesn't add them to an existing table)
 _ADDED_COLUMNS = ["ALTER TABLE watches ADD COLUMN wanted TEXT NOT NULL DEFAULT ''"]
@@ -329,6 +344,38 @@ def add_price_context(results: list[dict]) -> None:
         prev = last.get(r["url"])
         r["lowest_seen"] = lowest.get(r["url"])
         r["previous_price"] = prev[0] if prev and prev[0] != r.get("price") else None
+
+
+def save_catalog(rows: list[dict], market: str, category: str) -> int:
+    """Products just read from a store's category page: the latest price per page, plus the price history."""
+    now = time.time()
+    rows = [r for r in rows if r.get("url") and r.get("price") and r.get("title")]
+    rows = list({r["url"]: r for r in rows}.values())
+    _db.run_many("INSERT INTO catalog (url, market, category, store, title, price, old_price, image, first_seen, seen_at) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (url) DO UPDATE SET market = excluded.market, "
+                 "category = excluded.category, store = excluded.store, title = excluded.title, price = excluded.price, "
+                 "old_price = excluded.old_price, image = excluded.image, seen_at = excluded.seen_at",
+                 [(r["url"], market, category, r.get("store") or "", r["title"][:300], r["price"], r.get("old_price"),
+                   (r.get("image") or "")[:1000], now, now) for r in rows])
+    record_prices(rows, market)
+    return len(rows)
+
+
+def catalog_like(words: list[str], market: str, since: float, limit: int = 300) -> list[dict]:
+    """Catalog products seen since `since` whose title has any of these words (the caller ranks them)."""
+    words = [w.lower() for w in words if w][:6]
+    if not words:
+        return []
+    like = " OR ".join("LOWER(title) LIKE ?" for _ in words)
+    rows = _db.run(f"SELECT url, store, title, price, old_price, image, category, seen_at FROM catalog "
+                   f"WHERE market = ? AND seen_at > ? AND ({like}) ORDER BY seen_at DESC LIMIT ?",
+                   (market, since, *[f"%{w}%" for w in words], limit))
+    return [dict(zip(("url", "store", "title", "price", "old_price", "image", "category", "seen_at"), r)) for r in rows]
+
+
+def catalog_stats(market: str, since: float) -> list[dict]:
+    return _rows("SELECT store, category, COUNT(*), MAX(seen_at) FROM catalog WHERE market = ? AND seen_at > ? "
+                 "GROUP BY store, category ORDER BY 1, 2", (market, since), "store category n last")
 
 
 BLOCK_DAYS = 7  # a skipped site is tried again after this (sites change, and a block may have been a bad week)

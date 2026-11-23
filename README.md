@@ -53,6 +53,7 @@ request ──► understand (LLM) ──► web search ──► open store pag
 | Trust | `app/trust.py` | Known retailers + a page-signal score for everyone else; drops foreign stores and price-comparison sites |
 | LLM client | `app/llm.py` | Gemini, Groq, Mistral, NVIDIA, Cloudflare and OpenRouter free tiers; picks live models, rests busy ones, remembers daily quotas across restarts |
 | Price DB | `app/db.py` | SQLite: request cache, price history (`GET /api/history?url=`), and sites whose pages never open, which later searches skip (`python -m scripts.blocked_sites`) |
+| Our price list | `app/catalog.py` | Twice a day the big stores' category pages (phones first: Amazon.eg, noon, Jumia) are read into the database. Searches take those offers as candidates and need one web-search round instead of two or three; every result is still opened on its own page before it's shown |
 | Country config | `app/market.py` | Currency, local domains and stores per market (`MARKET=EG`, Saudi Arabia and UAE prepared) |
 
 ## Tech stack
@@ -97,6 +98,7 @@ average request from 55 s to 40 s while the average number of matching results w
 | `GET` / `POST` / `DELETE` | `/api/watches` | Followed products (`POST {url, title, store, price}`) |
 | `GET` | `/api/notifications` | The shopper's notifications (`POST /api/notifications/seen` marks them read) |
 | `POST` | `/api/cron/check-watches` | Re-check followed prices (header `X-Cron-Secret`), run by `.github/workflows/check-watches.yml` |
+| `POST` | `/api/cron/scrape` | Read the stores' category pages into our price list (header `X-Cron-Secret`, `?store=jumia.com.eg`), run by `.github/workflows/scrape-prices.yml` |
 | `POST` | `/api/report` | "This result is wrong" from a visitor: `{reason, request, url, store, title, price}`; review with `python -m scripts.reports` |
 | `POST` | `/api/event` | Usage counting from the page: a visit (`{kind: "visit", source, mobile}`) or a store link opened (`{kind: "click", url, store, title, price, request, rank}`) |
 | `GET` | `/admin` | The owner's private dashboard (visitors, what they ask, which stores they open), behind `ADMIN_PASSWORD` |
@@ -138,7 +140,9 @@ don't count, and visitors are only stored as a salted hash of their IP.
 ## Respecting stores
 
 The agent only reads public product pages, honours robots.txt for anything fetched through a reader service, and
-doesn't try to get around bot protection. Stores that block automated access (e.g. Jumia's search) are meant to be
+doesn't try to get around bot protection. The scheduled price list reader (`app/catalog.py`) calls itself
+`DealHunterBot` with a link to `/bot`, obeys robots.txt, reads one page at a time per store with a pause, and skips a
+store that refuses it. Stores that block automated access (e.g. Jumia's search) are meant to be
 added through their official affiliate programs.
 
 ## Roadmap
