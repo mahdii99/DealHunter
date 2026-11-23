@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 import hashlib
 import hmac
 import io
@@ -34,7 +35,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, admin, affiliate, agent, catalog, db, deals, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, affiliate, agent, catalog, coupons, db, deals, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -132,7 +133,7 @@ def robots(request: Request):
 
 @app.get("/sitemap.xml")
 def sitemap(request: Request):
-    urls = "".join(f"<url><loc>{_site(request)}{p}</loc></url>" for p in ("/", "/deals", "/privacy"))
+    urls = "".join(f"<url><loc>{_site(request)}{p}</loc></url>" for p in ("/", "/deals", "/coupons", "/privacy"))
     return Response('<?xml version="1.0" encoding="UTF-8"?>'
                     f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>',
                     media_type="application/xml")
@@ -557,6 +558,57 @@ async def admin_stats(request: Request, days: int = Query(7, ge=1, le=db.EVENTS_
     for row in stats.get("stores", []):  # which stores can pay us for these clicks (AFFILIATE_TAGS)
         row["affiliate"] = affiliate.store_has_code(row.get("store") or "")
     return JSONResponse(stats, headers=NO_INDEX)
+
+
+class CouponIn(BaseModel):
+    store: str = Field(min_length=3, max_length=120)          # the store's domain or any page of it
+    code: str = Field("", max_length=60)                      # '' = the link gives the discount by itself
+    title: str = Field(min_length=3, max_length=200)
+    link: str = Field(min_length=10, max_length=1000)
+    where: str = Field(min_length=2, max_length=80)           # where the code came from: "ArabClicks", "صفحة نون"
+    expires: str = Field("", max_length=10)                   # YYYY-MM-DD, last day it works (Cairo)
+
+
+def _need_admin(request: Request) -> None:
+    if not admin.is_admin(request.cookies.get(admin.COOKIE)):
+        raise HTTPException(401, "sign in")
+
+
+@app.get("/api/admin/coupons")
+def admin_coupons(request: Request):
+    _need_admin(request)
+    return JSONResponse({"coupons": db.all_coupons(market.current().code), "now": time.time()}, headers=NO_INDEX)
+
+
+@app.post("/api/admin/coupons")
+def admin_add_coupon(body: CouponIn, request: Request):
+    """The owner adds a code from a legitimate source (a network's offer, the store's own page)."""
+    _need_admin(request)
+    store = coupons.domain_of(body.store)
+    if "." not in store:
+        raise HTTPException(400, "store: write its address, like noon.com")
+    if not body.link.startswith("https://") or not urlparse(body.link).hostname:
+        raise HTTPException(400, "link must start with https://")
+    ends = None
+    if body.expires:
+        try:
+            day = time.strptime(body.expires, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, "expires: YYYY-MM-DD")
+        ends = calendar.timegm(day) + 86400 - 2 * 3600  # end of that day in Cairo (UTC+2)
+        if ends <= time.time():
+            raise HTTPException(400, "that date has passed")
+    db.add_coupon(market.current().code, store, body.code.strip(), " ".join(body.title.split()), body.link.strip(),
+                  "owner:" + " ".join(body.where.split()), ends)
+    return {"ok": True}
+
+
+@app.delete("/api/admin/coupons/{coupon_id}")
+def admin_delete_coupon(coupon_id: int, request: Request):
+    _need_admin(request)
+    if not db.delete_coupon(coupon_id):
+        raise HTTPException(404)
+    return {"ok": True}
 
 
 # Store images are loaded through us, shrunk to a thumbnail: some stores block their images on other sites, and the
@@ -986,6 +1038,28 @@ async def build_deals(request: Request):
     return {k: v for k, v in got.items() if k != "deals"} | {"deals": len(got["deals"])}
 
 
+@app.post("/api/cron/coupons")
+async def refresh_coupons(request: Request):
+    """Reads the affiliate networks' coupon feeds again (app/coupons.py). Run by scrape-prices.yml."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    return await coupons.refresh()
+
+
+@app.get("/api/coupons")
+async def coupons_api():
+    return {"coupons": await _db(coupons.current, default=[])}
+
+
+@app.get("/coupons")
+async def coupons_page(request: Request):
+    """Store promo codes, only from a network or the store itself (app/coupons.py)."""
+    got = await _db(coupons.current, default=[])
+    return Response(_coupons_html(got or [], _site(request)), media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=600"})
+
+
 @app.get("/api/deals")
 async def deals_api():
     return await _db(deals.current, default={"checked_at": None, "deals": []})
@@ -1003,61 +1077,133 @@ def _money(n: float) -> str:
     return f"{n:,.0f} ج.م"
 
 
+def _chips(name: str, label: str, options: list[tuple[str, str]]) -> str:
+    """A row of filter buttons (the page works without them: every card is shown until one is pressed)."""
+    from html import escape as e
+    if len(options) < 2:
+        return ""
+    buttons = "".join(f'<button type="button" data-v="{e(v)}" aria-pressed="false">{e(t)}</button>' for v, t in options)
+    return (f'<div class="chips" data-f="{name}" role="group" aria-label="{e(label)}">'
+            f'<button type="button" data-v="" aria-pressed="true">الكل</button>{buttons}</div>')
+
+
 def _deals_html(got: dict, site: str) -> str:
     from html import escape as e
     from urllib.parse import quote
-    cards = []
+    cards, stores, cats = [], {}, {}
     for d in got.get("deals") or []:
-        why = (f"أرخص من أقل سعر شفناه له في آخر 30 يوم ({_money(d['was'])})" if d["kind"] == "drop"
-               else f"خصم المتجر: كان {_money(d['was'])} حسب المتجر")
-        img = (f'<img src="/img?u={quote(d["image"], safe="")}" alt="" width="96" height="96" loading="lazy" '
-               f'referrerpolicy="no-referrer">' if d.get("image") else '<span class="ph"></span>')
+        dom = coupons.domain_of(d["url"])
+        stores[dom] = coupons.store_name(dom) if dom in coupons.STORE_NAMES else d["store"]
+        cats[d["category"]] = deals.category_name(d["category"])
+        why = ("أرخص سعر ليه في 30 يوم" if d["kind"] == "drop" else "خصم المتجر نفسه")
+        img = (f'<img src="/img?u={quote(d["image"], safe="")}" alt="" loading="lazy" referrerpolicy="no-referrer">'
+               if d.get("image") else "")
         cards.append(
-            f'<a class="deal" href="{e(affiliate.link(d["url"]))}" target="_blank" rel="noopener nofollow sponsored">'
-            f'{img}<span class="info"><span class="t" dir="auto">{e(d["title"])}</span>'
-            f'<span class="p">{_money(d["price"])} <s>{_money(d["was"])}</s> <b class="pct">-{d["pct"]}%</b></span>'
+            f'<a class="deal" data-store="{e(dom)}" data-cat="{e(d["category"])}" href="{e(affiliate.link(d["url"]))}" '
+            f'target="_blank" rel="noopener nofollow sponsored"><span class="pic">{img}'
+            f'<b class="pct">-{d["pct"]}%</b><span class="ok">✓ السعر متأكد منه</span></span>'
+            f'<span class="t" dir="auto">{e(d["title"])}</span>'
+            f'<span class="p">{_money(d["price"])}</span><s>{_money(d["was"])}</s>'
             f'<span class="why{" real" if d["kind"] == "drop" else ""}">{e(why)}</span>'
-            f'<span class="tags"><span class="tag">{e(d["store"])}</span><span class="tag">'
-            f'{e(deals.category_name(d["category"]))}</span><span class="tag ok">متوفر، اتأكدنا</span></span></span></a>')
+            f'<span class="st">{e(stores[dom])}</span></a>')
     when = got.get("checked_at")
-    body = ("".join(cards) if cards else
+    body = (f'<div class="grid">{"".join(cards)}</div>' if cards else
             '<p class="empty">لسه مفيش عروض متأكدين منها النهارده. بنراجع الأسعار مرتين في اليوم، ارجع كمان شوية '
             'أو <a href="/">دوّر على اللي انت عايزه</a>.</p>')
-    stamp = (f'<p class="when">الأسعار دي اتأكدنا منها من صفحة كل متجر <span data-ts="{when:.0f}"></span>. '
-             'الأسعار بتتغير، فاتأكد من السعر في صفحة المتجر قبل ما تطلب.</p>' if when else "")
-    return DEALS_PAGE.replace("{SITE}", site).replace("{STAMP}", stamp).replace("{BODY}", body)
+    filters = (_chips("store", "المتجر", sorted(stores.items(), key=lambda x: x[1])) +
+               _chips("cat", "القسم", sorted(cats.items(), key=lambda x: x[1])))
+    stamp = (f'<p class="when">فتحنا صفحة كل عرض في المتجر وتأكدنا من سعره وإنه متوفر <span data-ts="{when:.0f}"></span>. '
+             'الأسعار بتتغير، فبص على السعر في صفحة المتجر قبل ما تطلب.</p>' if when else "")
+    return (_shell("deals", site).replace("{TITLE}", "أحسن العروض النهارده في مصر: موبايلات وأجهزة بخصم حقيقي | Easy Found")
+            .replace("{DESC}", "عروض النهارده من أمازون وجوميا: موبايلات وشاشات وأجهزة نزل سعرها فعلاً عن آخر 30 يوم، "
+                               "واتأكدنا من سعر كل واحد في صفحة المتجر.")
+            .replace("{H1}", "أحسن العروض النهارده")
+            .replace("{LEAD}", "منتجات نزل سعرها فعلاً عن أقل سعر شفناه في آخر 30 يوم، وبعدها خصومات المتاجر الكبيرة.")
+            .replace("{BODY}", stamp + filters + body))
+
+
+def _coupons_html(rows: list[dict], site: str) -> str:
+    from html import escape as e
+    cards, stores = [], {}
+    for c in rows:
+        stores[c["store"]] = c["store_name"]
+        ends = (f'<span data-day="{c["expires_at"]:.0f}"></span>' if c.get("expires_at") else "")
+        code = (f'<button type="button" class="code" data-code="{e(c["code"])}" aria-label="انسخ الكود {e(c["code"])}">'
+                f'<span dir="ltr">{e(c["code"])}</span><small>انسخ</small></button>' if c["code"] else
+                '<span class="nocode">من غير كود: الخصم بيتطبق من اللينك</span>')
+        cards.append(
+            f'<div class="coupon" data-store="{e(c["store"])}"><div class="ch"><b>{e(c["store_name"])}</b>{ends}</div>'
+            f'<p class="t" dir="auto">{e(c["title"])}</p>{code}'
+            f'<a class="go" href="{e(c["link"])}" target="_blank" rel="noopener nofollow sponsored">افتح {e(c["store_name"])}</a>'
+            f'<span class="src">{e(c["from"])}</span></div>')
+    body = (f'<div class="cgrid">{"".join(cards)}</div>' if cards else
+            '<p class="empty">مفيش أكواد خصم شغالة دلوقتي. بنحط هنا بس الأكواد اللي جاية من المتجر نفسه أو من شبكة '
+            'التسويق الرسمية بتاعته، عشان كل كود تلاقيه يكون شغال فعلاً. بص على <a href="/deals">عروض النهارده</a>.</p>')
+    note = ('<p class="when">كل كود هنا جاي من المتجر نفسه أو من شبكة التسويق الرسمية بتاعته (مكتوب تحت كل كود). '
+            'المتجر ممكن يوقف الكود قبل ميعاده أو يحط له شروط، فاقرا الشروط في صفحة الدفع.</p>' if cards else "")
+    return (_shell("coupons", site).replace("{TITLE}", "أكواد خصم شغالة لنون وأمازون وجوميا | Easy Found")
+            .replace("{DESC}", "أكواد خصم وكوبونات من المتاجر نفسها أو شبكاتها الرسمية: نون وأمازون مصر وجوميا وغيرهم. "
+                               "مفيش كود منتهي.")
+            .replace("{H1}", "أكواد الخصم")
+            .replace("{LEAD}", "انسخ الكود وافتح المتجر، وحطه في صفحة الدفع.")
+            .replace("{BODY}", note + _chips("store", "المتجر", sorted(stores.items(), key=lambda x: x[1])) + body))
+
+
+def _shell(page: str, site: str) -> str:
+    tabs = "".join(f'<a href="/{k}"{" aria-current=page" if k == page else ""}>{t}</a>'
+                   for k, t in (("deals", "🔥 العروض"), ("coupons", "🏷️ أكواد الخصم")))
+    return DEALS_PAGE.replace("{SITE}", site).replace("{PAGE}", page).replace("{TABS}", tabs)
 
 
 DEALS_PAGE = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>أحسن العروض النهارده في مصر: موبايلات وأجهزة بخصم حقيقي | Easy Found</title>
-<meta name="description" content="عروض النهارده من أمازون وجوميا: موبايلات وشاشات وأجهزة نزل سعرها فعلاً عن آخر 30 يوم، واتأكدنا من سعر كل واحد في صفحة المتجر.">
-<link rel="canonical" href="{SITE}/deals"><link rel="icon" href="/logo.svg?v=2" type="image/svg+xml">
+<title>{TITLE}</title>
+<meta name="description" content="{DESC}">
+<link rel="canonical" href="{SITE}/{PAGE}"><link rel="icon" href="/logo.svg?v=2" type="image/svg+xml">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#F4F7F6;--card:#fff;--text:#13221F;--muted:#56665F;--border:#DCE4E1;--accent:#0F766E;--deal:#B93A0A;--deal-soft:#FDEBE1;--soft:#DDF1EC;--ink:#0B5F58}
-@media (prefers-color-scheme:dark){:root{--bg:#0C1312;--card:#141F1D;--text:#E6EEEC;--muted:#9DAEA9;--border:#263633;--accent:#2DD4BF;--deal:#FDBA74;--deal-soft:#3A2112;--soft:#103A35;--ink:#5EEAD4}}
+:root{--bg:#F4F7F6;--card:#fff;--text:#13221F;--muted:#56665F;--border:#DCE4E1;--accent:#0F766E;--on:#fff;--deal:#B93A0A;--deal-bg:#C2410C;--soft:#DDF1EC;--ink:#0B5F58;--ok:#047857}
+@media (prefers-color-scheme:dark){:root{--bg:#0C1312;--card:#141F1D;--text:#E6EEEC;--muted:#9DAEA9;--border:#263633;--accent:#2DD4BF;--on:#04221F;--deal:#FDBA74;--deal-bg:#C2410C;--soft:#103A35;--ink:#5EEAD4;--ok:#047857}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 "IBM Plex Sans Arabic",system-ui,Tahoma,sans-serif}
-main{max-width:760px;margin:0 auto;padding:20px 16px 48px}header{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-header a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:8px;font-weight:700}
-h1{font-size:24px;margin:12px 0 4px}.lead,.when{color:var(--muted);margin:0 0 14px}.when{font-size:13px}
-.deal{display:flex;gap:12px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px;margin-bottom:10px;color:inherit;text-decoration:none}
-.deal:hover{border-color:var(--accent)}.deal img,.ph{width:96px;height:96px;object-fit:contain;border-radius:10px;background:#fff;flex:none}
-.info{display:flex;flex-direction:column;gap:4px;min-width:0}.t{font-weight:600;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.p{font-size:18px;font-weight:700}.p s{font-size:13px;color:var(--muted);font-weight:400}.pct{color:var(--deal);font-size:14px}
-.why{font-size:13px;color:var(--muted)}.why.real{color:var(--deal);font-weight:600}
-.tags{display:flex;flex-wrap:wrap;gap:6px}.tag{font-size:12px;background:var(--soft);color:var(--ink);padding:1px 8px;border-radius:6px}
-.cta{display:inline-block;margin:6px 0 18px;background:var(--accent);color:#fff;padding:8px 16px;border-radius:10px;text-decoration:none;font-weight:600}
-.empty{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px}a{color:var(--accent)}
+main{max-width:1080px;margin:0 auto;padding:16px 16px 48px}header{display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px;margin-bottom:6px}
+header>a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:8px;font-weight:700}
+nav.tabs{display:flex;gap:6px;margin-inline-start:auto}nav.tabs a{padding:6px 14px;border-radius:999px;text-decoration:none;color:var(--text);border:1px solid var(--border);background:var(--card);font-weight:600;font-size:14px}
+nav.tabs a[aria-current]{background:var(--accent);color:var(--on);border-color:var(--accent)}
+h1{font-size:24px;margin:10px 0 2px}.lead,.when{color:var(--muted);margin:0 0 12px}.when{font-size:13px}
+.chips{display:flex;gap:6px;overflow-x:auto;padding:2px 0 8px;scrollbar-width:none}.chips button{flex:none;height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--border);background:var(--card);color:var(--text);font:inherit;font-size:14px;cursor:pointer}
+.chips button[aria-pressed=true]{background:var(--soft);border-color:var(--accent);color:var(--ink);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:4px}
+.deal{display:flex;flex-direction:column;gap:2px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:8px;color:inherit;text-decoration:none;min-width:0}
+.deal:hover{border-color:var(--accent)}.pic{position:relative;display:block;aspect-ratio:1;background:#fff;border-radius:10px;overflow:hidden;margin-bottom:6px}
+.pic img{width:100%;height:100%;object-fit:contain}.pct{position:absolute;top:6px;inset-inline-start:6px;background:var(--deal-bg);color:#fff;font-size:13px;padding:1px 8px;border-radius:8px}
+.ok{position:absolute;bottom:6px;inset-inline-start:6px;background:var(--ok);color:#fff;font-size:11.5px;padding:1px 8px;border-radius:8px}
+.t{font-weight:600;font-size:14px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.p{font-size:17px;font-weight:700}.deal s{font-size:13px;color:var(--muted)}
+.why{font-size:12.5px;color:var(--muted)}.why.real{color:var(--deal);font-weight:600}.st{font-size:12.5px;color:var(--ink)}
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.coupon{display:flex;flex-direction:column;gap:8px;background:var(--card);border:1px dashed var(--accent);border-radius:14px;padding:14px}
+.ch{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--muted)}.ch b{color:var(--text);font-size:16px}
+.coupon .t{margin:0;-webkit-line-clamp:3}.code{display:flex;justify-content:space-between;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;background:var(--soft);color:var(--ink);padding:8px 12px;font:700 17px/1.2 ui-monospace,monospace;cursor:pointer}
+.code small{font:600 13px "IBM Plex Sans Arabic",system-ui,sans-serif}.nocode{font-size:13px;color:var(--muted)}
+.go{text-align:center;background:var(--accent);color:var(--on);padding:8px;border-radius:10px;text-decoration:none;font-weight:600}.src{font-size:12px;color:var(--muted)}
+.empty{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px}a{color:var(--accent)}[hidden]{display:none!important}
+.cta{display:inline-block;margin:16px 0 0;color:var(--accent);font-weight:600}
 </style></head><body><main>
-<header><a href="/"><img src="/logo.svg?v=2" width="32" height="32" alt="">Easy Found</a></header>
-<h1>أحسن العروض النهارده</h1>
-<p class="lead">منتجات نزل سعرها فعلاً عن أقل سعر شفناه في آخر 30 يوم، وبعدها خصومات المتاجر الكبيرة. كل عرض فتحنا صفحته في المتجر وتأكدنا إنه متوفر بالسعر ده.</p>
-<a class="cta" href="/">دوّر على أرخص سعر لأي حاجة</a>
-{STAMP}{BODY}
+<header><a href="/"><img src="/logo.svg?v=2" width="32" height="32" alt="">Easy Found</a><nav class="tabs">{TABS}</nav></header>
+<h1>{H1}</h1><p class="lead">{LEAD}</p>
+{BODY}
+<a class="cta" href="/">مش لاقي اللي عايزه؟ دوّر على أرخص سعر لأي حاجة ←</a>
 </main><script>
 document.querySelectorAll('[data-ts]').forEach(function(el){var d=new Date(el.dataset.ts*1000);
 el.textContent='الساعة '+d.toLocaleTimeString('ar-EG',{hour:'numeric',minute:'2-digit'})+' يوم '+d.toLocaleDateString('ar-EG',{weekday:'long'});});
+document.querySelectorAll('[data-day]').forEach(function(el){var d=new Date(el.dataset.day*1000-1);
+el.textContent='لحد '+d.toLocaleDateString('ar-EG',{day:'numeric',month:'long',timeZone:'Africa/Cairo'});});
+var picked={};
+document.querySelectorAll('.chips').forEach(function(row){row.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;
+row.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false');});picked[row.dataset.f]=b.dataset.v;
+document.querySelectorAll('.deal,.coupon').forEach(function(c){c.hidden=Object.keys(picked).some(function(k){return picked[k]&&c.dataset[k]!==picked[k];});});});});
+document.addEventListener('click',function(e){var b=e.target.closest('.code');if(!b)return;var s=b.querySelector('small');
+(navigator.clipboard?navigator.clipboard.writeText(b.dataset.code):Promise.reject()).then(function(){s.textContent='اتنسخ ✓';},function(){s.textContent='انسخه بإيدك';});});
 </script></body></html>"""
 
 

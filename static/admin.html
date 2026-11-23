@@ -66,6 +66,9 @@
                  padding:0 12px; font:inherit; margin:12px 0; }
   .err { color:var(--bad); font-size:13px; min-height:20px; }
   .note { background:var(--card2); border-radius:12px; padding:12px 14px; font-size:13.5px; }
+  .cform { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:8px; align-items:center; margin:10px 0 4px; }
+  .cform input { height:40px; border-radius:10px; border:1px solid var(--border2); background:var(--card); color:var(--text); padding:0 10px; font:inherit; font-size:14px; min-width:0; }
+  .cform .w2 { grid-column:span 2; } @media (max-width:520px) { .cform .w2 { grid-column:auto; } }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -116,6 +119,21 @@
       <section class="card wide"><h2>آخر نشاط</h2><p class="muted">كل زائر ليه كود قصير (من بصمة مشفرة للـ IP) عشان تعرف مين عمل إيه من غير ما نعرف هو مين.</p><div class="scroll" id="recent"></div></section>
       <section class="card"><h2>آخر الشكاوى والمقترحات</h2><div class="scroll" id="feedback"></div></section>
       <section class="card"><h2>آخر بلاغات «النتيجة دي غلط؟»</h2><div class="scroll" id="reports"></div></section>
+      <section class="card wide" id="couponsCard"><h2>أكواد الخصم (صفحة <a href="/coupons" target="_blank">/coupons</a>)</h2>
+        <p class="muted">حط هنا بس كود جالك من شبكة التسويق (ArabClicks وBoostiny وDCM بيبعتوها في لوحتهم أو على الإيميل) أو كود المتجر نفسه كاتبه في موقعه.
+          متنقلش أكواد من مواقع كوبونات تانية: مش بتاعتنا ومش عارفين إذا كانت شغالة. أكواد Admitad بتيجي لوحدها لو حطيت <code>ADMITAD_CLIENT_ID</code> و<code>ADMITAD_CLIENT_SECRET</code> و<code>ADMITAD_WEBSITE_ID</code> على Render.</p>
+        <form id="couponForm" class="cform">
+          <input name="store" placeholder="المتجر (noon.com)" required maxlength="120">
+          <input name="code" placeholder="الكود (فاضي لو اللينك بيطبق الخصم)" maxlength="60" dir="ltr">
+          <input name="title" placeholder="بيدي إيه؟ (10% على الإلكترونيات لحد 300 ج.م)" required maxlength="200" class="w2">
+          <input name="link" placeholder="اللينك (لينك الشبكة بتاعك أو صفحة المتجر) https://..." required maxlength="1000" dir="ltr" class="w2">
+          <input name="where" placeholder="جاي منين؟ (ArabClicks / صفحة نون)" required maxlength="80">
+          <label class="muted">آخر يوم <input name="expires" type="date"></label>
+          <button class="btn primary" type="submit">ضيف الكود</button>
+        </form>
+        <p class="err" id="couponErr"></p>
+        <div class="scroll" id="couponList"></div>
+      </section>
       <section class="card wide note">
         <b>هتعرف إزاي إن حد اشترى؟</b> الموقع بيشوف لحد ما الزائر يضغط على لينك المتجر بس، وده اللي في الجداول فوق.
         الشرا نفسه بيحصل في موقع المتجر، فالمتجر بس هو اللي يعرفه. الحل إنك تشترك في برنامج التسويق بالعمولة
@@ -289,6 +307,7 @@ async function load() {
   data = await r.json();
   $('#login').hidden = true; $('#dash').hidden = false;
   draw();
+  loadCoupons();
 }
 
 $('#login').addEventListener('submit', async e => {
@@ -302,6 +321,34 @@ $('#login').addEventListener('submit', async e => {
 $('#days').addEventListener('change', load);
 $('#refresh').addEventListener('click', load);
 $('#logout').addEventListener('click', async () => { await fetch('/api/admin/logout', {method: 'POST'}).catch(() => {}); location.reload(); });
+async function loadCoupons() {
+  const r = await fetch('/api/admin/coupons').catch(() => null);
+  if (!r || !r.ok) return;
+  const {coupons, now} = await r.json();
+  $('#couponList').innerHTML = table(coupons, [
+    ['المتجر', c => `<td>${esc(c.store)}</td>`],
+    ['الكود', c => `<td dir="ltr"><b>${esc(c.code) || '<span class="muted">من غير كود</span>'}</b></td>`],
+    ['بيدي إيه', c => `<td class="t" dir="auto"><a href="${safeUrl(c.link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(c.title)}</a></td>`],
+    ['منين', c => `<td><span class="pill">${c.source === 'admitad' ? 'Admitad (لوحده)' : esc(c.source.replace(/^owner:/, ''))}</span></td>`],
+    ['لحد', c => `<td class="n">${c.expires_at ? (c.expires_at < now ? '<span class="pill warn">خلص</span>' : when(c.expires_at)) : '<span class="muted">مش محدد</span>'}</td>`],
+    ['', c => `<td>${c.source === 'admitad' ? '' : `<button class="btn" type="button" data-del="${c.id}">امسح</button>`}</td>`]], 'مفيش أكواد لسه.');
+}
+$('#couponForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('#couponErr').textContent = '';
+  const body = Object.fromEntries(new FormData(e.target));
+  const r = await fetch('/api/admin/coupons', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).catch(() => null);
+  if (r && r.ok) { e.target.reset(); return loadCoupons(); }
+  const why = r ? (await r.json().catch(() => ({}))).detail : 'مفيش اتصال';
+  $('#couponErr').textContent = 'متضافش: ' + (typeof why === 'string' ? why : 'اتأكد من الخانات (اللينك لازم يبدأ بـ https://)');
+});
+$('#couponList').addEventListener('click', async e => {
+  const b = e.target.closest('[data-del]');
+  if (!b) return;
+  b.disabled = true;
+  await fetch('/api/admin/coupons/' + b.dataset.del, {method: 'DELETE'}).catch(() => {});
+  loadCoupons();
+});
 let resizeT; addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (data) drawChart(); }, 150); });
 $('#metricTabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { metric = b.dataset.m; drawChart(); } });
 load().catch(() => { $('#login').hidden = false; });

@@ -154,7 +154,22 @@ CREATE TABLE IF NOT EXISTS catalog (
     first_seen {FLOAT} NOT NULL,
     seen_at {FLOAT} NOT NULL
 );
-CREATE INDEX IF NOT EXISTS catalog_seen ON catalog (market, seen_at)
+CREATE INDEX IF NOT EXISTS catalog_seen ON catalog (market, seen_at);
+-- store promo codes (app/coupons.py): only from an affiliate network's feed or added by the owner from the store
+-- itself / a network's offer page. `source` says which, and the page shows it.
+CREATE TABLE IF NOT EXISTS coupons (
+    id {ID},
+    market TEXT NOT NULL,
+    store TEXT NOT NULL,                -- the store's domain: noon.com, amazon.eg, ...
+    code TEXT NOT NULL,                 -- '' = a discount that needs no code (the link applies it)
+    title TEXT NOT NULL,                -- what it gives: "10% off electronics, up to 300 EGP"
+    link TEXT NOT NULL,                 -- where the shopper uses it (a network's tracking link or the store page)
+    source TEXT NOT NULL,               -- admitad / owner:<where it came from>
+    ext_id TEXT NOT NULL DEFAULT '',    -- the feed's own id, so a re-read replaces instead of adding twice
+    expires_at {FLOAT},                 -- NULL = the source gave no end date
+    added_at {FLOAT} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS coupons_market ON coupons (market, store)
 """
 # columns added after a table first went live (CREATE TABLE IF NOT EXISTS doesn't add them to an existing table)
 _ADDED_COLUMNS = ["ALTER TABLE watches ADD COLUMN wanted TEXT NOT NULL DEFAULT ''"]
@@ -554,3 +569,40 @@ def usage_stats(days: int, tz_minutes: int = 0, top: int = 25) -> dict:
             "accounts": accounts, "feedback": feedback, "reports": reports,
             "problems": problems, "problem_log": problem_log,
             "blocked_sites": _db.run("SELECT COUNT(*) FROM blocked_sites WHERE blocked = 1")[0][0]}
+
+
+# ---------- store promo codes (app/coupons.py) ----------
+_COUPON_NAMES = "id store code title link source expires_at added_at"
+_COUPON_COLS = ", ".join(_COUPON_NAMES.split())
+
+
+def add_coupon(market: str, store: str, code: str, title: str, link: str, source: str,
+               expires_at: float | None, ext_id: str = "") -> None:
+    _db.run("INSERT INTO coupons (market, store, code, title, link, source, ext_id, expires_at, added_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (market, store, code, title, link, source, ext_id, expires_at, time.time()))
+
+
+def replace_feed_coupons(market: str, source: str, rows: list[dict]) -> None:
+    """A network's whole list, read again: what it no longer lists is gone (ended or withdrawn)."""
+    _db.run("DELETE FROM coupons WHERE market = ? AND source = ?", (market, source))
+    now = time.time()
+    _db.run_many("INSERT INTO coupons (market, store, code, title, link, source, ext_id, expires_at, added_at) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 [(market, r["store"], r["code"], r["title"], r["link"], source, r.get("ext_id", ""),
+                   r.get("expires_at"), now) for r in rows])
+
+
+def live_coupons(market: str, now: float | None = None) -> list[dict]:
+    now = now or time.time()
+    return _rows(f"SELECT {_COUPON_COLS} FROM coupons WHERE market = ? AND (expires_at IS NULL OR expires_at > ?) "
+                 "ORDER BY store, added_at DESC", (market, now), _COUPON_NAMES)
+
+
+def all_coupons(market: str) -> list[dict]:
+    return _rows(f"SELECT {_COUPON_COLS} FROM coupons WHERE market = ? ORDER BY added_at DESC LIMIT 500",
+                 (market,), _COUPON_NAMES)
+
+
+def delete_coupon(coupon_id: int) -> bool:
+    return _db.count("DELETE FROM coupons WHERE id = ?", (coupon_id,)) > 0

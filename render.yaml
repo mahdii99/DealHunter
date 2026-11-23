@@ -26,6 +26,12 @@ services:
         sync: false
       - key: AFFILIATE_TAGS
         sync: false
+      - key: ADMITAD_CLIENT_ID
+        sync: false
+      - key: ADMITAD_CLIENT_SECRET
+        sync: false
+      - key: ADMITAD_WEBSITE_ID
+        sync: false
       - key: BREVO_API_KEY
         sync: false
       - key: MAIL_FROM
