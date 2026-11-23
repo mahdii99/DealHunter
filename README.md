@@ -53,7 +53,7 @@ request ──► understand (LLM) ──► web search ──► open store pag
 | Trust | `app/trust.py` | Known retailers + a page-signal score for everyone else; drops foreign stores and price-comparison sites |
 | LLM client | `app/llm.py` | Gemini, Groq, Mistral, NVIDIA, Cloudflare and OpenRouter free tiers; picks live models, rests busy ones, remembers daily quotas across restarts |
 | Price DB | `app/db.py` | SQLite: request cache, price history (`GET /api/history?url=`), and sites whose pages never open, which later searches skip (`python -m scripts.blocked_sites`) |
-| Our price list | `app/catalog.py` | Twice a day the big stores' category pages (phones first: Amazon.eg, noon, Jumia) are read into the database. Searches take those offers as candidates and need one web-search round instead of two or three; every result is still opened on its own page before it's shown |
+| Our price list | `app/catalog.py` | Twice a day the big stores' category pages (phones, TVs, washers, fridges, ACs, laptops on Amazon.eg and Jumia; noon doesn't answer our crawler) are read into the database. Searches take those offers as candidates and need one web-search round instead of two or three; every result is still opened on its own page before it's shown |
 | Country config | `app/market.py` | Currency, local domains and stores per market (`MARKET=EG`, Saudi Arabia and UAE prepared) |
 
 ## Tech stack
@@ -99,6 +99,7 @@ average request from 55 s to 40 s while the average number of matching results w
 | `GET` | `/api/notifications` | The shopper's notifications (`POST /api/notifications/seen` marks them read) |
 | `POST` | `/api/cron/check-watches` | Re-check followed prices (header `X-Cron-Secret`), run by `.github/workflows/check-watches.yml` |
 | `POST` | `/api/cron/scrape` | Read the stores' category pages into our price list (header `X-Cron-Secret`, `?store=jumia.com.eg`), run by `.github/workflows/scrape-prices.yml` |
+| `GET` | `/deals` | Today's best deals: products whose price fell below the lowest we saw in 30 days, then big store discounts; each one opened on its store page when the list was made (`app/deals.py`, `POST /api/cron/deals`) |
 | `POST` | `/api/report` | "This result is wrong" from a visitor: `{reason, request, url, store, title, price}`; review with `python -m scripts.reports` |
 | `POST` | `/api/event` | Usage counting from the page: a visit (`{kind: "visit", source, mobile}`) or a store link opened (`{kind: "click", url, store, title, price, request, rank}`) |
 | `GET` | `/admin` | The owner's private dashboard (visitors, what they ask, which stores they open), behind `ADMIN_PASSWORD` |

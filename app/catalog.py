@@ -1,4 +1,4 @@
-"""Our own price list: the big stores' category pages, read on a schedule (once or twice a day).
+"""Our own price list: the big stores' category pages, read on a schedule (twice a day).
 
 Why: most shoppers ask for the same popular products (phones first, then TVs and big appliances, then laptops).
 Reading those categories ahead of time means a search already knows the offers of the biggest stores before it
@@ -53,6 +53,39 @@ CATEGORIES: dict[str, dict] = {
             "noon.com": "https://www.noon.com/egypt-en/electronics-and-mobiles/mobiles-and-accessories/"
                         "mobiles-20905/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=smartphone&i=electronics&language=en_AE&page={n}",
+        },
+    },
+    "tvs": {
+        "ar": "شاشات", "pages": 3,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/televisions/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?k=smart+tv&i=electronics&language=en_AE&page={n}",
+        },
+    },
+    "washers": {
+        "ar": "غسالات", "pages": 3,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/appliances-washers-dryers/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?k=washing+machine&i=appliances&language=en_AE&page={n}",
+        },
+    },
+    "fridges": {
+        "ar": "تلاجات", "pages": 3,
+        "stores": {
+            "amazon.eg": "https://www.amazon.eg/s?k=refrigerator&i=appliances&language=en_AE&page={n}",
+        },
+    },
+    "acs": {
+        "ar": "تكييفات", "pages": 3,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/air-conditioning/?page={n}",
+        },
+    },
+    "laptops": {
+        "ar": "لابتوبات", "pages": 3,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/laptops/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?k=laptop&i=computers&language=en_AE&page={n}",
         },
     },
 }

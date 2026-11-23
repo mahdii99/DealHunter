@@ -34,7 +34,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, admin, affiliate, agent, catalog, db, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, affiliate, agent, catalog, db, deals, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -132,7 +132,7 @@ def robots(request: Request):
 
 @app.get("/sitemap.xml")
 def sitemap(request: Request):
-    urls = "".join(f"<url><loc>{_site(request)}{p}</loc></url>" for p in ("/", "/privacy"))
+    urls = "".join(f"<url><loc>{_site(request)}{p}</loc></url>" for p in ("/", "/deals", "/privacy"))
     return Response('<?xml version="1.0" encoding="UTF-8"?>'
                     f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>',
                     media_type="application/xml")
@@ -973,6 +973,92 @@ async def scrape_catalog(request: Request, store: str = Query("", max_length=40)
         raise HTTPException(400, f"unknown store, one of: {', '.join(catalog.STORES)}")
     report = await catalog.scrape(stores, [c for c in category.split(",") if c] or None, pages or None)
     return {"report": report, "total": sum(r["products"] for r in report.values())}
+
+
+@app.post("/api/cron/deals")
+async def build_deals(request: Request):
+    """Makes today's deals list from the price list, every deal opened on its store page first (app/deals.py).
+    Run by .github/workflows/scrape-prices.yml after the stores are read."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    got = await deals.build()
+    return {k: v for k, v in got.items() if k != "deals"} | {"deals": len(got["deals"])}
+
+
+@app.get("/api/deals")
+async def deals_api():
+    return await _db(deals.current, default={"checked_at": None, "deals": []})
+
+
+@app.get("/deals")
+async def deals_page(request: Request):
+    """Today's best deals, as a plain page search engines can read (people find it from Google)."""
+    got = await _db(deals.current, default={"checked_at": None, "deals": []})
+    return Response(_deals_html(got, _site(request)), media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=600"})
+
+
+def _money(n: float) -> str:
+    return f"{n:,.0f} ج.م"
+
+
+def _deals_html(got: dict, site: str) -> str:
+    from html import escape as e
+    from urllib.parse import quote
+    cards = []
+    for d in got.get("deals") or []:
+        why = (f"أرخص من أقل سعر شفناه له في آخر 30 يوم ({_money(d['was'])})" if d["kind"] == "drop"
+               else f"خصم المتجر: كان {_money(d['was'])} حسب المتجر")
+        img = (f'<img src="/img?u={quote(d["image"], safe="")}" alt="" width="96" height="96" loading="lazy" '
+               f'referrerpolicy="no-referrer">' if d.get("image") else '<span class="ph"></span>')
+        cards.append(
+            f'<a class="deal" href="{e(affiliate.link(d["url"]))}" target="_blank" rel="noopener nofollow sponsored">'
+            f'{img}<span class="info"><span class="t" dir="auto">{e(d["title"])}</span>'
+            f'<span class="p">{_money(d["price"])} <s>{_money(d["was"])}</s> <b class="pct">-{d["pct"]}%</b></span>'
+            f'<span class="why{" real" if d["kind"] == "drop" else ""}">{e(why)}</span>'
+            f'<span class="tags"><span class="tag">{e(d["store"])}</span><span class="tag">'
+            f'{e(deals.category_name(d["category"]))}</span><span class="tag ok">متوفر، اتأكدنا</span></span></span></a>')
+    when = got.get("checked_at")
+    body = ("".join(cards) if cards else
+            '<p class="empty">لسه مفيش عروض متأكدين منها النهارده. بنراجع الأسعار مرتين في اليوم، ارجع كمان شوية '
+            'أو <a href="/">دوّر على اللي انت عايزه</a>.</p>')
+    stamp = (f'<p class="when">الأسعار دي اتأكدنا منها من صفحة كل متجر <span data-ts="{when:.0f}"></span>. '
+             'الأسعار بتتغير، فاتأكد من السعر في صفحة المتجر قبل ما تطلب.</p>' if when else "")
+    return DEALS_PAGE.replace("{SITE}", site).replace("{STAMP}", stamp).replace("{BODY}", body)
+
+
+DEALS_PAGE = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>أحسن العروض النهارده في مصر: موبايلات وأجهزة بخصم حقيقي | Easy Found</title>
+<meta name="description" content="عروض النهارده من أمازون وجوميا: موبايلات وشاشات وأجهزة نزل سعرها فعلاً عن آخر 30 يوم، واتأكدنا من سعر كل واحد في صفحة المتجر.">
+<link rel="canonical" href="{SITE}/deals"><link rel="icon" href="/logo.svg?v=2" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#F4F7F6;--card:#fff;--text:#13221F;--muted:#56665F;--border:#DCE4E1;--accent:#0F766E;--deal:#B93A0A;--deal-soft:#FDEBE1;--soft:#DDF1EC;--ink:#0B5F58}
+@media (prefers-color-scheme:dark){:root{--bg:#0C1312;--card:#141F1D;--text:#E6EEEC;--muted:#9DAEA9;--border:#263633;--accent:#2DD4BF;--deal:#FDBA74;--deal-soft:#3A2112;--soft:#103A35;--ink:#5EEAD4}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 "IBM Plex Sans Arabic",system-ui,Tahoma,sans-serif}
+main{max-width:760px;margin:0 auto;padding:20px 16px 48px}header{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+header a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:8px;font-weight:700}
+h1{font-size:24px;margin:12px 0 4px}.lead,.when{color:var(--muted);margin:0 0 14px}.when{font-size:13px}
+.deal{display:flex;gap:12px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px;margin-bottom:10px;color:inherit;text-decoration:none}
+.deal:hover{border-color:var(--accent)}.deal img,.ph{width:96px;height:96px;object-fit:contain;border-radius:10px;background:#fff;flex:none}
+.info{display:flex;flex-direction:column;gap:4px;min-width:0}.t{font-weight:600;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.p{font-size:18px;font-weight:700}.p s{font-size:13px;color:var(--muted);font-weight:400}.pct{color:var(--deal);font-size:14px}
+.why{font-size:13px;color:var(--muted)}.why.real{color:var(--deal);font-weight:600}
+.tags{display:flex;flex-wrap:wrap;gap:6px}.tag{font-size:12px;background:var(--soft);color:var(--ink);padding:1px 8px;border-radius:6px}
+.cta{display:inline-block;margin:6px 0 18px;background:var(--accent);color:#fff;padding:8px 16px;border-radius:10px;text-decoration:none;font-weight:600}
+.empty{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px}a{color:var(--accent)}
+</style></head><body><main>
+<header><a href="/"><img src="/logo.svg?v=2" width="32" height="32" alt="">Easy Found</a></header>
+<h1>أحسن العروض النهارده</h1>
+<p class="lead">منتجات نزل سعرها فعلاً عن أقل سعر شفناه في آخر 30 يوم، وبعدها خصومات المتاجر الكبيرة. كل عرض فتحنا صفحته في المتجر وتأكدنا إنه متوفر بالسعر ده.</p>
+<a class="cta" href="/">دوّر على أرخص سعر لأي حاجة</a>
+{STAMP}{BODY}
+</main><script>
+document.querySelectorAll('[data-ts]').forEach(function(el){var d=new Date(el.dataset.ts*1000);
+el.textContent='الساعة '+d.toLocaleTimeString('ar-EG',{hour:'numeric',minute:'2-digit'})+' يوم '+d.toLocaleDateString('ar-EG',{weekday:'long'});});
+</script></body></html>"""
 
 
 @app.get("/bot")

@@ -373,6 +373,23 @@ def catalog_like(words: list[str], market: str, since: float, limit: int = 300) 
     return [dict(zip(("url", "store", "title", "price", "old_price", "image", "category", "seen_at"), r)) for r in rows]
 
 
+def catalog_since(market: str, since: float) -> list[dict]:
+    rows = _db.run("SELECT url, store, title, price, old_price, image, category, seen_at FROM catalog "
+                   "WHERE market = ? AND seen_at > ?", (market, since))
+    return [dict(zip(("url", "store", "title", "price", "old_price", "image", "category", "seen_at"), r)) for r in rows]
+
+
+def prices_between(urls: list[str], start: float, end: float) -> dict[str, list[float]]:
+    """{url: [prices saved between start and end]}, asked in chunks (a long IN list is slow on some databases)."""
+    out: dict[str, list[float]] = {}
+    for i in range(0, len(urls), 300):
+        part = urls[i:i + 300]
+        for url, price in _db.run(f"SELECT url, price FROM prices WHERE url IN ({', '.join('?' * len(part))}) "
+                                  "AND seen_at >= ? AND seen_at < ?", (*part, start, end)):
+            out.setdefault(url, []).append(price)
+    return out
+
+
 def catalog_stats(market: str, since: float) -> list[dict]:
     return _rows("SELECT store, category, COUNT(*), MAX(seen_at) FROM catalog WHERE market = ? AND seen_at > ? "
                  "GROUP BY store, category ORDER BY 1, 2", (market, since), "store category n last")
