@@ -116,6 +116,11 @@ Purchases happen on the stores' sites, so only the stores' affiliate programs ca
 code in `AFFILIATE_TAGS` (e.g. `amazon.eg: tag=yourcode-21; noon.com: utm_source=xxx`) and the page adds it to every
 link to that store; compare their sales reports with the clicks here.
 
+Promo codes (`/coupons`) are shown only from a source allowed to give them: Admitad's coupon feed for our website
+(`ADMITAD_CLIENT_ID`, `ADMITAD_CLIENT_SECRET`, `ADMITAD_WEBSITE_ID`, read again after each price run), or codes the
+owner adds in `/admin` from a network's offer or the store's own site, with where each came from. Expired codes are
+never shown. The deals page (`/deals`) has store and category filters.
+
 ## Free hosting
 
 The repo includes a `render.yaml` Blueprint for Render's free Docker web service (no card): in Render, choose
