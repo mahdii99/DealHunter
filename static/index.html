@@ -104,6 +104,9 @@
   /* empty state */
   .hero { padding:64px 24px 16px; display:flex; flex-direction:column; align-items:center; text-align:center; gap:14px; }
   .hero h1 { margin:0; font-size:40px; line-height:1.25; }
+  .deals-btn { display:inline-flex; align-items:center; gap:8px; padding:8px 16px; border-radius:999px; text-decoration:none;
+    font-weight:600; color:var(--deal); background:var(--deal-soft); border:1px solid transparent; }
+  .deals-btn:hover { border-color:var(--deal); }
   .hero p { margin:0; max-width:560px; color:var(--muted); font-size:16px; }
   .sugs { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:8px; max-width:640px; }
   .sug { min-height:44px; padding:0 16px; border-radius:22px; border:1px solid var(--border); background:var(--card); font-size:14px; }
@@ -406,6 +409,7 @@
       <h1 class="display" data-t="emptyTitle"></h1>
       <p data-t="emptySub"></p>
       <div class="sugs" id="sugs"></div>
+      <a class="deals-btn" href="/deals"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg><span data-t="dealsBtn"></span></a>
     </section>
     <div id="chat" aria-live="polite"></div>
     <form class="composer" id="f">
@@ -541,7 +545,7 @@ const T = {
     fbMsgPh: 'احكيلنا حصل إيه، أو نفسك الموقع يعمل إيه...', fbContact: 'إيميلك أو رقمك', optional: '(اختياري، عشان نرد عليك)',
     cancel: 'إلغاء', fbSend: 'ابعت الرسالة', fbErr: 'مقدرناش نبعت الرسالة، جرب تاني.', fbThanks: 'وصلتنا رسالتك، شكرًا!',
     fbThanksSub: 'هنراجعها في أقرب وقت، ولو سبت وسيلة تواصل هنرد عليك.', ok: 'تمام',
-    dealsLink: 'أحسن العروض النهارده', privacy: 'الخصوصية', follow: 'تابع السعر', following: 'بتتابعه', signInToFollow: 'سجّل دخول بجوجل فوق عشان نبلغك',
+    dealsLink: 'أحسن العروض النهارده', dealsBtn: 'شوف أحسن العروض النهارده', privacy: 'الخصوصية', follow: 'تابع السعر', following: 'بتتابعه', signInToFollow: 'سجّل دخول بجوجل فوق عشان نبلغك',
     hello: 'أهلاً', whereShop: 'انت بتشتري منين؟ هندورلك في متاجر بلدك وبعملتها.', mailAlerts: 'ابعتلي إيميل لما سعر منتج بتابعه ينزل',
     letsGo: 'يلا نبدأ', notes: 'الإشعارات', watches: 'بتتابعها', settings: 'الإعدادات', account: 'حسابك', wait: 'ثانية...',
     noNotes: 'مفيش إشعارات لسه. دوس «تابع السعر» على أي منتج وهنبلغك هنا أول ما سعره ينزل.', noWatches: 'مش بتتابع حاجة لسه.',
@@ -574,7 +578,7 @@ const T = {
     fbMsgPh: 'Tell us what happened, or what you wish the site could do...', fbContact: 'Email or phone', optional: '(optional, so we can reply)',
     cancel: 'Cancel', fbSend: 'Send message', fbErr: 'Couldn’t send it, please try again.', fbThanks: 'Got it, thank you!',
     fbThanksSub: 'We’ll review it soon, and reply if you left a way to reach you.', ok: 'Done',
-    dealsLink: 'Today’s best deals', privacy: 'Privacy', follow: 'Follow price', following: 'Following', signInToFollow: 'Sign in with Google above to get alerts',
+    dealsLink: 'Today’s best deals', dealsBtn: 'See today’s best deals', privacy: 'Privacy', follow: 'Follow price', following: 'Following', signInToFollow: 'Sign in with Google above to get alerts',
     hello: 'Welcome', whereShop: 'Where do you shop? We’ll search your country’s stores in its currency.', mailAlerts: 'Email me when a followed product gets cheaper',
     letsGo: 'Let’s go', notes: 'Notifications', watches: 'Following', settings: 'Settings', account: 'Your account', wait: 'One moment...',
     noNotes: 'No notifications yet. Tap “Follow price” on any product and we’ll tell you here when it drops.', noWatches: 'You’re not following anything yet.',
