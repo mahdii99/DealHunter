@@ -80,7 +80,7 @@ def test_scrape_obeys_robots_and_reports_a_store_that_blocks(monkeypatch):
         page = int(request.url.params.get("page", "1"))
         return httpx.Response(200, text=JUMIA if page <= 2 else JUMIA)  # page 3 repeats page 1: the end
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    report = asyncio.run(catalog.scrape(["jumia.com.eg", "amazon.eg"], client=client))
+    report = asyncio.run(catalog.scrape(["jumia.com.eg", "amazon.eg"], ["phones"], client=client))
     assert report["jumia.com.eg phones"]["products"] == 2 and "error" not in report["jumia.com.eg phones"]
     assert report["amazon.eg phones"]["products"] == 0 and "robots.txt" in report["amazon.eg phones"]["error"]
     assert len(agents) == 2 and all(a.startswith("DealHunterBot/") for a in agents)  # one honest name, stops at a repeat
@@ -189,5 +189,5 @@ def test_an_empty_first_page_is_reported_with_its_title(monkeypatch):
     monkeypatch.setattr(catalog.fetchers, "robots_allows", allowed)
     client = httpx.AsyncClient(transport=httpx.MockTransport(
         lambda r: httpx.Response(200, text="<html><title>Something else</title><body>hi</body></html>")))
-    report = asyncio.run(catalog.scrape(["amazon.eg"], client=client))
+    report = asyncio.run(catalog.scrape(["amazon.eg"], ["phones"], client=client))
     assert "title: Something else" in report["amazon.eg phones"]["error"]
