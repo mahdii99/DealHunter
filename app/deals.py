@@ -22,9 +22,10 @@ MAX_AGE_HOURS = 14          # an older list isn't shown (prices move)
 HISTORY_DAYS = 30
 MIN_DROP = 5                # % below the lowest price seen before today, to count as a real drop
 MIN_STORE_DISCOUNT = 15     # % off the store's own old price, for the store-discount part
-CHECK = 24                  # candidates opened per run (each one is a store page, some an LLM read)
-PER_CATEGORY = 10
-PER_STORE = 8
+CHECK = 120                 # candidates opened per run (each one is a store page, some an LLM read)
+BATCH = 20                  # opened together (agent.checked_only checks at most VERIFY_MAX pages per call)
+PER_CATEGORY = 30
+PER_STORE = 70
 
 
 def candidates(now: float | None = None) -> list[dict]:
@@ -34,6 +35,7 @@ def candidates(now: float | None = None) -> list[dict]:
     rows = db.catalog_since(mk, now - 26 * 3600)
     if not rows:
         return []
+    rows = _accessories_apart(rows)
     past = db.prices_between([r["url"] for r in rows], now - HISTORY_DAYS * 86400, now - 20 * 3600)
     out = []
     for r in rows:
@@ -57,13 +59,33 @@ def candidates(now: float | None = None) -> list[dict]:
     return picked
 
 
+ACCESSORY = "accessories"
+ACCESSORY_SHARE = 0.15      # far under the usual price of its category: a case, a bag, a stand, not the product
+
+
+def _accessories_apart(rows: list[dict]) -> list[dict]:
+    """A store's search for "washing machine" also lists washer bags and covers. Shoppers browsing washers don't want
+    those, so anything priced far under its category's middle price goes under accessories instead."""
+    by_cat: dict[str, list[float]] = {}
+    for r in rows:
+        by_cat.setdefault(r["category"], []).append(r["price"])
+    mid = {c: sorted(v)[len(v) // 2] for c, v in by_cat.items() if len(v) >= 10}
+    return [{**r, "category": ACCESSORY} if r["category"] in mid and r["price"] < mid[r["category"]] * ACCESSORY_SHARE
+            else r for r in rows]
+
+
 async def build() -> dict:
     """Opens the best candidates on their store pages and keeps those still at (or under) that price."""
     found = candidates()[:CHECK]
     picks = [Product(store=d["store"], title=d["title"], price=d["price"], url=d["url"], image=d["image"] or None,
                      old_price=d.get("old_price"), trusted=True, trust_score=100) for d in found]
     by_url = {d["url"]: d for d in found}
-    shown, unchecked, gone = await agent.checked_only(picks)
+    shown, unchecked, gone = [], [], 0
+    for i in range(0, len(picks), BATCH):  # a few at a time: each batch gets the agent's full time to check its pages
+        got = await agent.checked_only(picks[i:i + BATCH])
+        shown += got[0]
+        unchecked += got[1]
+        gone += got[2]
     deals = []
     for p in shown:
         d = by_url[p.url]
@@ -88,4 +110,6 @@ def current() -> dict:
 
 
 def category_name(key: str) -> str:
+    if key == ACCESSORY:
+        return "إكسسوارات"
     return catalog.CATEGORIES.get(key, {}).get("ar", key)

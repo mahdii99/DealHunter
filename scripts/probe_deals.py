@@ -2,21 +2,13 @@
 import asyncio, httpx
 from app import catalog, fetchers
 URLS = [
- "https://www.amazon.eg/s?i=electronics&rh=p_8%3A30-&language=en_AE",
- "https://www.amazon.eg/s?i=kitchen&rh=p_8%3A30-&language=en_AE",
- "https://www.amazon.eg/s?i=fashion&rh=p_8%3A30-&language=en_AE",
- "https://www.amazon.eg/s?i=beauty&rh=p_8%3A30-&language=en_AE",
- "https://www.amazon.eg/s?k=deals&pct-off=30-&language=en_AE",
- "https://www.amazon.eg/s?i=home-garden&rh=p_8%3A30-&language=en_AE",
- "https://www.jumia.com.eg/flash-sales/",
- "https://www.jumia.com.eg/mlp-deals/",
- "https://www.jumia.com.eg/home-office/?price_discount=30-100",
- "https://www.jumia.com.eg/health-beauty/?price_discount=30-100",
- "https://www.jumia.com.eg/electronics/?price_discount=30-100",
- "https://www.jumia.com.eg/category-fashion-by-jumia/?price_discount=30-100",
- "https://www.jumia.com.eg/phones-tablets/?price_discount=30-100",
- "https://www.jumia.com.eg/computing/?price_discount=30-100",
- "https://www.jumia.com.eg/home-office/?sort=highest-discount",
+ "https://www.jumia.com.eg/home-office/?page=1",
+ "https://www.jumia.com.eg/health-beauty/?page=1",
+ "https://www.jumia.com.eg/category-fashion-by-jumia/?page=1",
+ "https://www.jumia.com.eg/electronics/?page=1",
+ "https://www.jumia.com.eg/flash-sales/?page=2",
+ "https://www.jumia.com.eg/home-kitchen/?page=1",
+ "https://www.amazon.eg/s?i=kitchen&rh=p_8%3A25-&language=en_AE&page=1",
 ]
 async def main():
     async with httpx.AsyncClient() as c:
@@ -27,5 +19,5 @@ async def main():
                 print("OK", len(ps), "with old price:", len(off), "min off:", min(off) if off else None, u, "|", ps[0].title[:50] if ps else "")
             except Exception as e:
                 print("FAIL", type(e).__name__, str(e)[:120], u)
-            await asyncio.sleep(4)
+            await asyncio.sleep(10)
 asyncio.run(main())
