@@ -22,10 +22,10 @@ MAX_AGE_HOURS = 14          # an older list isn't shown (prices move)
 HISTORY_DAYS = 30
 MIN_DROP = 5                # % below the lowest price seen before today, to count as a real drop
 MIN_STORE_DISCOUNT = 15     # % off the store's own old price, for the store-discount part
-CHECK = 100                 # candidates opened per run (each one is a store page, some an LLM read)
-BATCH = 20                  # opened together (agent.checked_only checks at most VERIFY_MAX pages per call)
-PER_CATEGORY = 30
-PER_STORE = 70
+CHECK = 300                 # candidates opened per run (each one is a store page, some an LLM read)
+BATCH = 25                  # opened together (agent.checked_only checks at most VERIFY_MAX pages per call)
+PER_CATEGORY = 40
+PER_STORE = 200
 
 
 def candidates(now: float | None = None) -> list[dict]:
@@ -83,10 +83,16 @@ async def build() -> dict:
     by_url = {d["url"]: d for d in found}
     shown, unchecked, gone = [], [], 0
     for i in range(0, len(picks), BATCH):  # a few at a time: each batch gets the agent's full time to check its pages
-        got = await agent.checked_only(picks[i:i + BATCH])
+        batch = picks[i:i + BATCH]
+        got = await agent.checked_only(batch, patient=True)
         shown += got[0]
         unchecked += got[1]
         gone += got[2]
+        if len(batch) >= 10 and len(got[1]) >= len(batch) * 0.8:
+            # almost nothing could be checked: the free LLM models are likely out of quota. Stop here so shoppers'
+            # own searches keep what's left of it.
+            log.warning("deals: batch %d left %d of %d unchecked, stopping", i // BATCH + 1, len(got[1]), len(batch))
+            break
     deals = []
     for p in shown:
         d = by_url[p.url]

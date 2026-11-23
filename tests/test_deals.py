@@ -43,7 +43,7 @@ def test_only_deals_still_at_that_price_on_their_page_are_listed(monkeypatch):
     _seen("https://j.eg/c", "Honor X5c", 8250, old=11000)
     _seen("https://j.eg/e", "Tecno Spark", 7000, old=9000)
 
-    async def checked(picks, options=""):
+    async def checked(picks, options="", patient=False):
         out = []
         for p in picks:
             if "Tecno" in p.title:
@@ -68,7 +68,7 @@ def test_deals_page_and_cron(monkeypatch):
     _seen("https://j.eg/a", "Galaxy A56", 26000, days_ago=5)
     _seen("https://j.eg/a", "Galaxy A56", 23000)
 
-    async def checked(picks, options=""):
+    async def checked(picks, options="", patient=False):
         return picks, [], 0
     monkeypatch.setattr(agent, "checked_only", checked)
     assert c.post("/api/cron/deals", headers={"X-Cron-Secret": "s3"}).json()["deals"] == 1
@@ -82,7 +82,7 @@ def test_many_candidates_are_checked_a_batch_at_a_time(monkeypatch):
         _seen(f"https://j.eg/p{i}", f"Phone {i}", 8000, old=10000)
     sizes = []
 
-    async def checked(picks, options=""):
+    async def checked(picks, options="", patient=False):
         sizes.append(len(picks))
         for p in picks:
             p.verified = True
@@ -90,7 +90,7 @@ def test_many_candidates_are_checked_a_batch_at_a_time(monkeypatch):
     monkeypatch.setattr(agent, "checked_only", checked)
     monkeypatch.setattr(deals, "PER_CATEGORY", 100)
     got = asyncio.run(deals.build())
-    assert sizes == [20, 20, 5] and len(got["deals"]) == 45
+    assert sizes == [25, 20] and len(got["deals"]) == 45
 
 
 def test_cheap_accessories_found_by_a_category_search_go_under_accessories():
@@ -101,3 +101,17 @@ def test_cheap_accessories_found_by_a_category_search_go_under_accessories():
     got = {d["title"]: d["category"] for d in deals.candidates()}
     assert got["Shoe washing bag"] == "accessories" and got["Washer 0"] == "washers"
     assert deals.category_name("accessories") == "إكسسوارات"
+
+
+def test_the_run_stops_when_pages_can_no_longer_be_checked(monkeypatch):
+    for i in range(80):
+        _seen(f"https://j.eg/q{i}", f"Phone {i}", 8000, old=10000)
+    calls = []
+
+    async def checked(picks, options="", patient=False):
+        calls.append(len(picks))
+        return [], [{"url": p.url} for p in picks], 0  # nothing could be checked (LLM quota gone)
+    monkeypatch.setattr(agent, "checked_only", checked)
+    monkeypatch.setattr(deals, "PER_CATEGORY", 100)
+    asyncio.run(deals.build())
+    assert calls == [25]

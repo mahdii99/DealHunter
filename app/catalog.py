@@ -92,35 +92,90 @@ CATEGORIES: dict[str, dict] = {
     # more" filter (rh=p_8) gives discounted products only; Jumia's robots.txt forbids its filters and sorting, so its
     # plain section pages are read, plus its flash sales page.
     "home": {
-        "ar": "البيت والمطبخ", "pages": 2, "broad": True,
+        "ar": "البيت والمطبخ", "pages": 3, "broad": True,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/home-office/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=kitchen&rh=p_8%3A30-&language=en_AE&page={n}",
         },
     },
     "beauty": {
-        "ar": "جمال وعناية", "pages": 2, "broad": True,
+        "ar": "جمال وعناية", "pages": 3, "broad": True,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/health-beauty/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=beauty&rh=p_8%3A30-&language=en_AE&page={n}",
         },
     },
     "fashion": {
-        "ar": "موضة", "pages": 2, "broad": True,
+        "ar": "موضة", "pages": 3, "broad": True,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/category-fashion-by-jumia/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=fashion&rh=p_8%3A30-&language=en_AE&page={n}",
         },
     },
     "electronics": {
-        "ar": "إلكترونيات", "pages": 2, "broad": True,
+        "ar": "إلكترونيات", "pages": 3, "broad": True,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/electronics/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=electronics&rh=p_8%3A30-&language=en_AE&page={n}",
         },
     },
+    "computing": {
+        "ar": "كمبيوتر وإكسسواراته", "pages": 3, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/computing/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=computers&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "mobile_acc": {
+        "ar": "إكسسوارات موبايل", "pages": 3, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/mobile-accessories/?page={n}",
+        },
+    },
+    "toys": {
+        "ar": "ألعاب أطفال", "pages": 3, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/toys-games/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=toys&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "baby": {
+        "ar": "مستلزمات البيبي", "pages": 3, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/baby-products/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=baby&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "sports": {
+        "ar": "رياضة", "pages": 3, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/sporting-goods/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=sporting&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "grocery": {
+        "ar": "سوبر ماركت", "pages": 3, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/groceries/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=grocery&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "gaming": {
+        "ar": "ألعاب فيديو", "pages": 3, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/video-games/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=videogames&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "auto": {
+        "ar": "مستلزمات العربيات", "pages": 3, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/automobile/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=automotive&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
     "flash": {
-        "ar": "عروض لفترة محدودة", "pages": 3, "broad": True,
+        "ar": "عروض لفترة محدودة", "pages": 5, "broad": True,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/flash-sales/?page={n}",
         },
