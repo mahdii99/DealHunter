@@ -2085,3 +2085,45 @@ def test_too_few_offers_after_the_checks_means_another_search_round(monkeypatch)
     assert rounds[1] == ["كوتشي نايكي رجالي 46", "Nike men sneakers size 46 Egypt"]
     assert sorted(r["store"] for r in out["results"]) == ["A", "B", "C"] and out["candidates_checked"] == 3
     assert "widen" in out["timings"] and "2 عرض زيادة" in out["summary"]
+
+
+def test_a_new_request_is_checked_against_the_web_inside_the_planning_call(monkeypatch):
+    """The plan check used to be a second strong-model call after planning. Now the planner reads the search of
+    the shopper's words itself, and the search doesn't spend that second call."""
+    from app import main, websearch
+    searched, steps, prompts = [], [], []
+
+    async def fake_search(client, query, max_results=8, **kw):
+        searched.append(query)
+        return [{"url": "https://shop.example/p/a56", "title": "Samsung Galaxy A56 5G SM-A566", "snippet": "EGP 19,000"}]
+
+    async def fake_ask(prompt, step="other", **kw):
+        steps.append(step)
+        prompts.append(prompt)
+        if step == "plan":
+            return {"action": "search", "reply": "هدورلك", "request": "سامسونج A56", "web_queries": ["Samsung A56"],
+                    "model_codes": ["SM-A566"]}
+        return {"matches": [], "summary": ""}
+
+    async def fake_find(queries, seed=None, famous=None, want="", named=None):
+        assert seed and seed[0]["url"] == "https://shop.example/p/a56"  # the hits are still read as store pages
+        return [], {}
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    monkeypatch.setattr(agent, "_web_find", fake_find)
+    monkeypatch.setattr(agent, "MIN_RESULTS", 0)
+    d = TestClient(main.app).post("/api/chat", json={"messages": [{"role": "user", "text": "سامسونج a56"}]}).json()
+    assert d["action"] == "search" and searched == ["سامسونج a56"]
+    assert "Samsung Galaxy A56 5G SM-A566" in prompts[0] and "check" not in steps
+
+
+def test_light_steps_use_small_models_anywhere_before_gemini(monkeypatch):
+    """Gemini's free daily quota is small and it plans and judges too: page reads go to small models of any
+    provider first."""
+    used = _groq_only(monkeypatch, {"groq": ["openai/gpt-oss-120b"], "mistral": ["mistral-small-latest"],
+                                    "gemini": ["gemini-flash-lite-latest"]}, extra_env=("GEMINI_API_KEY", "MISTRAL_API_KEY"))
+    asyncio.run(llm.ask_json("page", prefer="bulk", spread=1))
+    assert used == ["mistral-small-latest"]
+    llm._COOLDOWN.clear(); llm._LAST_GOOD.clear()

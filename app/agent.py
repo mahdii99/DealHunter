@@ -301,11 +301,54 @@ async def _market_check(query: str, plan: dict) -> str:
     return text
 
 
+HITS_BLOCK = """Web search results for the shopper's own words "{words}" (title | snippet):
+{hits}
+For "search" and "recommend", use these results to check what the shopper really wants before we spend searches on
+it: the exact product, its product type, the variant they mean, and its official model numbers. Shoppers write
+slang, misspellings and mixed Arabic/English, and the same word can mean different things for different products:
+read every word in the context of this product, the way stores selling it use it. If the results clearly show the
+product, trust them over your first reading; if they are unrelated or unclear, ignore them. Never change the product
+type the shopper named. Model numbers only pin down ONE exact product the shopper named; when they want a kind of
+product (any model that meets the specs), leave model_codes empty and keep the searches broad enough to find every
+fitting model. Take the stores selling it in these results into account for "stores".
+"""
+HITS_TTL = 1800  # the same shopper words are searched once per half hour (a chat's next turns reuse it)
+_HITS: dict[str, tuple[float, list[dict]]] = {}
+
+
+async def shopper_hits(words: str) -> list[dict]:
+    """One web search of the shopper's own words, given to the planner so it plans the right product in the same
+    LLM call (this used to be a second "check" call after planning). [] when it can't be done."""
+    words = " ".join(words.split())[:200]
+    if len(words) < 2 or not websearch.available():
+        return []
+    key = words.lower()
+    if (hit := _HITS.get(key)) and time.time() - hit[0] < HITS_TTL:
+        return hit[1]
+    try:
+        async with httpx.AsyncClient() as client:
+            hits = await websearch.search(client, words, max_results=CHECK_HITS)
+    except (websearch.SearchError, httpx.HTTPError) as e:
+        log.info("agent: shopper words search failed: %s", e)
+        return []
+    if len(_HITS) > 500:
+        _HITS.clear()
+    _HITS[key] = (time.time(), hits)
+    return hits
+
+
+def _hits_text(hits: list[dict]) -> str:
+    return "\n".join(f"- {str(h.get('title', ''))[:120]} | {str(h.get('snippet', ''))[:200]}" for h in hits)
+
+
 async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] | None = None,
-                    price: tuple[float | None, float | None] = (None, None)) -> dict:
+                    price: tuple[float | None, float | None] = (None, None), hits: list[dict] | None = None,
+                    hits_for: str = "") -> dict:
     """Understand the newest message in the context of the chat (and the results on screen), decide what a good
     salesperson does now (search / ask / recommend / answer), and plan the searches. Usually one LLM call; when the
     answer depends on today's prices it doesn't know (market_query), one web search and a second call that sees them.
+    `hits`: web search results for the shopper's words (`hits_for`): the plan is then already checked against them
+    and run() doesn't spend a second LLM call on that.
     Raises llm.LLMError when no model answers."""
     live = REPLY.get()
 
@@ -313,6 +356,8 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
         if live and not _MARKET_ASKED.search(text) and (t := reply_so_far(text)):
             live(t)
     block = _chat_block(messages, current, shown, price)
+    if hits:
+        block += HITS_BLOCK.format(words=hits_for[:200], hits=_hits_text(hits))
     plan = await llm.ask_json(UNDERSTAND_PROMPT.replace("{chat}", block), timeout=12, prefer="strong", step="plan",
                               on_text=on_text if live else None,
                               temperature=0.5)  # a little variety: a salesperson, not a template
@@ -350,6 +395,8 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
     else:
         plan["action"] = "search"
         plan["understood"] = str(plan.get("understood") or reply).strip()
+    if hits and plan["action"] in ("search", "recommend"):
+        plan["checked"], plan["check_hits"] = True, hits
     log.info("agent: plan %s -> %r", plan["action"], reply if plan["action"] != "search" else plan["request"])
     return plan
 
@@ -435,7 +482,7 @@ async def _check_plan(plan: dict, request: str) -> tuple[dict, list[dict]]:
         stores=json.dumps(plan.get("stores", []), ensure_ascii=False),
         codes=json.dumps(plan.get("model_codes", []), ensure_ascii=False),
         req=json.dumps(plan.get("requirements", []), ensure_ascii=False),
-        hits="\n".join(f"- {h.get('title', '')[:120]} | {h.get('snippet', '')[:200]}" for h in hits))
+        hits=_hits_text(hits))
     try:
         fix = await llm.ask_json(prompt, timeout=10, budget=15, prefer="strong", step="check")
     except llm.LLMError as e:
@@ -461,7 +508,7 @@ Model numbers of the requested product (from the planner, may be incomplete): {c
 Products the planner thinks fit the shopper's need (examples, NOT a complete list): {suggested}
 Avoid: {avoid}
 Budget (EGP): min {minp}, max {maxp}
-Candidates (id, store, store trust 0-100 with the signals found on its site, condition if not new,
+{known}Candidates (id, store, store trust 0-100 with the signals found on its site, condition if not new,
 price EGP, discount, title, product link path (often holds the model number):
 {items}
 
@@ -557,6 +604,16 @@ PROGRESS: contextvars.ContextVar = contextvars.ContextVar("progress", default=No
 def _progress(text: str) -> None:
     if (say := PROGRESS.get()) is not None:
         say(text)
+
+
+# First results while the search goes on (the big stores' offers from our own price list, already checked on their
+# pages): main.py sets a callback that sends them to the page.
+PARTIAL: contextvars.ContextVar = contextvars.ContextVar("partial", default=None)
+
+
+def _partial(data: dict) -> None:
+    if (show := PARTIAL.get()) is not None:
+        show(data)
 
 
 TIMES: dict[str, float] = {}  # seconds per stage of the last search (log + benchmark report)
@@ -1145,9 +1202,52 @@ def _discount(p: Product) -> int | None:
     return pct if 3 <= pct <= 90 else None
 
 
+VERDICT_TTL = 3 * 86400  # a judge verdict on one product page is reused for the same request for 3 days
+VERDICT_PRICE_MOVE = 0.15  # ... unless its price moved more than this since (a big move can mean another item)
+_VERDICTS: dict[str, dict] = {}  # verdict key -> {page id: verdict}, also kept in the database (see _verdicts)
+
+
+def verdict_key(plan: dict, raw: str, options: str = "") -> str:
+    """What a verdict is about: the request as planned and the options the shopper must have. The same request
+    (a popular product, a tapped idea, the second round of one search) reuses the verdicts already given."""
+    return "__verdicts__:" + db.cache_key(f"{plan.get('request') or raw}|{options}", market.current().code)
+
+
+def _vid(p: Product) -> str:
+    return _page_id(p.url) or p.url
+
+
+def _verdicts(key: str) -> dict:
+    if key not in _VERDICTS:
+        saved = _db_safe(db.cached_search, key, VERDICT_TTL) or {}
+        if len(_VERDICTS) > 300:
+            _VERDICTS.clear()
+        _VERDICTS[key] = {k: v for k, v in saved.items() if isinstance(v, dict)}
+    now = time.time()
+    return {k: v for k, v in _VERDICTS[key].items() if now - v.get("at", 0) < VERDICT_TTL}
+
+
+def _save_verdicts(key: str, new: dict) -> None:
+    if not new:
+        return
+    have = _VERDICTS.setdefault(key, {})
+    have.update(new)
+    _db_safe(db.save_search, key, market.current().code, have)
+
+
+def _known_verdict(v: dict | None, p: Product) -> dict | None:
+    if not v or not v.get("price"):
+        return None
+    return v if abs(_paid(p) - v["price"]) <= VERDICT_PRICE_MOVE * v["price"] else None
+
+
 async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, codes: list[str],
-                 web_queries: list[str]) -> tuple[list[Product], list[Product], str, float | None, list[str]]:
+                 web_queries: list[str], vkey: str = "", known: list[Product] | None = None,
+                 info: dict | None = None) -> tuple[list[Product], list[Product], str, float | None, list[str]]:
     """Budget, stock and trust filters, then the LLM judge picks the offers that fit.
+    `vkey` (verdict_key): candidates judged before for this request keep that verdict and aren't sent again; when
+    every candidate has one, no LLM call at all. `known`: offers already checked and shown for this request, given to
+    the judge for comparison (prices, summary) but not judged again. `info["failed"]` = True when no model judged.
     Returns (candidates judged, picks, summary, typical price, follow-up suggestions)."""
     pool = [p for p in products if (maxp is None or _paid(p) <= maxp) and (minp is None or p.price >= minp)]
     sold_out = [p for p in pool if p.in_stock is False]
@@ -1163,7 +1263,21 @@ async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, code
     pool = _candidates(pool)
 
     picks, summary, typical, follow_ups = [], "", None, []
-    if pool:
+    saved = _verdicts(vkey) if vkey else {}
+    fresh = []
+    for p in pool:
+        v = _known_verdict(saved.get(_vid(p)), p)
+        if v is None:
+            fresh.append(p)
+        elif v.get("fit"):
+            p.note, p.unconfirmed = v.get("note"), not v.get("sure")
+            picks.append(p)
+    if isinstance(saved.get("_typical"), dict):
+        typical = saved["_typical"].get("price")
+    if len(fresh) < len(pool):
+        log.info("agent: %d of %d candidates judged before for this request (%d kept)", len(pool) - len(fresh),
+                 len(pool), len(picks))
+    if fresh:
         items = "\n".join(
             f"{i}. [{p.store}] trust {p.trust_score if p.trust_score is not None else '?'}"
             + (f" ({', '.join(p.trust_signals[:5])})" if p.trust_signals and not p.trusted else "")
@@ -1171,44 +1285,65 @@ async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, code
             + (f" ({p.coupon_price:g} with checkout coupon)" if p.coupon_price else "")
             + (f" | -{p.discount_pct}% off" if p.discount_pct else "") + f" | {p.title[:140]}"
             + (f" | link: {_slug(p.url)[:90]}" if _slug(p.url) else "")
-            for i, p in enumerate(pool))
-        log.info("agent: judging %d candidates", len(pool))
-        _progress(f"بقارن {len(pool)} عرض من {len({p.store for p in pool})} متجر وبشيل اللي مش مطابق...")
+            for i, p in enumerate(fresh))
+        before = [q for q in (known or []) + picks]
+        known_text = ("Offers for this request already checked on their store pages (for comparison and your "
+                      "summary; they are NOT candidates, never return them):\n"
+                      + "\n".join(f"- [{q.store}] {_paid(q):g} | {q.title[:100]}" for q in before[:12]) + "\n"
+                      ) if before else ""
+        log.info("agent: judging %d candidates", len(fresh))
+        _progress(f"بقارن {len(fresh)} عرض من {len({p.store for p in fresh})} متجر وبشيل اللي مش مطابق...")
         tj = time.monotonic()
         try:
             prompt = JUDGE_PROMPT.format(
                 raw=raw, req=json.dumps(plan.get("requirements", []), ensure_ascii=False),
                 avoid=json.dumps(plan.get("avoid", []), ensure_ascii=False), minp=minp, maxp=maxp, items=items,
-                codes=json.dumps(codes, ensure_ascii=False),
+                codes=json.dumps(codes, ensure_ascii=False), known=known_text,
                 suggested=json.dumps(plan.get("suggested_products") or [], ensure_ascii=False))
             verdict = await llm.ask_json(prompt, timeout=20, budget=plan.get("judge_budget") or 40, prefer="strong",
                                          step="judge")  # the big call: give it time, it decides quality
             TIMES["judge"] = round(time.monotonic() - tj, 1)
-            _save_debug("last_judge.json", {"request": raw, "plan": plan, "prompt": prompt, "verdict": verdict})
-            log.info("agent: judge kept %d of %d (model %s)", len(verdict.get("matches") or []), len(pool),
+            _save_debug("last_judge.json", {"request": raw, "plan": {k: v for k, v in plan.items() if k != "check_hits"},
+                                            "prompt": prompt, "verdict": verdict})
+            log.info("agent: judge kept %d of %d (model %s)", len(verdict.get("matches") or []), len(fresh),
                      llm.last_model())
             summary = verdict.get("summary", "")
             follow_ups = _strs(verdict.get("suggestions"), 4, 60)
             if isinstance(verdict.get("typical_price"), (int, float)) and verdict["typical_price"] > 0:
                 typical = float(verdict["typical_price"])
             best = verdict.get("best_deal_id")
-            if isinstance(best, int) and 0 <= best < len(pool):
-                pool[best].best_deal = True
-            alternatives = not verdict.get("matches")
-            for m in verdict.get("matches") or verdict.get("alternatives") or []:
-                i = m.get("id")
-                if isinstance(i, int) and 0 <= i < len(pool):
-                    p = pool[i]
+            if isinstance(best, int) and 0 <= best < len(fresh):
+                fresh[best].best_deal = True
+            # alternatives only when nothing at all fits (not when earlier offers already do)
+            alternatives = not verdict.get("matches") and not picks and not known
+            chosen = verdict.get("matches") or (verdict.get("alternatives") if alternatives else None) or []
+            now, fits = time.time(), {}
+            for m in chosen:
+                i = m.get("id") if isinstance(m, dict) else None
+                if isinstance(i, int) and 0 <= i < len(fresh):
+                    p = fresh[i]
                     p.note = m.get("note")
                     p.unconfirmed = m.get("sure") is False
                     p.alternative = alternatives
                     picks.append(p)
+                    if not alternatives:
+                        fits[id(p)] = p
+            if vkey:  # remembered for the next round / the next shopper asking the same
+                new = {_vid(p): {"fit": id(p) in fits, "sure": not p.unconfirmed if id(p) in fits else False,
+                                 "note": (p.note or "")[:200] if id(p) in fits else "", "price": _paid(p), "at": now}
+                       for p in fresh}
+                if typical:
+                    new["_typical"] = {"price": typical, "at": now}
+                await asyncio.to_thread(_save_verdicts, vkey, new)
         except llm.LLMError as e:
             # the simple word rules miss many titles (Arabic vs English, "2000 وات" vs "2000W"); the candidates
             # all came from searches for this request, so show the cheapest of them rather than nothing
-            picks = _fallback_pick(pool, [raw, plan.get("request") or ""] + web_queries)[:JUDGE_DOWN_RESULTS]
-            for p in picks:
+            if info is not None:
+                info["failed"] = True
+            guess = _fallback_pick(fresh, [raw, plan.get("request") or ""] + web_queries)[:JUDGE_DOWN_RESULTS]
+            for p in guess:
                 p.unconfirmed = True
+            picks += guess
             log.warning("agent: judge failed: %s", e.details or e)
             summary = ("الموديلات المجانية مشغولة دلوقتي فمقدرتش أراجع النتايج بدقة، فدي مرتبة بالسعر بس "
                        "واتأكد من الموديل في كل واحدة. جرب تاني كمان دقيقة لنتيجة أدق.")
@@ -1231,8 +1366,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         except llm.LLMError as e:
             log.warning("agent: planner failed: %s", e.details or e)
             return await run_rules(raw, note=BUSY_NOTE)
-    seed: list[dict] = []
-    if websearch.available() and llm.available() and not plan.get("simple"):
+    seed: list[dict] = list(plan.get("check_hits") or [])  # the planner already saw them (plan_turn hits)
+    if websearch.available() and llm.available() and not plan.get("simple") and not plan.get("checked"):
         plan, seed = await _check_plan(plan, plan.get("request") or raw)
     queries = [q for q in plan.get("queries", []) if isinstance(q, str) and q.strip()][:2] or [raw]
     web_queries = [q for q in plan.get("web_queries", []) if isinstance(q, str) and q.strip()][:MAX_WEB_QUERIES] or queries
@@ -1240,43 +1375,70 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
 
     TIMES["understand"] = round(time.monotonic() - t0, 1)
     want = plan.get("request") or raw
-    # what our own price list (the big stores' category pages, read every day) already has for this request
-    stocked = await asyncio.to_thread(_catalog_offers, web_queries + queries, codes)
-    covered = {trust.domain(p.url) for p in stocked}
-    famous = _famous_sites(plan)
-    searched = web_queries
-    if websearch.available():
-        source = "web"
-        if reqs := [r for r in plan.get("requirements") or [] if isinstance(r, str)]:
-            want += " (" + "; ".join(reqs[:6]) + ")"
-        if len(stocked) >= CATALOG_ENOUGH and len(covered) >= 2:
-            # the big stores' offers are already here: one web search round (not 2-3) for the other shops, and
-            # the well-known group's places go to the big stores we don't read ourselves
-            searched = web_queries[:1]
-            famous = [d for d in famous if not any(trust._match(c, d) for c in covered)] or famous
-            log.info("agent: %d offers from our price list (%s): searching the web with %d query instead of %d",
-                     len(stocked), sorted(covered), len(searched), len(web_queries))
-        products, errors = await _web_find(searched, seed, famous, want=want,
-                                           named=_domains(plan.get("shopper_stores")))
-        products = _dedupe(stocked + products)
-    else:
-        source = "stores"
-        products, errors = await _search_all(queries)
-        products = _dedupe(stocked + products)
-
     maxp, minp = plan.get("max_price"), plan.get("min_price")
     if (maxp is not None or minp is not None) and not _states_budget(budget_text or raw):
         log.info("agent: ignoring budget %s-%s the LLM guessed (no price words in the request)", minp, maxp)
         maxp = minp = None
-    pool, picks, summary, typical, follow_ups = await _judge(products, plan, raw, minp, maxp, codes, web_queries)
-    picks = list({id(p): p for p in picks}.values())
     options = "، ".join(_strs(plan.get("pick_options"), 4, 60))
-    gone, unchecked, pool_size = 0, [], len(pool)
-    if picks and VERIFY_PICKS:
-        _progress(f"بفتح صفحة كل نتيجة ({len(picks)}) وبتأكد إنها متوفرة وإن سعرها لسه زي ما هو...")
+    vkey = verdict_key(plan, raw, options)
+    # what our own price list (the big stores' category pages, read every day) already has for this request. Its
+    # titles are English: a request with no English word gets them from a light model first
+    shelf = web_queries + queries
+    if not any(re.search(r"[a-z]", w) for w in _latin_words(codes + shelf)) and llm.available():  # numbers alone
+        # ("غسالة 7 كيلو") don't find a product among English titles
+        shelf = shelf + await _catalog_queries(want)
+    stocked = await asyncio.to_thread(_catalog_offers, shelf, codes)
+    covered = {trust.domain(p.url) for p in stocked}
+    # the shopper sees those first (checked on their pages) while the other stores are searched
+    first = asyncio.create_task(_first_results(stocked, plan, raw, minp, maxp, codes, web_queries, options, vkey)) \
+        if stocked else None
+    famous = _famous_sites(plan)
+    searched = web_queries
+    try:
+        if websearch.available():
+            source = "web"
+            if reqs := [r for r in plan.get("requirements") or [] if isinstance(r, str)]:
+                want += " (" + "; ".join(reqs[:6]) + ")"
+            if len(stocked) >= CATALOG_ENOUGH and len(covered) >= 2:
+                # the big stores' offers are already here: one web search round (not 2-3) for the other shops, and
+                # the well-known group's places go to the big stores we don't read ourselves
+                searched = web_queries[:1]
+                famous = [d for d in famous if not any(trust._match(c, d) for c in covered)] or famous
+                log.info("agent: %d offers from our price list (%s): searching the web with %d query instead of %d",
+                         len(stocked), sorted(covered), len(searched), len(web_queries))
+            products, errors = await _web_find(searched, seed, famous, want=want,
+                                               named=_domains(plan.get("shopper_stores")))
+        else:
+            source = "stores"
+            products, errors = await _search_all(queries)
+        early = await first if first else None
+    except BaseException:
+        if first:
+            first.cancel()
+        raise
+    if early:  # the price list's offers were judged and checked already: only the rest goes to the judge now
+        early_ids = {_vid(p) for p in early["pool"]}
+        products = [p for p in _dedupe(products) if _vid(p) not in early_ids]
+    else:
+        products = _dedupe(stocked + products)
+    shown_first = early["shown"] if early else []
+    pool, picks, summary, typical, follow_ups = await _judge(products, plan, raw, minp, maxp, codes, web_queries,
+                                                             vkey, known=shown_first)
+    typical = typical or (early["typical"] if early else None)
+    picks = list({id(p): p for p in picks}.values())
+    gone, unchecked, pool_size = 0, [], len(pool) + (len(early["pool"]) if early else 0)
+    if early:
+        unchecked, gone = list(early["unchecked"]), early["gone"]
+    if (picks or shown_first) and VERIFY_PICKS:
+        if picks:
+            _progress(f"بفتح صفحة كل نتيجة ({len(picks)}) وبتأكد إنها متوفرة وإن سعرها لسه زي ما هو...")
         tv = time.monotonic()
-        picks, unchecked, gone = await checked_only(picks, options)
+        picks, more_unchecked, more_gone = await checked_only(picks, options)
         TIMES["verify"] = round(time.monotonic() - tv, 1)
+        seen_ids = {_vid(p) for p in shown_first}
+        picks = shown_first + [p for p in picks if _vid(p) not in seen_ids]
+        unchecked += more_unchecked
+        gone += more_gone
         first_picks = picks
         if len(picks) < MIN_RESULTS and source == "web" and llm.available():
             # a shopper who sees one offer leaves: look in other stores before answering
@@ -1293,7 +1455,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             picks = picks + more
             unchecked += more_unchecked
             gone += more_gone
-            pool_size = len(pool) + judged
+            pool_size += judged
         summary = _honest_summary(summary, picks)
         if widened := len(picks) - len(first_picks):
             summary += f" (دورت كمان في متاجر تانية ولقيت {widened} عرض زيادة.)"
@@ -1302,11 +1464,16 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
                         else f" (شلت {gone} عرض لقيته خلصان لما فتحت صفحته.)")
         if options and any(p.option_ok is None for p in picks):
             summary += f" اللي مكتوب عليه \"اتأكد من {options}\" صفحته مبتقولش إذا كان متاح ولا لا."
+    elif shown_first:
+        seen_ids = {_vid(p) for p in shown_first}
+        picks = shown_first + [p for p in picks if _vid(p) not in seen_ids]
     _flag_price_outliers(picks, typical)
     picks = _ordered(picks, options)
+    used = llm.usage()
     return {
         "mode": "llm", "source": source, "timings": dict(TIMES),
-        "llm_usage": {"calls": llm.USAGE["calls"], "tokens": llm.USAGE["tokens"], "by_step": dict(llm.USAGE["by_step"])},
+        "llm_usage": {"calls": used["calls"], "tokens": used["tokens"], "by_step": dict(used["by_step"])},
+        "first_results": len(shown_first),
         "understood": plan.get("understood", ""),
         "request": plan.get("request") or raw,
         "suggested_products": plan.get("suggested_products") or [],
@@ -1323,6 +1490,33 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "unchecked": unchecked,  # offers whose price we couldn't confirm on their own page: never shown (kept for the logs)
         "store_errors": errors,
     }
+
+
+async def _first_results(stocked: list[Product], plan: dict, raw: str, minp, maxp, codes: list[str],
+                         web_queries: list[str], options: str, vkey: str) -> dict | None:
+    """The big stores' offers from our own price list: judged and checked on their own pages right away, and sent
+    to the page as the first results (in ~10-20 s) while the web search for the other stores goes on. None when the
+    judge couldn't run (then they're judged with the rest)."""
+    t = time.monotonic()
+    try:
+        info: dict = {}
+        pool, picks, _, typical, _ = await _judge(stocked, plan, raw, minp, maxp, codes, web_queries, vkey, info=info)
+        if info.get("failed"):
+            return None
+        # close alternatives are only offered when no store at all has the product: not before the web is searched
+        picks = [p for p in {id(p): p for p in picks}.values() if not p.alternative]
+        shown, unchecked, gone = await checked_only(picks, options) if picks else ([], [], 0)
+    except Exception as e:  # the full search still runs
+        log.warning("agent: first results failed: %s: %s", type(e).__name__, e)
+        return None
+    TIMES["first_results"] = round(time.monotonic() - t, 1)
+    log.info("agent: %d first results from our price list in %.1fs", len(shown), time.monotonic() - t)
+    if shown:
+        firsts = _ordered(list(shown), options)
+        _partial({"results": [p.to_dict() for p in firsts], "count": len(firsts),
+                  "summary": _honest_summary("", firsts),
+                  "note": "دي أول عروض من المتاجر الكبيرة واتأكدنا من سعرها، ولسه بدور في باقي المتاجر..."})
+    return {"pool": pool, "shown": shown, "unchecked": unchecked, "gone": gone, "typical": typical}
 
 
 MIN_RESULTS = 4  # fewer offers than this after the checks: one more search round in other stores
@@ -1360,7 +1554,8 @@ async def _widen(plan: dict, raw: str, found: list[Product], seen: set[str], wan
     products = [p for p in _dedupe(products) if (_page_id(p.url) or p.url) not in seen | have]
     if not products:
         return [], [], 0, 0
-    pool, picks, _, _, _ = await _judge(products, plan, raw, minp, maxp, codes, queries)
+    pool, picks, _, _, _ = await _judge(products, plan, raw, minp, maxp, codes, queries,
+                                        verdict_key(plan, raw, options), known=found)
     picks = list({id(p): p for p in picks}.values())
     if not picks:
         return [], [], 0, len(pool)
@@ -1552,14 +1747,39 @@ CATALOG_MAX = 15     # at most this many of them go to the judge (the web's shop
 _LATIN_WORD = re.compile(r"[a-z0-9][a-z0-9+-]*[a-z0-9+]|[a-z0-9]")
 
 
-def _catalog_offers(queries: list[str], codes: list[str]) -> list[Product]:
-    """Our price list's products that fit the request's words, best fit first (see catalog.offers). The list is
-    read from the stores' English pages: the model numbers and the Latin words of the searches find them."""
+CATALOG_WORDS_PROMPT = """A shopper in Egypt asked for: {request}
+Our price list has the English product titles of big online stores (e.g. "Samsung Galaxy A55 5G 256GB 8GB RAM Navy",
+"Fresh Automatic Washing Machine 7 Kg Silver"). Write 1-2 short English searches that would find this product's
+titles there: brand and model if named, product type, the size or capacity the shopper gave. Never add a brand or a
+spec the shopper didn't give.
+Reply JSON: {{"queries": ["...", "..."]}}"""
+
+
+def _latin_words(texts: list[str]) -> list[str]:
     words: list[str] = []
-    for text in codes + queries:
+    for text in texts:
         for w in _LATIN_WORD.findall(str(text).lower()):
             if w not in _SEARCH_NOISE and (len(w) >= 3 or any(c.isdigit() for c in w)) and w not in words:
                 words.append(w)
+    return words
+
+
+async def _catalog_queries(request: str) -> list[str]:
+    """The request only in Arabic (no planner, or it wrote no English): a light model writes the English words our
+    price list's titles use, so the big stores' offers aren't skipped. [] when no model answers."""
+    try:
+        data = await llm.ask_json(CATALOG_WORDS_PROMPT.format(request=request[:300]), timeout=6, budget=8,
+                                  prefer="bulk", step="catalog_words")
+    except llm.LLMError as e:
+        log.info("agent: no English words for the price list: %s", e)
+        return []
+    return [q for q in data.get("queries") or [] if isinstance(q, str) and q.strip()][:2]
+
+
+def _catalog_offers(queries: list[str], codes: list[str]) -> list[Product]:
+    """Our price list's products that fit the request's words, best fit first (see catalog.offers). The list is
+    read from the stores' English pages: the model numbers and the Latin words of the searches find them."""
+    words = _latin_words(codes + queries)
     if not words:
         return []
     # the rarest words first: a model number ("a55", "15") or a brand finds the product, "phone" finds everything

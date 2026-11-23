@@ -202,3 +202,36 @@ def test_server_problems_go_to_the_admin_page_not_to_the_shopper(monkeypatch):
     assert s["problems"][0]["kind"] == "llm_busy" and s["problems"][0]["n"] == 1
     assert "429" in s["problem_log"][0]["detail"] and s["problem_log"][0]["request"] == "كوتشي بوما"
     assert all(r["kind"] != "problem" for r in s["recent"])
+
+
+def test_llm_calls_per_step_are_on_the_admin_page(monkeypatch):
+    """How the free daily LLM quotas are spent: calls per step and per search, the owner's own searches too."""
+    monkeypatch.setattr(main.admin, "is_admin", lambda c: True)  # the owner's own search: still counted
+
+    class Req:
+        headers, cookies, client = {}, {}, type("C", (), {"host": "1.2.3.4"})()
+    d = {"action": "search", "query": "A56", "llm_usage": {"calls": 3, "tokens": 900, "by_step": {
+        "plan": {"calls": 1, "tokens": 500, "model": "openai/gpt-oss-120b"},
+        "read_page": {"calls": 2, "tokens": 400, "model": "llama-3.1-8b-instant"}}}}
+    asyncio.run(main._track_llm(Req(), d))
+    asyncio.run(main._track_llm(Req(), {"action": "ask", "llm_usage": {"calls": 0}}))  # no call: nothing saved
+    s = db.usage_stats(7)
+    steps = {r["step"]: r for r in s["llm"]["steps"]}
+    assert steps["turn"]["calls"] == 3 and steps["read_page"]["calls"] == 2 and steps["plan"]["tokens"] == 500
+    assert s["llm"]["by_action"] == [{"action": "search", "turns": 1, "calls": 3, "tokens": 900}]
+    assert {m["model"] for m in s["llm"]["models"]} == {"openai/gpt-oss-120b", "llama-3.1-8b-instant"}
+    assert all(r["kind"] != "llm" for r in s["recent"])
+
+
+def test_each_search_counts_its_own_llm_calls():
+    """Two searches at once each keep their own count (the count used to be one shared number)."""
+    async def one(n):
+        llm.reset_usage()
+        for _ in range(n):
+            llm._count("groq", httpx.Response(200, json={"usage": {"total_tokens": 10}}), "judge")
+            await asyncio.sleep(0)
+        return llm.usage()["calls"]
+
+    async def both():
+        return await asyncio.gather(one(2), one(5))
+    assert asyncio.run(both()) == [2, 5]

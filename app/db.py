@@ -539,7 +539,7 @@ def usage_stats(days: int, tz_minutes: int = 0, top: int = 25) -> dict:
     devices = _rows("SELECT action, COUNT(DISTINCT client) FROM events WHERE kind = 'visit' AND at > ? "
                     "GROUP BY action", (since,), "device people")
     recent = _rows("SELECT at, kind, client, member, detail, request, store, title, price, action, results, cached "
-                   "FROM events WHERE kind NOT IN ('visit', 'problem') AND at > ? ORDER BY at DESC LIMIT 80", (since,),
+                   "FROM events WHERE kind NOT IN ('visit', 'problem', 'llm') AND at > ? ORDER BY at DESC LIMIT 80", (since,),
                    "at kind client member detail request store title price action results cached")
     for r in recent:
         r["client"] = r["client"][:6]  # enough to tell visitors apart on the page
@@ -561,6 +561,21 @@ def usage_stats(days: int, tz_minutes: int = 0, top: int = 25) -> dict:
                      "ORDER BY 3 DESC", (since,), "kind n last")
     problem_log = _rows("SELECT at, action, detail, request FROM events WHERE kind = 'problem' AND at > ? "
                         "ORDER BY at DESC LIMIT 40", (since,), "at kind detail request")
+    # LLM calls per step (main._track_llm): one 'turn' row per chat turn with its total, one row per step
+    llm_steps = _rows("SELECT action, COUNT(*), SUM(results), SUM(price) FROM events WHERE kind = 'llm' AND at > ? "
+                      "GROUP BY action ORDER BY 3 DESC", (since,), "step turns calls tokens")
+    llm_by_action = _rows("SELECT detail, COUNT(*), SUM(results), SUM(price) FROM events WHERE kind = 'llm' "
+                          "AND action = 'turn' AND at > ? GROUP BY detail ORDER BY 2 DESC", (since,),
+                          "action turns calls tokens")
+    llm_daily = _rows("SELECT CAST(at + ? AS BIGINT) / 86400 AS d, COUNT(*), SUM(results), SUM(price) FROM events "
+                      "WHERE kind = 'llm' AND action = 'turn' AND at > ? GROUP BY d ORDER BY d", (off, since),
+                      "day turns calls tokens")
+    llm_models = _rows("SELECT detail, SUM(results) FROM events WHERE kind = 'llm' AND action <> 'turn' AND detail <> '' "
+                       "AND at > ? GROUP BY detail ORDER BY 2 DESC LIMIT 15", (since,), "model calls")
+    for r in llm_steps + llm_by_action + llm_daily + llm_models:  # Postgres SUM can be a Decimal
+        for k in ("calls", "tokens"):
+            if k in r:
+                r[k] = int(r[k] or 0)
     for r in searches:  # Postgres gives AVG as a Decimal, which JSON can't carry
         r["avg_results"] = None if r["avg_results"] is None else round(float(r["avg_results"]), 1)
     return {"days": days, "now": now, "tz_minutes": tz_minutes, "daily": daily, "totals": totals,
@@ -568,6 +583,7 @@ def usage_stats(days: int, tz_minutes: int = 0, top: int = 25) -> dict:
             "products": products, "ranks": ranks, "sources": sources, "devices": devices, "recent": recent,
             "accounts": accounts, "feedback": feedback, "reports": reports,
             "problems": problems, "problem_log": problem_log,
+            "llm": {"steps": llm_steps, "by_action": llm_by_action, "daily": llm_daily, "models": llm_models},
             "blocked_sites": _db.run("SELECT COUNT(*) FROM blocked_sites WHERE blocked = 1")[0][0]}
 
 

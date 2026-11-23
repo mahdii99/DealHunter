@@ -66,3 +66,14 @@ def _problems_in_memory(monkeypatch):
     seen: list[tuple[str, str, str]] = []
     monkeypatch.setattr(problems, "note", lambda kind, detail="", request="": seen.append((kind, detail, request)))
     return seen
+
+
+@pytest.fixture(autouse=True)
+def _fresh_agent_memory():
+    """Judge verdicts and shopper-words searches the agent keeps in memory: each test starts without them."""
+    from app import agent
+    agent._VERDICTS.clear()
+    agent._HITS.clear()
+    yield
+    agent._VERDICTS.clear()
+    agent._HITS.clear()
