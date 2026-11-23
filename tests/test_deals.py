@@ -75,3 +75,29 @@ def test_deals_page_and_cron(monkeypatch):
     page = c.get("/deals").text
     assert "Galaxy A56" in page and "23,000 ج.م" in page and "أقل سعر شفناه" in page and "data-ts=" in page
     assert "/deals" in c.get("/sitemap.xml").text
+
+
+def test_many_candidates_are_checked_a_batch_at_a_time(monkeypatch):
+    for i in range(45):
+        _seen(f"https://j.eg/p{i}", f"Phone {i}", 8000, old=10000)
+    sizes = []
+
+    async def checked(picks, options=""):
+        sizes.append(len(picks))
+        for p in picks:
+            p.verified = True
+        return picks, [], 0
+    monkeypatch.setattr(agent, "checked_only", checked)
+    monkeypatch.setattr(deals, "PER_CATEGORY", 100)
+    got = asyncio.run(deals.build())
+    assert sizes == [20, 20, 5] and len(got["deals"]) == 45
+
+
+def test_cheap_accessories_found_by_a_category_search_go_under_accessories():
+    for i in range(12):
+        _seen(f"https://a.eg/w{i}", f"Washer {i}", 20000 + i * 100, old=25000 + i * 100)
+    _seen("https://a.eg/bag", "Shoe washing bag", 88, old=142)
+    db._db.run("UPDATE catalog SET category = 'washers'")
+    got = {d["title"]: d["category"] for d in deals.candidates()}
+    assert got["Shoe washing bag"] == "accessories" and got["Washer 0"] == "washers"
+    assert deals.category_name("accessories") == "إكسسوارات"
