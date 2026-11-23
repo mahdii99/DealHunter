@@ -905,6 +905,8 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
                 return None, f"LLM read failed: {type(e).__name__}"
             if not p:
                 return None, "no single price of this product on its page"
+            if p.in_stock is False:
+                return None, "sold out (every option)"
             if wanted and p.option_ok is not True:  # an alert only when the page says their size/color is in stock
                 return None, (f"{wanted}: not offered or sold out" if p.option_ok is False
                               else f"{wanted}: the page doesn't say it's in stock")

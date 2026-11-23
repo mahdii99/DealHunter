@@ -8,7 +8,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import agent, llm, main
+from app import agent, extract, llm, main
 from app.extract import extract_products
 from app.query import parse_query
 from app.ranking import rank
@@ -1989,3 +1989,59 @@ def test_results_must_offer_the_shoppers_size(monkeypatch):
     assert len(asked) == 3 and gone == 1  # A's page data alone isn't enough: read too
     assert [(p.store, p.option_ok) for p in agent._ordered(shown, "مقاس 46")] == [("A", True), ("C", None)]
     assert shown[0].option == "مقاس 46"
+
+
+WOO_SHOE = ('<html><head><meta property="og:image" content="https://shop.com/wp-content/uploads/af1-black.jpg"></head>'
+            '<body><h1>Nike Air Force 1 Low 07 Black</h1><p>2,699 EGP</p>'
+            '<select id="pa_size"><option value="44">44</option><option value="46">46</option></select>'
+            '<form class="variations_form" data-product_variations="[{&quot;attributes&quot;:{&quot;attribute_pa_size&quot;:'
+            '&quot;44&quot;},&quot;display_price&quot;:2699,&quot;is_in_stock&quot;:{s44}},{&quot;attributes&quot;:'
+            '{&quot;attribute_pa_size&quot;:&quot;46&quot;},&quot;display_price&quot;:2699,&quot;is_in_stock&quot;:false}]">'
+            '</form></body></html>')
+
+
+def test_variant_stock_comes_from_the_store_data_not_the_size_menu():
+    """Live 23 Nov: freshkicks listed size 46 in its menu but had it sold out; only the page's variant data
+    (WooCommerce data-product_variations here, Shopify variants elsewhere) says which sizes are left."""
+    page = WOO_SHOE.replace("{s44}", "true")
+    assert extract.variant_stock(page) == [("44", True, 2699.0), ("46", False, 2699.0)]
+    shopify = '<script>var meta = {"product":{"variants":[{"option1":"42","available":true,"price":189900},' \
+              '{"option1":"46","available":false,"price":189900}]}};</script>'
+    assert [(v[0], v[1]) for v in extract.variant_stock(shopify)] == [("42", True), ("46", False)]
+    related = '<script>{"items":[{"name":"Shoe A","available":true},{"name":"Shoe B","available":false}]}</script>'
+    assert extract.variant_stock(related) == []  # other products, not this one's options
+    assert extract.page_image(page, "https://shop.com/p/af1") == "https://shop.com/wp-content/uploads/af1-black.jpg"
+
+
+def test_size_read_sees_the_variant_stock(monkeypatch):
+    seen = []
+
+    async def fake_ask(prompt, **kw):
+        seen.append(prompt)
+        return {"same_product": True, "price": 2699, "currency": "EGP", "choice_needed": False, "in_stock": True,
+                "option": {"offered": True, "available": False, "price": None}}
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    url = "https://shop.com/p/af1-black"
+    p = asyncio.run(agent._read_main_price(url, WOO_SHOE.replace("{s44}", "true"), "Nike Air Force 1", wanted="مقاس 46"))
+    assert "46: OUT OF STOCK" in seen[0] and "44: in stock" in seen[0] and p.option_ok is False
+    # every size sold out: the product is, without asking the LLM
+    p = asyncio.run(agent._read_main_price(url, WOO_SHOE.replace("{s44}", "false"), "Nike Air Force 1"))
+    assert p.in_stock is False and len(seen) == 1
+
+
+def test_results_read_from_text_get_the_pages_picture(monkeypatch):
+    from app.models import Product
+    url = "https://shop.com/p/af1-black-low"
+    page = WOO_SHOE.replace("{s44}", "true")
+
+    async def fake_fetch(client, sem, u):
+        return [], page
+
+    async def fake_ask(prompt, **kw):
+        return {"same_product": True, "price": 2699, "currency": "EGP", "choice_needed": False, "in_stock": True}
+    monkeypatch.setattr(agent, "VERIFY_PICKS", True)
+    monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
+    monkeypatch.setattr(agent.llm, "available", lambda: True)
+    monkeypatch.setattr(agent.llm, "ask_json", fake_ask)
+    shown, _, _ = asyncio.run(agent.checked_only([Product("S", "Nike Air Force 1", 2699, url)]))
+    assert shown[0].image == "https://shop.com/wp-content/uploads/af1-black.jpg"

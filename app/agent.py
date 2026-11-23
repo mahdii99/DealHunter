@@ -654,8 +654,11 @@ pages do): then false. If the page lists a price per size and the product names 
 "option": null when no option is wanted above, else {{"offered": true if the page lets you pick that option (or the
   product only comes in it), false if the page lists its choices (sizes, colors...) and it isn't one of them, null if
   the page doesn't show the choices; "available": true if that option can be bought now, false if the page marks it
-  unavailable / sold out / greyed out ("(unavailable)" in the text) or only other options are in stock, null if the
-  page doesn't say; "price": that option's own current price if the page writes one, else null}}}}
+  unavailable / sold out / greyed out ("(unavailable)" in the text), the VARIANTS data says out of stock, or only
+  other options are in stock; null when nothing on the page says this option itself is in stock (a size menu that
+  lists every size proves nothing, and neither does "in stock" for the product as a whole when it has options);
+  "price": that option's own current price if the page writes one, else null}}}}
+VARIANTS (when given) is the store's own data on each option's stock: trust it over the menus.
 price is null when the page writes no current price for its main product. Never guess.
 PAGE:
 {text}"""
@@ -699,6 +702,14 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
     text = _page_text(marked, words, MAIN_PRICE_CHARS, base_url=url, top=True)
     if choices:
         text += "\n" + choices
+    variants = extract_mod.variant_stock(html)
+    if variants and all(not ok for _, ok, _ in variants):  # every option sold out: the product is
+        return Product(store=trust.store_name(url), title=title or url, price=0.0, url=url, trusted=trust.is_known(url),
+                       in_stock=False, option=wanted or None, option_ok=False if wanted else None)
+    if variants and wanted:
+        text += "\nVARIANTS: " + "; ".join(
+            f"{label}: {'in stock' if ok else 'OUT OF STOCK'}" + (f" ({price:g})" if price else "")
+            for label, ok, price in variants)[:1500]
     data = await llm.ask_json(FOLLOWED_PAGE_PROMPT.format(title=title or url, wanted=wanted or "none", text=text),
                               prefer="bulk", spread=spread, step="read_price")
     if data.get("same_product") is not True:
@@ -1318,6 +1329,8 @@ async def _verify_stock(picks: list[Product], options: str = "") -> tuple[list[P
             pid = _page_id(p.url)
             by_link = [q for q in products if _page_id(q.url) == pid]
             same = by_link or (products if len(products) == 1 else [])
+            if not p.image:  # offers read from text (no picture there): the product page's own picture
+                p.image = next((q.image for q in same if q.image), None) or extract_mod.page_image(html, p.url)
             if same:
                 q = min(same, key=_paid)
                 if q.in_stock is False:
