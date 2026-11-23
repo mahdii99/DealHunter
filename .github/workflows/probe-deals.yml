@@ -1,0 +1,14 @@
+name: probe deal pages (temporary)
+on:
+  push:
+    branches: [feature/more-deals]
+    paths: [scripts/probe_deals.py, .github/workflows/probe-deals.yml]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -q -r requirements.txt
+      - run: python -m scripts.probe_deals
