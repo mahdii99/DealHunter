@@ -1141,46 +1141,10 @@ def _discount(p: Product) -> int | None:
     return pct if 3 <= pct <= 90 else None
 
 
-async def run(raw: str, plan: dict | None = None, budget_text: str | None = None) -> dict:
-    """Search for one request. `plan` comes from plan_turn() when the chat already planned it;
-    `budget_text` is what the shopper actually wrote (all their messages), used to check a budget is real."""
-    TIMES.clear()
-    if plan is None:
-        llm.reset_usage()  # (a chat turn resets it before planning, in main._chat_turn)
-    t0 = time.monotonic()
-    if plan is None:
-        if not llm.available():
-            return await run_rules(raw, note="شغالين من غير LLM (مفيش مفتاح في .env)، فالفهم بسيط.")
-        try:
-            log.info("agent: understanding %r", raw)
-            plan = await plan_turn([{"role": "user", "text": raw}])
-        except llm.LLMError as e:
-            log.warning("agent: planner failed: %s", e.details or e)
-            return await run_rules(raw, note=BUSY_NOTE)
-    seed: list[dict] = []
-    if websearch.available() and llm.available() and not plan.get("simple"):
-        plan, seed = await _check_plan(plan, plan.get("request") or raw)
-    queries = [q for q in plan.get("queries", []) if isinstance(q, str) and q.strip()][:2] or [raw]
-    web_queries = [q for q in plan.get("web_queries", []) if isinstance(q, str) and q.strip()][:MAX_WEB_QUERIES] or queries
-    codes = [c for c in plan.get("model_codes", []) if isinstance(c, str) and c.strip()]
-
-    TIMES["understand"] = round(time.monotonic() - t0, 1)
-    if websearch.available():
-        source = "web"
-        want = plan.get("request") or raw
-        if reqs := [r for r in plan.get("requirements") or [] if isinstance(r, str)]:
-            want += " (" + "; ".join(reqs[:6]) + ")"
-        products, errors = await _web_find(web_queries, seed, _famous_sites(plan), want=want,
-                                           named=_domains(plan.get("shopper_stores")))
-        products = _dedupe(products)
-    else:
-        source = "stores"
-        products, errors = await _search_all(queries)
-
-    maxp, minp = plan.get("max_price"), plan.get("min_price")
-    if (maxp is not None or minp is not None) and not _states_budget(budget_text or raw):
-        log.info("agent: ignoring budget %s-%s the LLM guessed (no price words in the request)", minp, maxp)
-        maxp = minp = None
+async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, codes: list[str],
+                 web_queries: list[str]) -> tuple[list[Product], list[Product], str, float | None, list[str]]:
+    """Budget, stock and trust filters, then the LLM judge picks the offers that fit.
+    Returns (candidates judged, picks, summary, typical price, follow-up suggestions)."""
     pool = [p for p in products if (maxp is None or _paid(p) <= maxp) and (minp is None or p.price >= minp)]
     sold_out = [p for p in pool if p.in_stock is False]
     if sold_out:
@@ -1244,15 +1208,78 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             log.warning("agent: judge failed: %s", e.details or e)
             summary = ("الموديلات المجانية مشغولة دلوقتي فمقدرتش أراجع النتايج بدقة، فدي مرتبة بالسعر بس "
                        "واتأكد من الموديل في كل واحدة. جرب تاني كمان دقيقة لنتيجة أدق.")
+    return pool, picks, summary, typical, follow_ups
+
+
+async def run(raw: str, plan: dict | None = None, budget_text: str | None = None) -> dict:
+    """Search for one request. `plan` comes from plan_turn() when the chat already planned it;
+    `budget_text` is what the shopper actually wrote (all their messages), used to check a budget is real."""
+    TIMES.clear()
+    if plan is None:
+        llm.reset_usage()  # (a chat turn resets it before planning, in main._chat_turn)
+    t0 = time.monotonic()
+    if plan is None:
+        if not llm.available():
+            return await run_rules(raw, note="شغالين من غير LLM (مفيش مفتاح في .env)، فالفهم بسيط.")
+        try:
+            log.info("agent: understanding %r", raw)
+            plan = await plan_turn([{"role": "user", "text": raw}])
+        except llm.LLMError as e:
+            log.warning("agent: planner failed: %s", e.details or e)
+            return await run_rules(raw, note=BUSY_NOTE)
+    seed: list[dict] = []
+    if websearch.available() and llm.available() and not plan.get("simple"):
+        plan, seed = await _check_plan(plan, plan.get("request") or raw)
+    queries = [q for q in plan.get("queries", []) if isinstance(q, str) and q.strip()][:2] or [raw]
+    web_queries = [q for q in plan.get("web_queries", []) if isinstance(q, str) and q.strip()][:MAX_WEB_QUERIES] or queries
+    codes = [c for c in plan.get("model_codes", []) if isinstance(c, str) and c.strip()]
+
+    TIMES["understand"] = round(time.monotonic() - t0, 1)
+    want = plan.get("request") or raw
+    if websearch.available():
+        source = "web"
+        if reqs := [r for r in plan.get("requirements") or [] if isinstance(r, str)]:
+            want += " (" + "; ".join(reqs[:6]) + ")"
+        products, errors = await _web_find(web_queries, seed, _famous_sites(plan), want=want,
+                                           named=_domains(plan.get("shopper_stores")))
+        products = _dedupe(products)
+    else:
+        source = "stores"
+        products, errors = await _search_all(queries)
+
+    maxp, minp = plan.get("max_price"), plan.get("min_price")
+    if (maxp is not None or minp is not None) and not _states_budget(budget_text or raw):
+        log.info("agent: ignoring budget %s-%s the LLM guessed (no price words in the request)", minp, maxp)
+        maxp = minp = None
+    pool, picks, summary, typical, follow_ups = await _judge(products, plan, raw, minp, maxp, codes, web_queries)
     picks = list({id(p): p for p in picks}.values())
     options = "، ".join(_strs(plan.get("pick_options"), 4, 60))
-    gone, unchecked = 0, []
+    gone, unchecked, pool_size = 0, [], len(pool)
     if picks and VERIFY_PICKS:
         _progress(f"بفتح صفحة كل نتيجة ({len(picks)}) وبتأكد إنها متوفرة وإن سعرها لسه زي ما هو...")
         tv = time.monotonic()
         picks, unchecked, gone = await checked_only(picks, options)
         TIMES["verify"] = round(time.monotonic() - tv, 1)
+        first_picks = picks
+        if len(picks) < MIN_RESULTS and source == "web" and llm.available():
+            # a shopper who sees one offer leaves: look in other stores before answering
+            tw, times = time.monotonic(), dict(TIMES)
+            seen_urls = {_page_id(p.url) or p.url for p in pool}
+            try:
+                more, more_unchecked, more_gone, judged = await _widen(plan, raw, picks, seen_urls, want, options,
+                                                                       minp, maxp, codes)
+            except Exception as e:  # the first round's results still stand
+                log.warning("agent: widening failed: %s: %s", type(e).__name__, e)
+                more, more_unchecked, more_gone, judged = [], [], 0, 0
+            TIMES.clear()
+            TIMES.update(times, widen=round(time.monotonic() - tw, 1))
+            picks = picks + more
+            unchecked += more_unchecked
+            gone += more_gone
+            pool_size = len(pool) + judged
         summary = _honest_summary(summary, picks)
+        if widened := len(picks) - len(first_picks):
+            summary += f" (دورت كمان في متاجر تانية ولقيت {widened} عرض زيادة.)"
         if gone:
             summary += (f" (شلت {gone} عرض لما فتحت صفحته: خلصان أو {options} مش متاح فيه.)" if options
                         else f" (شلت {gone} عرض لقيته خلصان لما فتحت صفحته.)")
@@ -1272,12 +1299,55 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "max_price": maxp, "min_price": minp,
         "summary": summary,
         "suggestions": follow_ups,
-        "candidates_checked": len(pool),
+        "candidates_checked": pool_size,
         "sold_out_dropped": gone,
         "results": [p.to_dict() for p in picks],
         "unchecked": unchecked,  # offers whose price we couldn't confirm on their own page: never shown (kept for the logs)
         "store_errors": errors,
     }
+
+
+MIN_RESULTS = 4  # fewer offers than this after the checks: one more search round in other stores
+
+WIDEN_PROMPT = """A shopper in Egypt asked: {request}
+We searched with: {queries}
+We found only {n} offer(s) still for sale that fit{option_note}: {found}
+Write 2 NEW web searches that would find MORE Egyptian online stores selling what the shopper wants: other wording
+(Arabic as Egyptian shops write it, and English), the stores that specialise in this kind of product, other models or
+colors of the same product that also fit the request. Never change what the shopper asked for, never repeat the
+searches above.
+Reply JSON: {{"web_queries": ["...", "..."], "stores": ["2-6 domains of Egyptian stores likely to sell it that we may
+have missed"]}}"""
+
+
+async def _widen(plan: dict, raw: str, found: list[Product], seen: set[str], want: str, options: str,
+                 minp, maxp, codes: list[str]) -> tuple[list[Product], list[dict], int, int]:
+    """Too few offers survived the checks: the LLM writes new searches, and the new offers go through the same
+    judge and page checks. Returns (new offers, unchecked, dropped as sold out, candidates judged)."""
+    _progress("لقيت عروض قليلة، بدور كمان في متاجر تانية...")
+    prompt = WIDEN_PROMPT.format(
+        request=plan.get("request") or raw, n=len(found),
+        queries=json.dumps(plan.get("web_queries", []), ensure_ascii=False),
+        option_note=f" (with {options} in stock)" if options else "",
+        found="; ".join(f"{p.title[:60]} at {p.store}" for p in found) or "none")
+    fix = await llm.ask_json(prompt, timeout=10, budget=15, prefer="strong", step="widen")
+    queries = [q for q in fix.get("web_queries") or [] if isinstance(q, str) and q.strip()][:2]
+    if not queries:
+        return [], [], 0, 0
+    stores = _domains([d for d in fix.get("stores") or [] if isinstance(d, str)])
+    log.info("agent: widening with %s (+%s)", queries, stores)
+    products, _ = await _web_find(queries, [], list(dict.fromkeys(stores + _famous_sites(plan))), want=want,
+                                  named=_domains(plan.get("shopper_stores")))
+    have = {_page_id(p.url) or p.url for p in found}
+    products = [p for p in _dedupe(products) if (_page_id(p.url) or p.url) not in seen | have]
+    if not products:
+        return [], [], 0, 0
+    pool, picks, _, _, _ = await _judge(products, plan, raw, minp, maxp, codes, queries)
+    picks = list({id(p): p for p in picks}.values())
+    if not picks:
+        return [], [], 0, len(pool)
+    picks, unchecked, gone = await checked_only(picks, options)
+    return picks, unchecked, gone, len(pool)
 
 
 VERIFY_PICKS = True    # open each result's own page before showing it (tests turn it off unless they check it)
@@ -1371,8 +1441,10 @@ async def _verify_stock(picks: list[Product], options: str = "") -> tuple[list[P
             async with llm_sem:  # each read starts on another model, so per-minute limits hold
                 return await _read_main_price(p.url, page, p.title, spread=i, wanted=options)
         # well-known stores first: when time runs out, the offers shoppers trust most are the ones checked
-        to_read = sorted(to_read, key=lambda x: (not x[0].trusted, -(x[0].trust_score or 0), _paid(x[0])))[:VERIFY_LLM_MAX]
-        reads = await _within(VERIFY_LLM_DEADLINE, [read(i, p, page) for i, (p, page) in enumerate(to_read)])
+        # a size/color to check means every page is read (not only those without product data): more reads, more time
+        cap, deadline = (VERIFY_LLM_MAX + 8, VERIFY_LLM_DEADLINE + 8) if options else (VERIFY_LLM_MAX, VERIFY_LLM_DEADLINE)
+        to_read = sorted(to_read, key=lambda x: (not x[0].trusted, -(x[0].trust_score or 0), _paid(x[0])))[:cap]
+        reads = await _within(deadline, [read(i, p, page) for i, (p, page) in enumerate(to_read)])
         for (p, _), got in zip(to_read, reads):
             if isinstance(got, Exception) or got is None:
                 continue
