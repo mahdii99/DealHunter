@@ -32,6 +32,7 @@
   .tile .v { font-size:28px; font-weight:700; line-height:1.2; font-variant-numeric:tabular-nums; }
   .tile .k { color:var(--muted); font-size:13px; }
   .tile .s { color:var(--muted); font-size:12px; margin-top:2px; }
+  .llm-tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin:10px 0 12px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:12px; margin-top:12px; }
   .grid .wide { grid-column:1 / -1; }
   @media (max-width:420px) { .grid { grid-template-columns:1fr; } }
@@ -109,6 +110,7 @@
 
     <div class="grid">
       <section class="card wide"><h2>مشاكل السيرفر</h2><p class="muted">ليميت الموديلات المجانية وخدمات البحث والأخطاء. الزوار مش بيشوفوا التفاصيل دي، بيشوفوا رسالة بسيطة بس.</p><div id="problems"></div><div class="scroll" id="problemLog" style="margin-top:10px"></div></section>
+      <section class="card wide"><h2>استهلاك الذكاء الاصطناعي</h2><p class="muted">كام طلب للموديلات المجانية في كل خطوة. الحصص اليومية المجانية محدودة، فكل ما الرقم ده يقل كل ما نقدر نخدم ناس أكتر في اليوم.</p><div id="llmTiles" class="llm-tiles"></div><div class="scroll" id="llmSteps"></div><div class="scroll" id="llmDaily" style="margin-top:10px"></div></section>
       <section class="card"><h2>أكتر حاجات اتدور عليها</h2><div class="scroll" id="searches"></div></section>
       <section class="card"><h2>المتاجر اللي الناس فتحت لينكاتها</h2><div class="scroll" id="stores"></div></section>
       <section class="card wide"><h2>المنتجات اللي اتفتحت أكتر</h2><div class="scroll" id="products"></div></section>
@@ -223,6 +225,31 @@ function drawChart() {
     ...METRICS.map(([k, l]) => [l, r => `<td class="n">${num(r[k])}</td>`])]);
 }
 
+const STEPS = {plan: 'فهم الطلب (والتأكد من المنتج)', plan_market: 'فهم الطلب بعد أسعار السوق', check: 'التأكد من المنتج (لوحده)',
+               judge: 'الحكم على النتايج', read_page: 'قراية صفحات متاجر', read_price: 'التأكد من السعر في صفحة المنتج',
+               widen: 'بحث إضافي لما النتايج قليلة', catalog_words: 'كلمات إنجليزي لقائمة أسعارنا', trending: 'أفكار البحث'};
+function drawLLM() {
+  const llm = data.llm || {steps: [], daily: [], by_action: []};
+  const total = llm.steps.find(r => r.step === 'turn') || {turns: 0, calls: 0, tokens: 0};
+  const search = llm.by_action.find(r => r.action === 'search') || {turns: 0, calls: 0, tokens: 0};
+  $('#llmTiles').innerHTML = [
+    ['طلبات للموديلات', total.calls, `${num(total.tokens)} توكن`],
+    ['متوسط الطلبات لكل بحث', search.turns ? search.calls / search.turns : 0, `${num(search.turns)} بحث`],
+    ['متوسط التوكن لكل بحث', search.turns ? search.tokens / search.turns : 0, ''],
+  ].map(([k, n, s]) => `<div class="tile"><div class="k">${k}</div><div class="v">${num(Math.round(n * 10) / 10)}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`).join('');
+  const steps = llm.steps.filter(r => r.step !== 'turn'), maxC = Math.max(0, ...steps.map(r => r.calls));
+  $('#llmSteps').innerHTML = table(steps, [
+    ['الخطوة', r => `<td class="t">${esc(STEPS[r.step] || r.step)}${bar(r.calls, maxC)}</td>`],
+    ['طلبات', r => `<td class="n">${num(r.calls)}</td>`],
+    ['لكل رسالة', r => `<td class="n">${total.turns ? num(Math.round(r.calls / total.turns * 10) / 10) : ''}</td>`],
+    ['توكن', r => `<td class="n">${num(r.tokens)}</td>`]], 'مفيش طلبات للموديلات في المدة دي.');
+  $('#llmDaily').innerHTML = llm.daily.length ? table(llm.daily.slice().reverse(), [
+    ['اليوم', r => `<td>${dayName(r.day)}</td>`],
+    ['رسائل', r => `<td class="n">${num(r.turns)}</td>`],
+    ['طلبات للموديلات', r => `<td class="n">${num(r.calls)}</td>`],
+    ['توكن', r => `<td class="n">${num(r.tokens)}</td>`]]) : '';
+}
+
 function draw() {
   const tot = Object.fromEntries(data.totals.map(t => [t.kind, t]));
   const v = tot.visit || {n: 0, people: 0}, tn = tot.turn || {n: 0, people: 0}, c = tot.click || {n: 0, people: 0};
@@ -295,6 +322,7 @@ function draw() {
   $('#reports').innerHTML = table(data.reports, [
     ['', r => `<td class="n muted">${when(r.at)}<div><span class="pill warn">${esc(REASONS[r.reason] || r.reason)}</span></div></td>`],
     ['النتيجة', r => `<td class="t" dir="auto"><a href="${safeUrl(r.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.title)}</a> <span class="muted">${esc(r.store)} ${money(r.price)}</span><div class="muted">${esc(r.request)}</div></td>`]], 'مفيش بلاغات في المدة دي.');
+  drawLLM();
   $('#updated').textContent = '· اتحدثت ' + new Date().toLocaleTimeString('ar-EG', {hour: 'numeric', minute: '2-digit'});
 }
 

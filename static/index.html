@@ -887,6 +887,15 @@ async function send(text) {
                      `<div class="meta live"><span class="step">${t('understanding')}</span> <span class="secs"></span></div>`);
   const step = a.querySelector('.step'), secs = a.querySelector('.secs'), t0 = Date.now();
   const live = a.querySelector('.sum'), liveText = live.querySelector('span');
+  let earlyIdx = null;  // the first checked offers (big stores, from our price list) shown while the search goes on
+  const showEarly = data => {
+    const d = {...data, action: 'search'};
+    if (earlyIdx === null) { earlyIdx = shown.length; shown.push(d); a.dataset.turn = earlyIdx; } else shown[earlyIdx] = d;
+    let box = a.querySelector('.early');
+    if (!box) { box = document.createElement('div'); box.className = 'early'; a.insertBefore(box, a.querySelector('.meta.live')); }
+    box.innerHTML = `<div class="hint-line">${esc(L(d.note || '', 'First offers from the big stores, prices checked. Still searching other stores...'))}</div>` +
+      `<div class="grid">${d.results.map((p, i) => card(p, i, i, earlyIdx)).join('')}</div>`;
+  };
   const timer = setInterval(() => { secs.textContent = Math.round((Date.now() - t0) / 1000) + ' ' + t('sec'); }, 1000);
   b.disabled = true;
   try {
@@ -910,6 +919,7 @@ async function send(text) {
           const ev = JSON.parse(line);
           if (ev.type === 'status') step.textContent = ev.text;
           else if (ev.type === 'reply') { live.hidden = false; liveText.textContent = ev.text; }
+          else if (ev.type === 'partial') showEarly(ev.data);
           else if (ev.type === 'done') return ev.data;
           else if (ev.type === 'error') throw Object.assign(new Error(ev.status), {status: ev.status});
         }
@@ -928,13 +938,17 @@ async function send(text) {
     }
     if (d.action === 'search') currentRequest = d.request || currentRequest;
     history.push({role: 'assistant', text: said(d).slice(0, 1500)});
-    a.dataset.turn = shown.length; shown.push(d);
+    const idx = earlyIdx ?? shown.length;
+    a.dataset.turn = idx; shown[idx] = d;
     if (!turns.length) chatId = newId();
     turns.push({u: text, d}); saveChat();
     a.innerHTML = render(d, shown.length - 1);
   } catch (err) {
     history.pop();
-    a.innerHTML = `<div class="err">${t('error')}</div>`;
+    if (earlyIdx !== null) {  // the first offers stay on screen (their prices were checked): only the rest failed
+      a.querySelector('.meta.live')?.remove(); a.querySelector('.sum[hidden]')?.remove();
+      a.insertAdjacentHTML('beforeend', `<div class="err">${t('error')}</div>`);
+    } else a.innerHTML = `<div class="err">${t('error')}</div>`;
   } finally { clearInterval(timer); b.disabled = false; q.focus(); }
 }
 function newChat() {

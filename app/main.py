@@ -247,7 +247,8 @@ KEEPALIVE_SECONDS = 8
 @app.post("/api/chat/stream")
 async def chat_stream(turn: ChatTurn, request: Request):
     """Same as /api/chat, but sends progress lines while it works (NDJSON: one JSON object per line):
-    {"type": "status", "text": ...} and {"type": "reply", "text": <the reply so far, while the LLM writes it>} ...
+    {"type": "status", "text": ...} and {"type": "reply", "text": <the reply so far, while the LLM writes it>},
+    {"type": "partial", "data": {"results": [...], ...}} (the first checked offers while the search goes on) ...
     then {"type": "done", "data": <the /api/chat answer>}."""
     queue: asyncio.Queue = asyncio.Queue()
     client = client_id(request)
@@ -256,6 +257,7 @@ async def chat_stream(turn: ChatTurn, request: Request):
     async def work():
         token = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
         said = agent.REPLY.set(lambda text: queue.put_nowait({"type": "reply", "text": text}))  # typed as it comes
+        early = agent.PARTIAL.set(lambda data: queue.put_nowait({"type": "partial", "data": data}))  # first results
         try:
             d = await _chat_turn(turn, client, user)
             queue.put_nowait({"type": "done", "data": d})
@@ -268,6 +270,7 @@ async def chat_stream(turn: ChatTurn, request: Request):
             problems.note("server_error", f"chat: {type(e).__name__}: {e}"[:300], request=turn.messages[-1].text)
             queue.put_nowait({"type": "error", "status": 500})
         finally:
+            agent.PARTIAL.reset(early)
             agent.REPLY.reset(said)
             agent.PROGRESS.reset(token)
 
@@ -302,6 +305,9 @@ async def _chat_turn(turn: ChatTurn, client: str | None = None, user: dict | Non
         d = await _chat_turn_in_market(turn, client, USER_DAILY_LIMIT if user and USER_DAILY_LIMIT else DAILY_LIMIT)
     finally:
         market.reset(token)
+    used = agent.llm.usage()  # this turn's own calls (a saved answer served again carries its first run's count)
+    d["llm_usage"] = {"calls": used["calls"], "tokens": used["tokens"],
+                      "by_step": {k: dict(v) for k, v in used["by_step"].items()}}
     if user:
         await asyncio.to_thread(_personalize, d, user)
     return d
@@ -313,6 +319,22 @@ async def _track_turn(request: Request, message: str, d: dict) -> None:
     results = d.get("results") or []
     await _track(request, "turn", detail=message, request=d.get("query") or d.get("request") or "", action=action,
                  results=len(results) if action == "search" else None, cached=d.get("cached"))
+    await _track_llm(request, d)
+
+
+async def _track_llm(http: Request, d: dict) -> None:
+    """The turn's LLM calls per step, for the owner's /admin page (how the free daily quotas are spent). The owner's
+    own searches count too: they use the same quotas."""
+    used = d.get("llm_usage") or {}
+    if DEMO or not used.get("calls"):
+        return
+    client, req = client_id(http), d.get("query") or d.get("request") or ""
+    action = "limit" if d.get("limit") else d.get("action") or "search"
+    await _db(db.add_event, "llm", client, action="turn", results=used["calls"], price=used.get("tokens") or 0,
+              detail=action, request=req)
+    for step, s in (used.get("by_step") or {}).items():
+        await _db(db.add_event, "llm", client, action=step[:20], results=s.get("calls") or 0,
+                  price=s.get("tokens") or 0, detail=s.get("model") or "", request=req)
 
 
 _background: set[asyncio.Task] = set()
@@ -362,8 +384,13 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
     plan, failed = None, None
     agent.llm.reset_usage()
     if agent.llm.available():
+        hits, words = [], ""
+        if not turn.shown:  # a new request: the planner checks the product against the web in the same call
+            words = agent.plain_request([next(m["text"] for m in messages if m["role"] == "user")])
+            hits = await agent.shopper_hits(words)
         try:
-            plan = await agent.plan_turn(messages, turn.request, [r.model_dump() for r in turn.shown], (lo, hi))
+            plan = await agent.plan_turn(messages, turn.request, [r.model_dump() for r in turn.shown], (lo, hi),
+                                         hits=hits, hits_for=words)
         except agent.llm.LLMError as e:
             log.warning("chat planner failed: %s", e.details or e)
             failed = e

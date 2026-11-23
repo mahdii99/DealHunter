@@ -39,22 +39,43 @@ class LLMError(Exception):
         self.details = details
 
 
-USAGE = {"calls": 0, "tokens": 0, "by_step": {}}  # LLM use since the last reset (the agent resets it per search)
+_USAGE: contextvars.ContextVar = contextvars.ContextVar("llm_usage", default=None)
+_IDLE_USAGE = {"calls": 0, "tokens": 0, "by_step": {}}  # calls made outside any search (tests, scripts)
+
+
+def usage() -> dict:
+    """LLM use of the current search (its own count: searches running at the same time don't mix)."""
+    return _USAGE.get() or _IDLE_USAGE
+
+
+class _UsageView:
+    """llm.USAGE["calls"] reads the current search's count (kept for older callers)."""
+    def __getitem__(self, key):
+        return usage()[key]
+
+    def get(self, key, default=None):
+        return usage().get(key, default)
+
+
+USAGE = _UsageView()
 
 
 def reset_usage() -> None:
-    USAGE.update(calls=0, tokens=0, by_step={})
+    """A new count for this search. Tasks it starts later share it (they copy the context, not the dict)."""
+    _USAGE.set({"calls": 0, "tokens": 0, "by_step": {}})
 
 
 def _count(provider: str, r: httpx.Response, step: str, model: str = "") -> None:
     try:
         data = r.json()
-        u = data.get("usageMetadata", {}).get("totalTokenCount") if provider == "gemini" else             (data.get("usage") or {}).get("total_tokens")
+        u = data.get("usageMetadata", {}).get("totalTokenCount") if provider == "gemini" else \
+            (data.get("usage") or {}).get("total_tokens")
     except ValueError:
         u = None
-    USAGE["calls"] += 1
-    USAGE["tokens"] += int(u or 0)
-    s = USAGE["by_step"].setdefault(step, {"calls": 0, "tokens": 0})
+    now = usage()
+    now["calls"] += 1
+    now["tokens"] += int(u or 0)
+    s = now["by_step"].setdefault(step, {"calls": 0, "tokens": 0})
     s["calls"] += 1
     s["tokens"] += int(u or 0)
     if model:
@@ -397,12 +418,14 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
         bulk = prefer == "bulk"
 
         def tier(a) -> int:
-            """Bulk work (reading pages): the fast providers' smaller models, then Gemini (fast, big per-minute
-            limits, its own daily quota), then the fast strong models (kept for planning and judging), then the
-            rest (free models elsewhere often take 10 s+)."""
-            if a[0] in FAST_BULK and not strong(a[1], a[0]):
-                return 0
-            return 1 if a[0] == "gemini" else 2 if a[0] in FAST_BULK else 3
+            """Bulk work (reading pages, light steps): the fast providers' smaller models (the biggest daily
+            quotas), then the smaller models elsewhere, then Gemini (fast, but a small daily quota), then the
+            fast strong models, then the rest. The strong models' daily quota is kept for planning and judging,
+            which decide what the shopper sees."""
+            small = not strong(a[1], a[0])
+            if small:
+                return 0 if a[0] in FAST_BULK else 1
+            return 2 if a[0] == "gemini" else 3 if a[0] in FAST_BULK else 4
 
         def preferred(a) -> bool:
             if bulk:
@@ -430,7 +453,6 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
 
         async def choose(idle: bool):
             """The next model to try, or None. Waits for a resting model only when nothing else is running."""
-            nonlocal queue
             left = left_now()
             if queue:
                 a = queue.pop(0)

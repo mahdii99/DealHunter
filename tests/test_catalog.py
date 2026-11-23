@@ -191,3 +191,74 @@ def test_an_empty_first_page_is_reported_with_its_title(monkeypatch):
         lambda r: httpx.Response(200, text="<html><title>Something else</title><body>hi</body></html>")))
     report = asyncio.run(catalog.scrape(["amazon.eg"], ["phones"], client=client))
     assert "title: Something else" in report["amazon.eg phones"]["error"]
+
+
+def _web_and_llm(monkeypatch, judge_prompts, find=None):
+    async def fake_find(queries, seed=None, famous=None, want="", named=None):
+        return (find or [])[:], {}
+
+    async def fake_ask(prompt, step="other", **kw):
+        if step == "catalog_words":
+            return {"queries": ["Samsung Galaxy A56 256GB"]}
+        judge_prompts.append(prompt)
+        lines = [ln for ln in prompt.split("\n") if ln[:1].isdigit() and ". [" in ln[:6]]
+        return {"matches": [{"id": i, "sure": True} for i, ln in enumerate(lines) if "Samsung" in ln or "A56" in ln],
+                "summary": "s"}
+    monkeypatch.setattr(websearch, "available", lambda: True)
+    monkeypatch.setattr(agent, "_web_find", fake_find)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+
+
+def test_an_arabic_only_request_still_finds_the_price_list(monkeypatch):
+    """Live 23 Nov: with the planner busy there was no English search, and the price list (English titles) was
+    skipped, so the big stores were missing. A light model now writes the English words for it."""
+    _stock()
+    prompts = []
+    _web_and_llm(monkeypatch, prompts)
+    plan = {"action": "search", "request": "سامسونج ايه 56", "simple": True, "web_queries": ["سامسونج ايه 56"]}
+    out = asyncio.run(agent.run("سامسونج ايه 56", plan=plan))
+    assert out["from_catalog"] == 7 and len(out["results"]) == 7
+    assert out["llm_usage"] is not None
+
+
+def test_price_list_offers_come_first_and_are_not_judged_twice(monkeypatch):
+    """The big stores' offers from our price list are judged and shown first (a 'partial' answer), while the web
+    search goes on; the final judge only sees the new shops' offers."""
+    _stock()
+    prompts, partial = [], []
+    _web_and_llm(monkeypatch, prompts, find=[Product("2B", "Samsung Galaxy A56 5G 256GB", 18900,
+                                                     "https://2b.com.eg/p/galaxy-a56")])
+
+    async def go():
+        token = agent.PARTIAL.set(partial.append)
+        try:
+            return await agent.run("سامسونج A56", plan={"action": "search", "request": "سامسونج A56", "simple": True,
+                                                         "web_queries": ["Samsung Galaxy A56 price"]})
+        finally:
+            agent.PARTIAL.reset(token)
+    out = asyncio.run(go())
+    assert len(partial) == 1 and {r["store"] for r in partial[0]["results"]} == {"Jumia", "Amazon.eg"}
+    assert len(prompts) == 2 and "2B" not in prompts[0]
+    judged_last = [ln for ln in prompts[1].split("\n") if ln[:1].isdigit() and ". [" in ln[:6]]
+    assert judged_last == [ln for ln in judged_last if "[2B]" in ln] and len(judged_last) == 1
+    assert "already checked" in prompts[1]  # the first offers are given for comparison
+    assert len(out["results"]) == 8 and out["first_results"] == 7
+    # the same request again (after the saved answer expired): every verdict is reused, no judge call at all
+    prompts.clear()
+    out = asyncio.run(go())
+    assert prompts == [] and len(out["results"]) == 8
+
+
+def test_a_verdict_is_not_reused_when_the_price_moved_a_lot(monkeypatch):
+    _stock(n_jumia=1, n_amazon=0)
+    prompts = []
+    _web_and_llm(monkeypatch, prompts)
+    plan = {"action": "search", "request": "A56", "simple": True, "web_queries": ["Samsung Galaxy A56"]}
+    asyncio.run(agent.run("A56", plan=plan))
+    assert len(prompts) == 1
+    db.save_catalog([{"url": "https://www.jumia.com.eg/galaxy-a56-0.html", "store": "Jumia",
+                      "title": "Samsung Galaxy A56 5G 256GB color 0", "price": 9000}], "EG", "phones")
+    prompts.clear()
+    asyncio.run(agent.run("A56", plan=plan))
+    assert len(prompts) == 1  # judged again: half the price can be another item or a mistake
