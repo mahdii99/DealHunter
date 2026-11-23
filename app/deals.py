@@ -22,7 +22,7 @@ MAX_AGE_HOURS = 14          # an older list isn't shown (prices move)
 HISTORY_DAYS = 30
 MIN_DROP = 5                # % below the lowest price seen before today, to count as a real drop
 MIN_STORE_DISCOUNT = 15     # % off the store's own old price, for the store-discount part
-CHECK = 120                 # candidates opened per run (each one is a store page, some an LLM read)
+CHECK = 100                 # candidates opened per run (each one is a store page, some an LLM read)
 BATCH = 20                  # opened together (agent.checked_only checks at most VERIFY_MAX pages per call)
 PER_CATEGORY = 30
 PER_STORE = 70
@@ -68,7 +68,8 @@ def _accessories_apart(rows: list[dict]) -> list[dict]:
     those, so anything priced far under its category's middle price goes under accessories instead."""
     by_cat: dict[str, list[float]] = {}
     for r in rows:
-        by_cat.setdefault(r["category"], []).append(r["price"])
+        if not catalog.CATEGORIES.get(r["category"], {}).get("broad"):  # one kind of product, not a whole section
+            by_cat.setdefault(r["category"], []).append(r["price"])
     mid = {c: sorted(v)[len(v) // 2] for c, v in by_cat.items() if len(v) >= 10}
     return [{**r, "category": ACCESSORY} if r["category"] in mid and r["price"] < mid[r["category"]] * ACCESSORY_SHARE
             else r for r in rows]

@@ -88,6 +88,43 @@ CATEGORIES: dict[str, dict] = {
             "amazon.eg": "https://www.amazon.eg/s?k=laptop&i=computers&language=en_AE&page={n}",
         },
     },
+    # broad sections for the deals page (shoppers browse those like a store's offers tab). Amazon's own "30% off and
+    # more" filter (rh=p_8) gives discounted products only; Jumia's robots.txt forbids its filters and sorting, so its
+    # plain section pages are read, plus its flash sales page.
+    "home": {
+        "ar": "البيت والمطبخ", "pages": 2, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/home-office/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=kitchen&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "beauty": {
+        "ar": "جمال وعناية", "pages": 2, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/health-beauty/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=beauty&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "fashion": {
+        "ar": "موضة", "pages": 2, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/category-fashion-by-jumia/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=fashion&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "electronics": {
+        "ar": "إلكترونيات", "pages": 2, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/electronics/?page={n}",
+            "amazon.eg": "https://www.amazon.eg/s?i=electronics&rh=p_8%3A30-&language=en_AE&page={n}",
+        },
+    },
+    "flash": {
+        "ar": "عروض لفترة محدودة", "pages": 3, "broad": True,
+        "stores": {
+            "jumia.com.eg": "https://www.jumia.com.eg/flash-sales/?page={n}",
+        },
+    },
 }
 STORES = sorted({d for c in CATEGORIES.values() for d in c["stores"]})
 
