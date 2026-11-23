@@ -346,3 +346,73 @@ def _card_window(html: str, url: str, other_urls: list[str], raw: bool = False) 
     if raw:
         return unescape(window).lower()
     return unescape(re.sub(r"<[^>]+>", " ", window)).lower()
+
+
+_VARIANT_ATTR = re.compile(r"""\sdata-[\w-]*variations?[\w-]*=(["'])(\[.*?\])\1""", re.S | re.I)
+_OPTION_KEYS = ("attributes", "options", "selectedOptions", "option_values", "variant_options")
+
+
+def _variant_label(v: dict) -> str:
+    """The option names of one variant: "46", "46 / Black" (WooCommerce attributes, Shopify option1-3, a title)."""
+    parts: list[str] = []
+    for k in _OPTION_KEYS:
+        x = v.get(k)
+        if isinstance(x, dict):
+            parts += [str(y) for y in x.values() if isinstance(y, (str, int, float)) and str(y).strip()]
+        elif isinstance(x, list):
+            for y in x:
+                if isinstance(y, (str, int, float)):
+                    parts.append(str(y))
+                elif isinstance(y, dict) and isinstance(y.get("value"), (str, int, float)):
+                    parts.append(str(y["value"]))
+    if not parts:
+        parts = [str(v[k]) for k in ("option1", "option2", "option3") if isinstance(v.get(k), (str, int, float))]
+    if not parts:  # not a product's name: a list of related products isn't a list of variants
+        for k in ("size", "color", "variant_title"):
+            if isinstance(v.get(k), (str, int)) and str(v[k]).strip():
+                parts = [str(v[k])]
+                break
+    return " / ".join(p.strip() for p in parts if p.strip())[:40]
+
+
+def variant_stock(html: str) -> list[tuple[str, bool, float | None]]:
+    """The product's variants (sizes, colors...) with their stock, from the page's own data: WooCommerce's
+    data-product_variations, Shopify's variants, any list of variant objects that carry a stock flag.
+    A size menu often lists every size while only this data says which ones are sold out.
+    Returns [(label, in stock, price or None)]."""
+    texts = [unescape(m.group(2)) for m in _VARIANT_ATTR.finditer(html)] + list(_json_texts(html))
+    out: dict[str, tuple[bool, float | None]] = {}
+
+    def walk(node, depth=0):
+        if depth > 30 or len(out) >= 120:
+            return
+        if isinstance(node, list):
+            variants = [x for x in node if isinstance(x, dict)]
+            if variants:
+                for v in variants:
+                    stock = _availability(v)
+                    label = _variant_label(v)
+                    if stock is not None and label:
+                        price = _num(v.get("display_price") or v.get("price"))
+                        if price and price >= 20000 and isinstance(v.get("price"), int) and "display_price" not in v:
+                            price /= 100  # Shopify keeps cents in its page data
+                        out.setdefault(label, (stock, price))
+            for x in node:
+                walk(x, depth + 1)
+        elif isinstance(node, dict):
+            for x in node.values():
+                walk(x, depth + 1)
+    for text in texts:
+        for obj in _objects(text):
+            walk(obj)
+    return [(label, stock, price) for label, (stock, price) in out.items()]
+
+
+def page_image(html: str, base_url: str) -> str | None:
+    """The product page's own picture: its og:image / twitter:image, else the product data's image."""
+    for prop in ("og:image", "og:image:secure_url", "twitter:image"):
+        m = (re.search(r"<meta[^>]+(?:property|name)=[\"']" + re.escape(prop) + r"[\"'][^>]*content=[\"']([^\"']+)", html, re.I)
+             or re.search(r"<meta[^>]+content=[\"']([^\"']+)[\"'][^>]*(?:property|name)=[\"']" + re.escape(prop) + r"[\"']", html, re.I))
+        if m and m.group(1).strip():
+            return urljoin(base_url, unescape(m.group(1).strip()))
+    return None
