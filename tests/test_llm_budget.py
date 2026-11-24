@@ -119,3 +119,12 @@ def test_the_day_counts_are_saved_and_read_back_after_a_restart(monkeypatch, tmp
     assert report[0]["model"] == "openai/gpt-oss-120b" and report[0]["tokens"] == 150
     assert report[0]["steps"] == {"judge": 2} and report[0]["limit"] == 1000
     db.close()
+
+
+def test_special_purpose_models_in_long_lists_are_not_used():
+    """Live test 2026-11-24: NVIDIA's list gave 'nvidia/ising-calibration-1.5-31b', which then read prices."""
+    listed = ["nvidia/ising-calibration-1.5-31b", "nvidia/llama-3.3-nemotron-super-49b-v1", "foo/bar-70b",
+              "nvidia/nv-rerankqa-mistral-4b-v3", "meta/llama-3.3-70b-instruct", "qwen/qwen3-next-80b-a3b-instruct"]
+    picked = llm._pick(listed, (), None, "nvidia")
+    assert "nvidia/ising-calibration-1.5-31b" not in picked and "foo/bar-70b" not in picked
+    assert {"meta/llama-3.3-70b-instruct", "nvidia/llama-3.3-nemotron-super-49b-v1"} <= set(picked)
