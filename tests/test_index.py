@@ -240,3 +240,14 @@ def test_background_llm_work_waits_while_a_shopper_searches(monkeypatch):
         await asyncio.gather(shopper(), cron())
     asyncio.run(go())
     assert order == ["shopper", "cron"]
+
+
+def test_a_cut_off_answer_leaves_the_titles_for_the_next_run(monkeypatch):
+    db.save_catalog([{"url": f"https://www.amazon.eg/dp/{i}", "store": "Amazon.eg", "title": f"Phone {i}",
+                      "price": 1000 + i} for i in range(10)], "EG", "phones")
+
+    async def fake_ask(prompt, step="", **kw):
+        return {"items": [{"i": 0, "kind": "smartphone"}]}  # 1 of 10: the answer was cut
+    monkeypatch.setattr(llm, "ask_json", fake_ask)
+    asyncio.run(catalog.understand())
+    assert len(db.catalog_to_understand("EG", 50)) == 9

@@ -333,8 +333,8 @@ def remember_found(results: list[dict]) -> int:
     return db.save_catalog(rows, market.current().code, db.FOUND, history=False) if rows else 0
 
 
-UNDERSTAND_BATCH = 40     # titles per LLM call
-UNDERSTAND_MAX = 800      # titles per run: spare free quota, a few runs a day get through a new store's pages
+UNDERSTAND_BATCH = 15     # titles per LLM call (40 was too long an answer for the small models: most came back cut)
+UNDERSTAND_MAX = 450      # titles per run (30 light calls): the free quota is shared with shoppers' searches
 UNDERSTAND_PROMPT = """These are product titles from online stores in Egypt. For each one, say what the product is, so
 shoppers find it whatever words they use (Arabic or English, the brand or just the kind of product).
 {items}
@@ -386,8 +386,10 @@ async def understand(limit: int = UNDERSTAND_MAX) -> dict:
             rows.append((part[i]["url"], json.dumps(attrs, ensure_ascii=False), _words(attrs)))
         missed = len(part) - len(rows)
         got_urls = {u for u, _, _ in rows}
-        # a title the LLM skipped isn't asked again and again (it is still found by its own words)
-        rows += [(r["url"], "{}", "") for r in part if r["url"] not in got_urls]
+        if len(rows) * 2 >= len(part):
+            # a title the LLM skipped in an answer that read the others isn't asked again and again (it is still
+            # found by its own words); a cut-off answer leaves the rest for the next run
+            rows += [(r["url"], "{}", "") for r in part if r["url"] not in got_urls]
         await asyncio.to_thread(db.save_understood, rows)
         done += len(rows) - missed
         failed += missed
