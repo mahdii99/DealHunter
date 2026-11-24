@@ -3,6 +3,11 @@
 Tries, in order, until one answers:
   1. Google Gemini (GEMINI_API_KEY, https://aistudio.google.com/apikey), several models
   2. Groq (GROQ_API_KEY, https://console.groq.com/keys), optional backup
+  (and the other OpenAI-style free tiers in COMPAT; Gemma models come free with the Gemini key, with a much bigger
+  daily quota than the Gemini models themselves, so bulk work goes there)
+Each model's calls are counted per day (saved in the database: a restart doesn't forget them). Background work (the
+deals list, reading new titles, learning store pages) stops at BACKGROUND_SHARE of a model's free daily requests, so
+shoppers' searches always find quota left.
 A model that is busy (429/5xx) or times out is skipped for a few minutes (longer each time it keeps timing out); one whose free DAILY quota is used up is
 skipped until the quota resets (midnight US Pacific time). The last model that worked is tried first.
 Both are saved to debug/llm_state.json, so a server restart (--reload) doesn't retry dead models again.
@@ -13,6 +18,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -114,6 +120,7 @@ def _count(provider: str, r: httpx.Response, step: str, model: str = "") -> None
     s["tokens"] += int(u or 0)
     if model:
         s["model"] = model  # which model answered this step last (e.g. who judged)
+        _tally(provider, model, step, int(u or 0))
 
 
 def last_model() -> str:
@@ -123,6 +130,11 @@ def last_model() -> str:
 def available() -> bool:
     return bool(os.getenv("GEMINI_API_KEY") or any(_configured(p) for p in COMPAT))
 
+
+# Gemma (open models, free on the same Gemini key): ~14,400 requests a day each, against 20-500 for the Gemini
+# models (free limits as of 2026-11). Slower and weaker than Gemini Flash, so they read pages and titles; planning
+# and judging keep using the strong models. They don't take JSON mode or a thinking setting.
+GEMMA_MIN_SIZE = 12  # billions of parameters: the small Gemma models get product names and prices wrong
 
 # lite first: it answers in ~3s; the full flash model often times out on the free tier (mahdy's check, 2026-11-10)
 GEMINI_PREFERRED = ("gemini-flash-lite-latest", "gemini-flash-latest")
@@ -189,6 +201,130 @@ def _save_state() -> None:
                                           "last_good": last_model() if _LAST_GOOD else None}), encoding="utf-8")
     except OSError:
         pass
+
+
+# ---------- daily budget ----------
+# Free requests per day (RPD) of each model, from the providers' free-tier pages (2026-11). The first matching
+# (provider, part of the model name) wins; a model not listed has no known daily count (it rests when it says so).
+# "*" counts every model of that provider together (OpenRouter: 50 free requests a day per account).
+DAILY_LIMITS = [
+    ("gemini", "gemma", 14400), ("gemini", "flash-lite", 500), ("gemini", "flash", 20),
+    ("groq", "llama-3.1-8b", 14400), ("groq", "", 1000),
+    ("openrouter", "*", 50),
+]
+BACKGROUND_SHARE = float(os.getenv("LLM_BACKGROUND_SHARE", "0.6"))  # the rest of each daily quota is kept for shoppers
+PERSIST = True        # save the day's counts in the database (off in tests)
+FLUSH_EVERY = 30      # seconds between saves
+_DAY: dict[tuple[str, str, str], list[int]] = {}    # (day, model, step) -> [calls, tokens], today's (and the db's)
+_UNSAVED: dict[tuple[str, str, str], list[int]] = {}
+_PROVIDER: dict[str, str] = {}  # model -> provider, for the limits and /admin
+_loaded_days: set[str] = set()
+_last_flush = [0.0]
+
+
+def quota_day(model: str = "") -> str:
+    """The free-quota day a call counts on: it starts at midnight US Pacific (08:00 UTC), Cloudflare's at 00:00 UTC."""
+    shift = 0 if model.startswith("@cf/") else 8
+    return (datetime.now(timezone.utc) - timedelta(hours=shift)).strftime("%Y-%m-%d")
+
+
+def daily_limit(provider: str, model: str) -> tuple[str, int] | None:
+    """(what is counted: the model or 'provider:*', its free requests a day), or None when not known."""
+    name = model.lower()
+    for prov, part, rpd in DAILY_LIMITS:
+        if prov == provider and (part == "*" or part in name):
+            return (f"{provider}:*" if part == "*" else model), rpd
+    return None
+
+
+def _load_day(day: str) -> None:
+    """Today's counts saved before a restart (Render's free service sleeps and restarts often)."""
+    if day in _loaded_days or not PERSIST:
+        return
+    _loaded_days.add(day)
+    try:
+        from . import db
+        for row in db.llm_usage_day(day):
+            key = (day, row["model"], row["step"])
+            got = _DAY.setdefault(key, [0, 0])
+            got[0] += row["calls"]
+            got[1] += row["tokens"]
+            if row.get("provider"):
+                _PROVIDER[row["model"]] = row["provider"]
+    except Exception as e:  # database down: count from zero, the providers' own 429s still stop us
+        log.warning("llm usage: could not load %s: %s", day, e)
+
+
+def calls_today(provider: str, model: str) -> tuple[int, int | None]:
+    """(requests used today, free requests a day or None) for what this model's daily limit counts."""
+    day = quota_day(model)
+    _load_day(day)
+    lim = daily_limit(provider, model)
+    if lim and lim[0].endswith(":*"):
+        used = sum(v[0] for (d, m, _), v in _DAY.items() if d == day and _PROVIDER.get(m) == provider)
+    else:
+        used = sum(v[0] for (d, m, _), v in _DAY.items() if d == day and m == model)
+    return used, (lim[1] if lim else None)
+
+
+def over_budget(provider: str, model: str, background: bool) -> bool:
+    """True when this call should skip the model: its free daily requests are used up, or (background work) the
+    share kept for shoppers is all that's left."""
+    used, rpd = calls_today(provider, model)
+    if rpd is None:
+        return False
+    return used >= (rpd * BACKGROUND_SHARE if background else rpd)
+
+
+def _tally(provider: str, model: str, step: str, tokens: int) -> None:
+    day = quota_day(model)
+    _load_day(day)
+    _PROVIDER[model] = provider
+    for book in (_DAY, _UNSAVED):
+        got = book.setdefault((day, model, step), [0, 0])
+        got[0] += 1
+        got[1] += tokens
+    if PERSIST and time.time() - _last_flush[0] >= FLUSH_EVERY:
+        _last_flush[0] = time.time()
+        threading.Thread(target=flush_usage, daemon=True).start()
+
+
+def flush_usage() -> None:
+    """Adds the calls counted since the last save to the database."""
+    if not PERSIST or not _UNSAVED:
+        return
+    rows = [(d, m, s, _PROVIDER.get(m, ""), v[0], v[1]) for (d, m, s), v in list(_UNSAVED.items())]
+    _UNSAVED.clear()
+    try:
+        from . import db
+        db.add_llm_usage(rows)
+    except Exception as e:  # kept in memory: counted again on the next save
+        log.warning("llm usage: could not save: %s", e)
+        for d, m, s, _, c, t in rows:
+            got = _UNSAVED.setdefault((d, m, s), [0, 0])
+            got[0] += c
+            got[1] += t
+
+
+def today_report() -> list[dict]:
+    """Today's use per model, for the owner's /admin page: calls, tokens, by step, free daily limit, resting."""
+    now, out = time.time(), {}
+    days = {quota_day(), quota_day("@cf/")}
+    for d in days:
+        _load_day(d)
+    for (d, m, step), (c, t) in _DAY.items():
+        if d != quota_day(m):
+            continue
+        row = out.setdefault(m, {"model": m, "provider": _PROVIDER.get(m, ""), "calls": 0, "tokens": 0, "steps": {}})
+        row["calls"] += c
+        row["tokens"] += t
+        row["steps"][step] = row["steps"].get(step, 0) + c
+    for row in out.values():
+        used, rpd = calls_today(row["provider"], row["model"])
+        row["limit"] = rpd
+        row["used_of_limit"] = used
+        row["resting_until"] = _COOLDOWN.get(row["model"]) if _COOLDOWN.get(row["model"], 0) > now else None
+    return sorted(out.values(), key=lambda r: -r["calls"])
 
 
 def _daily_quota_reset(utc_midnight: bool = False) -> float:
@@ -286,11 +422,21 @@ def _big_model(model: str) -> bool:
     return _size(name) >= 24 or any(x in name for x in ("gpt-oss", "deepseek", "llama-4", "kimi", "glm-4", "qwen3-235"))
 
 
+def gemma(model: str) -> bool:
+    return model.lower().startswith("gemma")
+
+
+def _gemma_models(available: list[str]) -> list[str]:
+    """The biggest Gemma models the Gemini key offers (names change with each Gemma release)."""
+    big = [m for m in available if gemma(m) and m.endswith("-it") and _size(m) >= GEMMA_MIN_SIZE and not _gone(m)]
+    return sorted(big, key=lambda m: (_size(m), m), reverse=True)[:2]
+
+
 def strong(model: str, provider: str = "") -> bool:
     """Models good enough to plan and judge (they decide what the shopper sees). Page reading only copies names
     and prices, so it goes to the smaller ones and leaves the strong models' free quota for the judge."""
     name = model.lower()
-    return (provider == "gemini" or "gpt-oss-120b" in name or _size(name) >= 100
+    return ((provider == "gemini" and not gemma(name)) or "gpt-oss-120b" in name or _size(name) >= 100
             or any(x in name for x in ("deepseek", "kimi")))
 
 
@@ -327,6 +473,10 @@ def _gone(model: str) -> bool:
 async def _gemini(client: httpx.AsyncClient, model: str, prompt: str) -> httpx.Response:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"]}
+    if gemma(model):  # no JSON mode and no thinking setting for Gemma: the prompt asks for JSON
+        body = {"contents": [{"parts": [{"text": prompt + "\nReply with JSON only."}]}],
+                "generationConfig": {"temperature": _TEMPERATURE.get()}}
+        return await client.post(url, headers=headers, json=body)
     config = {"responseMimeType": "application/json", "temperature": _TEMPERATURE.get(),
               "thinkingConfig": {"thinkingBudget": 0}}  # no "thinking": much faster, enough for this task
     r = await client.post(url, headers=headers, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": config})
@@ -445,13 +595,22 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
     async with httpx.AsyncClient(timeout=timeout) as client:
         attempts = []
         if os.getenv("GEMINI_API_KEY"):
-            models = _pick(await _list_models(client, "gemini"), GEMINI_PREFERRED, os.getenv("GEMINI_MODEL"), "gemini")
-            attempts += [("gemini", m, _gemini) for m in models[:3]]
+            listed = await _list_models(client, "gemini")
+            models = _pick(listed, GEMINI_PREFERRED, os.getenv("GEMINI_MODEL"), "gemini")
+            attempts += [("gemini", m, _gemini) for m in models[:3] + _gemma_models(listed)]
         for provider, (_, key, preferred) in COMPAT.items():
             if _configured(provider):
                 models = _pick(await _list_models(client, provider), preferred,
                                os.getenv(f"{provider.upper()}_MODEL"), provider)
                 attempts += [(provider, m, _caller(provider)) for m in models]
+        # a model whose free daily requests are used up (or, for background work, all but the shoppers' share) is
+        # not asked: a 429 would only cost time, and background work must leave the rest of the day to shoppers
+        behind = _BACKGROUND.get()
+        attempts = [a for a in attempts if not over_budget(a[0], a[1], behind)]
+        if not attempts:
+            problems.note("llm_budget", f"step {step}: every model is at its daily "
+                          + ("background share" if behind else "free limit"))
+            raise LLMError(BUSY_TEXT, details="daily budget used" + (" (background share)" if behind else ""))
         # last model that worked goes first; models that just failed go last (or are skipped)
         now = time.time()
         bulk = prefer == "bulk"
@@ -462,6 +621,8 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
             fast strong models, then the rest. The strong models' daily quota is kept for planning and judging,
             which decide what the shopper sees."""
             small = not strong(a[1], a[0])
+            if gemma(a[1]):  # the biggest daily quota of all, but slower: first for background work
+                return 0 if behind else 1
             if small:
                 return 0 if a[0] in FAST_BULK else 1
             return 2 if a[0] == "gemini" else 3 if a[0] in FAST_BULK else 4
@@ -472,7 +633,10 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
             if prefer == "strong":
                 return strong(a[1], a[0])
             return bool(prefer) and a[0] == prefer
-        attempts.sort(key=lambda a: (_COOLDOWN.get(a[1], 0) > now, tier(a) if bulk else 0, not preferred(a),
+        attempts.sort(key=lambda a: (_COOLDOWN.get(a[1], 0) > now, tier(a) if bulk else 0,
+                                     bulk and behind and not gemma(a[1]),
+                                     not bulk and gemma(a[1]),  # planning/talk: Gemma only when nothing else answers
+                                     not preferred(a),
                                      prefer == "strong" and "gpt-oss-120b" not in a[1],  # fast + strong judge
                                      a[1] not in _LAST_GOOD))
         ready = [a for a in attempts if _COOLDOWN.get(a[1], 0) <= now] or attempts

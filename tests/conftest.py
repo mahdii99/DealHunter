@@ -79,3 +79,15 @@ def _fresh_agent_memory():
     yield
     agent._VERDICTS.clear()
     agent._HITS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _llm_counts_in_memory():
+    """Each test counts its LLM calls from zero, and doesn't save them in the database (tests that check it do)."""
+    from app import llm
+    llm.PERSIST = False
+    for book in (llm._DAY, llm._UNSAVED, llm._PROVIDER):
+        book.clear()
+    llm._loaded_days.clear()
+    yield
+    llm.PERSIST = False

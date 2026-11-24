@@ -15,6 +15,7 @@ _last: dict[tuple[str, str], float] = {}
 KINDS = {  # for the admin page
     "llm_busy": "كل موديلات الـ LLM مشغولة أو بطيئة",
     "llm_quota": "موديل خلص الحد اليومي المجاني",
+    "llm_budget": "كل الموديلات وصلت حصتها اليومية (أو حصة شغل الخلفية)",
     "search_error": "مشكلة في خدمة البحث",
     "server_error": "خطأ في السيرفر",
 }
