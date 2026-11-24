@@ -46,6 +46,8 @@ def _no_result_page_check(monkeypatch):
     checks that step itself."""
     from app import agent
     monkeypatch.setattr(agent, "VERIFY_PICKS", False)
+    from app import recipes
+    monkeypatch.setattr(recipes, "ENABLED", False)  # tests that check it turn it on
 
 
 

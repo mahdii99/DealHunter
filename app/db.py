@@ -155,6 +155,17 @@ CREATE TABLE IF NOT EXISTS catalog (
     seen_at {FLOAT} NOT NULL
 );
 CREATE INDEX IF NOT EXISTS catalog_seen ON catalog (market, seen_at);
+-- how to read one store's product page without the LLM (app/recipes.py): CSS selectors the LLM picked once on a page
+-- it had read, confirmed on more pages before use, learned again when they stop working
+CREATE TABLE IF NOT EXISTS recipes (
+    domain TEXT PRIMARY KEY,
+    recipe TEXT NOT NULL,               -- JSON: CSS selectors of the price, the buy button, a sold-out mark
+    ok INTEGER NOT NULL DEFAULT 0,      -- pages where it gave the price the LLM read (in a row)
+    fails INTEGER NOT NULL DEFAULT 0,   -- pages where it gave nothing or another price (in a row)
+    uses INTEGER NOT NULL DEFAULT 0,    -- pages read with it instead of the LLM
+    learned_at {FLOAT} NOT NULL,
+    checked_at {FLOAT} NOT NULL
+);
 -- store promo codes (app/coupons.py): only from an affiliate network's feed or added by the owner from the store
 -- itself / a network's offer page. `source` says which, and the page shows it.
 CREATE TABLE IF NOT EXISTS coupons (
@@ -172,7 +183,13 @@ CREATE TABLE IF NOT EXISTS coupons (
 CREATE INDEX IF NOT EXISTS coupons_market ON coupons (market, store)
 """
 # columns added after a table first went live (CREATE TABLE IF NOT EXISTS doesn't add them to an existing table)
-_ADDED_COLUMNS = ["ALTER TABLE watches ADD COLUMN wanted TEXT NOT NULL DEFAULT ''"]
+_ADDED_COLUMNS = ["ALTER TABLE watches ADD COLUMN wanted TEXT NOT NULL DEFAULT ''",
+                  # catalog: a shop's trust score (NULL = a big store read from its category pages), what the LLM
+                  # made of the title (JSON) and the words a search finds it by (English and Arabic), when it did
+                  "ALTER TABLE catalog ADD COLUMN trust INTEGER",
+                  "ALTER TABLE catalog ADD COLUMN attrs TEXT NOT NULL DEFAULT ''",
+                  "ALTER TABLE catalog ADD COLUMN keywords TEXT NOT NULL DEFAULT ''",
+                  "ALTER TABLE catalog ADD COLUMN norm_at DOUBLE PRECISION"]
 PG_RETRY = 300  # seconds on the local file after Postgres couldn't be reached, before trying it again
 BLOCK_AFTER = 2  # failed searches in a row before a site is skipped (one failure can be a slow moment)
 
@@ -361,37 +378,100 @@ def add_price_context(results: list[dict]) -> None:
         r["previous_price"] = prev[0] if prev and prev[0] != r.get("price") else None
 
 
-def save_catalog(rows: list[dict], market: str, category: str) -> int:
-    """Products just read from a store's category page: the latest price per page, plus the price history."""
+FOUND = "found"  # catalog category of offers a search found on the web and checked on their own page
+
+
+def save_catalog(rows: list[dict], market: str, category: str, history: bool = True) -> int:
+    """Products just read from a store's category page (or checked on their own page by a search: category FOUND,
+    with the shop's trust score): the latest price per page, plus the price history. A page's category from the
+    stores' own lists is kept when a search finds it again. A new title is understood again (norm_at back to NULL)."""
     now = time.time()
     rows = [r for r in rows if r.get("url") and r.get("price") and r.get("title")]
     rows = list({r["url"]: r for r in rows}.values())
-    _db.run_many("INSERT INTO catalog (url, market, category, store, title, price, old_price, image, first_seen, seen_at) "
-                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (url) DO UPDATE SET market = excluded.market, "
-                 "category = excluded.category, store = excluded.store, title = excluded.title, price = excluded.price, "
-                 "old_price = excluded.old_price, image = excluded.image, seen_at = excluded.seen_at",
+    keep_cat = "CASE WHEN catalog.category <> 'found' THEN catalog.category ELSE excluded.category END" \
+        if category == FOUND else "excluded.category"
+    _db.run_many("INSERT INTO catalog (url, market, category, store, title, price, old_price, image, first_seen, seen_at,"
+                 " trust) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (url) DO UPDATE SET "
+                 f"market = excluded.market, category = {keep_cat}, store = excluded.store, "
+                 "norm_at = CASE WHEN catalog.title = excluded.title THEN catalog.norm_at ELSE NULL END, "
+                 "title = excluded.title, price = excluded.price, old_price = excluded.old_price, "
+                 "image = CASE WHEN excluded.image <> '' THEN excluded.image ELSE catalog.image END, "
+                 "seen_at = excluded.seen_at, "
+                 "trust = CASE WHEN catalog.trust IS NULL AND catalog.category <> 'found' THEN NULL ELSE excluded.trust END",
                  [(r["url"], market, category, r.get("store") or "", r["title"][:300], r["price"], r.get("old_price"),
-                   (r.get("image") or "")[:1000], now, now) for r in rows])
-    record_prices(rows, market)
+                   (r.get("image") or "")[:1000], now, now, r.get("trust")) for r in rows])
+    if history:
+        record_prices(rows, market)
     return len(rows)
 
 
-def catalog_like(words: list[str], market: str, since: float, limit: int = 300) -> list[dict]:
-    """Catalog products seen since `since` whose title has any of these words (the caller ranks them)."""
-    words = [w.lower() for w in words if w][:6]
+_CATALOG_COLS = ("url", "store", "title", "price", "old_price", "image", "category", "seen_at", "trust", "attrs")
+
+
+def catalog_like(words: list[str], market: str, since: float, limit: int = 300, found_since: float | None = None) -> list[dict]:
+    """Catalog products seen since `since` (offers a search found: since `found_since`) whose title or the words the
+    LLM gave it (keywords, English and Arabic) have any of these words (the caller ranks them)."""
+    words = [w.lower() for w in words if w][:8]
     if not words:
         return []
-    like = " OR ".join("LOWER(title) LIKE ?" for _ in words)
-    rows = _db.run(f"SELECT url, store, title, price, old_price, image, category, seen_at FROM catalog "
-                   f"WHERE market = ? AND seen_at > ? AND ({like}) ORDER BY seen_at DESC LIMIT ?",
-                   (market, since, *[f"%{w}%" for w in words], limit))
-    return [dict(zip(("url", "store", "title", "price", "old_price", "image", "category", "seen_at"), r)) for r in rows]
+    like = " OR ".join("LOWER(title || ' ' || keywords) LIKE ?" for _ in words)
+    fresh = "(seen_at > ? OR (category = 'found' AND seen_at > ?))"
+    rows = _db.run(f"SELECT {', '.join(_CATALOG_COLS)} FROM catalog "
+                   f"WHERE market = ? AND {fresh} AND ({like}) ORDER BY seen_at DESC LIMIT ?",
+                   (market, since, since if found_since is None else found_since, *[f"%{w}%" for w in words], limit))
+    return [dict(zip(_CATALOG_COLS, r)) for r in rows]
+
+
+def catalog_to_understand(market: str, limit: int) -> list[dict]:
+    """Catalog products the LLM hasn't understood yet (new, or their title changed), newest first."""
+    return _rows("SELECT url, title, category FROM catalog WHERE market = ? AND norm_at IS NULL "
+                 "ORDER BY seen_at DESC LIMIT ?", (market, limit), "url title category")
+
+
+def save_understood(items: list[tuple[str, str, str]]) -> None:
+    """(url, attrs JSON, keywords) for products the LLM read the title of."""
+    now = time.time()
+    _db.run_many("UPDATE catalog SET attrs = ?, keywords = ?, norm_at = ? WHERE url = ?",
+                 [(attrs[:2000], words[:1000], now, url) for url, attrs, words in items])
+
+
+def get_recipe(domain: str) -> dict | None:
+    rows = _db.run("SELECT recipe, ok, fails, uses FROM recipes WHERE domain = ?", (domain,))
+    if not rows:
+        return None
+    recipe, ok, fails, uses = rows[0]
+    return {"recipe": recipe, "ok": ok, "fails": fails, "uses": uses}
+
+
+def save_recipe(domain: str, recipe: str) -> None:
+    """A recipe just learned (and already right on the page it was learned on: ok = 1)."""
+    now = time.time()
+    _db.run("INSERT INTO recipes (domain, recipe, ok, fails, uses, learned_at, checked_at) VALUES (?, ?, 1, 0, 0, ?, ?) "
+            "ON CONFLICT (domain) DO UPDATE SET recipe = excluded.recipe, ok = 1, fails = 0, uses = 0, "
+            "learned_at = excluded.learned_at, checked_at = excluded.checked_at", (domain, recipe, now, now))
+
+
+def recipe_result(domain: str, right: bool | None) -> None:
+    """right: the recipe agreed with the LLM's read of a page (True), didn't (False), or was used instead of it (None)."""
+    if right is None:
+        sql = "UPDATE recipes SET uses = uses + 1 WHERE domain = ?"
+    elif right:
+        sql = "UPDATE recipes SET ok = ok + 1, fails = 0, checked_at = ? WHERE domain = ?"
+    else:
+        sql = "UPDATE recipes SET fails = fails + 1, ok = 0, checked_at = ? WHERE domain = ?"
+    _db.run(sql, (domain,) if right is None else (time.time(), domain))
+
+
+def recipes_list() -> list[dict]:
+    return _rows("SELECT domain, ok, fails, uses, learned_at FROM recipes ORDER BY uses DESC", (),
+                 "domain ok fails uses learned_at")
 
 
 def catalog_since(market: str, since: float) -> list[dict]:
-    rows = _db.run("SELECT url, store, title, price, old_price, image, category, seen_at FROM catalog "
-                   "WHERE market = ? AND seen_at > ?", (market, since))
-    return [dict(zip(("url", "store", "title", "price", "old_price", "image", "category", "seen_at"), r)) for r in rows]
+    """The big stores' products read from their category pages since then (not offers searches found)."""
+    rows = _db.run(f"SELECT {', '.join(_CATALOG_COLS)} FROM catalog "
+                   "WHERE market = ? AND seen_at > ? AND category <> 'found'", (market, since))
+    return [dict(zip(_CATALOG_COLS, r)) for r in rows]
 
 
 def prices_between(urls: list[str], start: float, end: float) -> dict[str, list[float]]:
