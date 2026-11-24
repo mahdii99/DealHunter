@@ -130,3 +130,78 @@ def test_the_llm_understands_titles_so_arabic_words_find_them(monkeypatch):
     assert got == {"understood": 1, "not_understood": 1, "asked": 2}
     assert [p.title for p in catalog.offers(["غسالة"])] == ["Fresh Top Load 8KG FTM-8S"]
     assert db.catalog_to_understand("EG", 10) == []  # the skipped one isn't asked again and again
+
+
+def _understood_index():
+    rows = [("https://www.jumia.com.eg/fresh-8.html", "Jumia", "Fresh Automatic Top Load Washer 8KG FTM-8S", 15999,
+             {"brand": "Fresh", "kind": "washing machine", "kind_ar": "غسالة", "size": "8 kg"}),
+            ("https://www.amazon.eg/dp/F8", "Amazon.eg", "Fresh washing machine 8 kilo top load", 15499,
+             {"brand": "Fresh", "kind": "washing machine", "kind_ar": "غسالة", "size": "8 kg"}),
+            ("https://www.amazon.eg/dp/F10", "Amazon.eg", "Fresh washing machine 10 KG", 17999,
+             {"brand": "Fresh", "kind": "washing machine", "size": "10 kg"}),
+            ("https://www.amazon.eg/dp/T8", "Amazon.eg", "Toshiba washing machine 8 KG", 14000,
+             {"brand": "Toshiba", "kind": "washing machine", "size": "8 kg"}),
+            ("https://www.amazon.eg/dp/COVER", "Amazon.eg", "Fresh 8 kg washing machine cover", 300,
+             {"brand": "Fresh", "kind": "washing machine cover", "size": "8 kg", "accessory": True})]
+    db.save_catalog([{"url": u, "store": s, "title": t, "price": p} for u, s, t, p, _ in rows], "EG", "washers")
+    db.save_understood([(u, json.dumps(a), catalog._words(a)) for u, _, _, _, a in rows])
+
+
+def test_the_index_finds_what_the_shopper_asked_for_without_any_llm_call():
+    _understood_index()
+    plan = {"product": {"kind": "washing machine", "brand": "Fresh", "size": "8 kg"}}
+    got = agent._index_offers(plan)
+    assert [p.price for p in got] == [15499, 15999]  # not the 10 kg, not Toshiba, not the cover
+    assert all(p.trusted for p in got)
+    assert [p.price for p in agent._index_offers(plan, maxp=15600)] == [15499]
+    assert [p.store for p in agent._index_offers({"product": {"kind": "washing machine", "model": "FTM-8S"}})] == ["Jumia"]
+    assert agent._index_offers({"product": None}) == []
+
+
+def test_the_index_offers_are_shown_first_unless_the_judged_ones_came_already(monkeypatch):
+    _understood_index()
+    sent = []
+
+    async def checked(picks, options="", patient=False, quick=False):
+        return [p for p in picks if p.price < 15600], [], 0
+    monkeypatch.setattr(agent, "checked_only", checked)
+    found = agent._index_offers({"product": {"kind": "washing machine", "brand": "Fresh", "size": "8 kg"}})
+
+    async def go(judged):
+        token = agent.PARTIAL.set(sent.append)
+        try:
+            return await agent._index_first(found, "", "غسالة فريش 8 كيلو", {"request": "غسالة فريش 8 كيلو"}, judged)
+        finally:
+            agent.PARTIAL.reset(token)
+    shown = asyncio.run(go({}))
+    assert [p.price for p in shown] == [15499] and sent[0]["results"][0]["price"] == 15499
+    assert found[0].verified is None  # the judge later gets the offers as they were, not the checked copies
+    sent.clear()
+    asyncio.run(go({"sent": True}))
+    assert sent == []
+
+
+def test_the_same_first_message_is_planned_once_a_day(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main, websearch
+    plans = []
+
+    async def fake_plan(messages, current="", shown=None, price=(None, None), hits=None, hits_for=""):
+        plans.append(messages[-1]["text"])
+        return {"action": "search", "request": "غسالة فريش 8 كيلو", "reply": "هدورلك", "understood": "هدورلك",
+                "suggestions": []}
+
+    async def fake_run(q, plan=None, budget_text=None):
+        return {"mode": "llm", "results": [], "request": q, "summary": ""}
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(websearch, "available", lambda: False)
+    monkeypatch.setattr(agent, "plan_turn", fake_plan)
+    monkeypatch.setattr(agent, "run", fake_run)
+    c = TestClient(main.app)
+    for text in ("غسالة فريش 8 كيلو", "غسالة  فريش 8 كيلو", "غسالة فريش 10 كيلو"):
+        assert c.post("/api/chat", json={"messages": [{"role": "user", "text": text}]}).status_code == 200
+    assert plans == ["غسالة فريش 8 كيلو", "غسالة فريش 10 كيلو"]
+    # a follow-up in a chat is always planned (it depends on what came before)
+    c.post("/api/chat", json={"messages": [{"role": "user", "text": "غسالة فريش 8 كيلو"},
+                                           {"role": "assistant", "text": "x"}, {"role": "user", "text": "أرخص"}]})
+    assert len(plans) == 3
