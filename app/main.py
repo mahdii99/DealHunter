@@ -195,6 +195,7 @@ async def _search(q: str, plan: dict | None = None, budget_text: str | None = No
     if not DEMO and payload["results"]:
         await _db(db.add_price_context, payload["results"])  # before saving today's prices
         await _db(db.record_prices, payload["results"], mk)
+        await _db(catalog.remember_found, payload["results"])  # the next shopper gets them from the index first
         # no price-drop alerts from a search: only the scheduled check reads a followed page for its own product
         if payload["mode"] == "llm":
             await _db(db.save_search, key, mk, payload)
@@ -1079,6 +1080,16 @@ async def scrape_catalog(request: Request, store: str = Query("", max_length=40)
         raise HTTPException(400, f"unknown store, one of: {', '.join(catalog.STORES)}")
     report = await catalog.scrape(stores, [c for c in category.split(",") if c] or None, pages or None)
     return {"report": report, "total": sum(r["products"] for r in report.values())}
+
+
+@app.post("/api/cron/understand")
+async def understand_catalog(request: Request, limit: int = Query(catalog.UNDERSTAND_MAX, ge=1, le=3000)):
+    """The LLM reads the titles of new products in our price index (brand, model, kind in English and Arabic, size),
+    so searches find them by any of those words. Run by scrape-prices.yml after the stores are read."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    return await catalog.understand(limit)
 
 
 @app.post("/api/cron/deals")

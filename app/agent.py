@@ -21,7 +21,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
-from . import catalog, db, fetchers, llm, market, trust, websearch
+from . import catalog, db, fetchers, llm, market, recipes, trust, websearch
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
@@ -843,6 +843,11 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
     if variants and all(not ok for _, ok, _ in variants):  # every option sold out: the product is
         return Product(store=trust.store_name(url), title=title or url, price=0.0, url=url, trusted=trust.is_known(url),
                        in_stock=False, option=wanted or None, option_ok=False if wanted else None)
+    if not wanted and (by_recipe := await asyncio.to_thread(recipes.read, url, html)):
+        price, stock = by_recipe  # the store's learned recipe read this page: no LLM call
+        if shows(_shown_numbers(html), price):
+            return Product(store=trust.store_name(url), title=title or url, price=float(price), url=url,
+                           trusted=trust.is_known(url), in_stock=stock)
     if variants and wanted:
         text += "\nVARIANTS: " + "; ".join(
             f"{label}: {'in stock' if ok else 'OUT OF STOCK'}" + (f" ({price:g})" if price else "")
@@ -869,8 +874,20 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
             or cur and cur not in {c.upper() for c in mk.currency_aliases + (mk.currency,)} | {"ج.م", "جم", "جنيه", "L.E", "L.E."}
             or not shows(_shown_numbers(html), price)):
         return None
+    if not wanted:  # the store's recipe is checked against this read, or learned from it (after the answer)
+        _later(recipes.after_llm_read(url, html, title or url, float(price)))
     return Product(store=trust.store_name(url), title=title or url, price=float(price), url=url,
                    trusted=trust.is_known(url), in_stock=stock, option=wanted or None, option_ok=option_ok)
+
+
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+def _later(coro) -> None:
+    """Work nobody waits for (learning a store's page recipe), kept referenced until it ends."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
 
 
 class NotAStore(Exception):

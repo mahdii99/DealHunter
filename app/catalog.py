@@ -17,6 +17,7 @@ Rules we keep:
     is opened again on its own page before it's shown (agent._verify_stock).
 """
 import asyncio
+import json
 import logging
 import os
 import re
@@ -25,7 +26,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from . import db, fetchers, market, trust
+from . import db, fetchers, llm, market, trust
 from .extract import extract_products
 from .models import Product
 from .stores.amazon import parse_amazon_cards
@@ -41,13 +42,14 @@ BOT_HEADERS = {
 }
 PAUSE = float(os.getenv("CATALOG_PAUSE", "4"))  # seconds between two pages of the same store
 PAGE_TIMEOUT = 40
+MIN_TRUST = 35  # a shop a search found goes into the index only with at least this trust score (agent shows from 30)
 FRESH_HOURS = 36  # a catalog price older than this isn't used in searches
 
 # The category pages read in each store, best sellers / most popular first. {n} = page number (1, 2, ...).
 # Only addresses: how a page is read is the same for every store (see read_listing).
 CATEGORIES: dict[str, dict] = {
     "phones": {
-        "ar": "موبايلات", "pages": 5,
+        "ar": "موبايلات", "pages": 8,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/mobile-phones/?page={n}",
             "noon.com": "https://www.noon.com/egypt-en/electronics-and-mobiles/mobiles-and-accessories/"
@@ -56,38 +58,55 @@ CATEGORIES: dict[str, dict] = {
         },
     },
     "tvs": {
-        "ar": "شاشات", "pages": 3,
+        "ar": "شاشات", "pages": 6,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/televisions/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=smart+tv&i=electronics&language=en_AE&page={n}",
         },
     },
     "washers": {
-        "ar": "غسالات", "pages": 3,
+        "ar": "غسالات", "pages": 6,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/appliances-washers-dryers/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=washing+machine&i=appliances&language=en_AE&page={n}",
         },
     },
     "fridges": {
-        "ar": "تلاجات", "pages": 3,
+        "ar": "تلاجات", "pages": 6,
         "stores": {
             "amazon.eg": "https://www.amazon.eg/s?k=refrigerator&i=appliances&language=en_AE&page={n}",
         },
     },
     "acs": {
-        "ar": "تكييفات", "pages": 3,
+        "ar": "تكييفات", "pages": 6,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/air-conditioning/?page={n}",
         },
     },
     "laptops": {
-        "ar": "لابتوبات", "pages": 3,
+        "ar": "لابتوبات", "pages": 6,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/laptops/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=laptop&i=computers&language=en_AE&page={n}",
         },
     },
+    # more kinds shoppers often ask for (Amazon's own search pages; robots.txt is read before each page)
+    "tablets": {"ar": "تابلت", "pages": 4, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=tablet&i=electronics&language=en_AE&page={n}"}},
+    "headphones": {"ar": "سماعات", "pages": 4, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=wireless+earbuds+headphones&i=electronics&language=en_AE&page={n}"}},
+    "smartwatches": {"ar": "ساعات ذكية", "pages": 3, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=smart+watch&i=electronics&language=en_AE&page={n}"}},
+    "microwaves": {"ar": "ميكروويف", "pages": 3, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=microwave+oven&i=appliances&language=en_AE&page={n}"}},
+    "heaters": {"ar": "سخانات", "pages": 3, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=water+heater&i=appliances&language=en_AE&page={n}"}},
+    "cookers": {"ar": "بوتاجازات", "pages": 3, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=gas+cooker&i=appliances&language=en_AE&page={n}"}},
+    "vacuums": {"ar": "مكانس", "pages": 3, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=vacuum+cleaner&i=appliances&language=en_AE&page={n}"}},
+    "airfryers": {"ar": "قلايات هوائية", "pages": 3, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=air+fryer&i=kitchen&language=en_AE&page={n}"}},
     # broad sections for the deals page (shoppers browse those like a store's offers tab). Amazon's own "30% off and
     # more" filter (rh=p_8) gives discounted products only; Jumia's robots.txt forbids its filters and sorting, so its
     # plain section pages are read, plus its flash sales page.
@@ -282,14 +301,94 @@ async def scrape(stores: list[str] | None = None, categories: list[str] | None =
     return report
 
 
+FOUND_DAYS = 7  # an offer a search found (and checked) stays a candidate this long: it is checked again before shown
+
+
 def offers(words: list[str], max_age_hours: float = FRESH_HOURS) -> list[Product]:
-    """Catalog products whose title has any of these words, seen in the last hours: candidates for a search
-    (still checked on their own page before they're shown)."""
-    rows = db.catalog_like(words, market.current().code, time.time() - max_age_hours * 3600)
+    """Catalog products whose title (or the words the LLM gave them) has any of these words, seen in the last hours:
+    candidates for a search (still checked on their own page before they're shown). Besides the big stores' category
+    pages, the index holds every offer a search found on the web and checked on its page (smaller shops too)."""
+    now = time.time()
+    rows = db.catalog_like(words, market.current().code, now - max_age_hours * 3600, found_since=now - FOUND_DAYS * 86400)
     out = []
     for r in rows:
         p = Product(store=r["store"], title=r["title"], price=r["price"], url=r["url"], image=r["image"] or None,
                     old_price=r["old_price"])
-        p.trusted, p.trust_score, p.trust_signals = True, 100, ["متجر مشهور"]
+        if r.get("trust") is None and r.get("category") != db.FOUND:  # read from a big store's own category pages
+            p.trusted, p.trust_score, p.trust_signals = True, 100, ["متجر مشهور"]
+        else:
+            p.trusted, p.trust_score = trust.is_known(r["url"]), r.get("trust")
         out.append(p)
     return out
+
+
+def remember_found(results: list[dict]) -> int:
+    """Offers a search just checked on their own page go into the index, so the next shopper asking for them gets
+    them from the index first. Only offers whose price was confirmed there, from shops trusted enough to be shown."""
+    rows = [{"url": r["url"], "store": r.get("store") or trust.store_name(r["url"]), "title": r.get("title") or "",
+             "price": r.get("price"), "old_price": r.get("old_price"), "image": r.get("image") or "",
+             "trust": 100 if r.get("trusted") else r.get("trust_score")}
+            for r in results if r.get("url") and r.get("verified") and not r.get("condition") and not r.get("option")
+            and isinstance(r.get("price"), (int, float)) and (r.get("trusted") or (r.get("trust_score") or 0) >= MIN_TRUST)]
+    return db.save_catalog(rows, market.current().code, db.FOUND, history=False) if rows else 0
+
+
+UNDERSTAND_BATCH = 40     # titles per LLM call
+UNDERSTAND_MAX = 800      # titles per run: spare free quota, a few runs a day get through a new store's pages
+UNDERSTAND_PROMPT = """These are product titles from online stores in Egypt. For each one, say what the product is, so
+shoppers find it whatever words they use (Arabic or English, the brand or just the kind of product).
+{items}
+Reply JSON: {{"items": [{{"i": <number>, "brand": "brand or null", "line": "product line/name without the brand, e.g.
+'Galaxy A56', or null", "model": "model / part number exactly as written, or null", "kind": "what it is in plain
+English, e.g. 'washing machine', 'smartphone', 'phone case'", "kind_ar": "the same in the Arabic Egyptian shoppers
+use, e.g. 'غسالة', 'موبايل', 'جراب موبايل'", "size": "its main size/capacity/storage, e.g. '8 kg', '256GB', '55 inch',
+or null", "specs": ["up to 5 short English specs that matter when choosing, e.g. 'top load', 'automatic', '5G',
+'inverter'"], "accessory": true if it is an accessory/part for another product (case, cover, cable, filter)}}]}}
+One entry per title, same numbers. Use only what the title says or what the model number surely means."""
+
+
+def _words(attrs: dict) -> str:
+    """The words a search finds a product by: everything the LLM said about it, lower case, once each."""
+    bits = [attrs.get(k) for k in ("brand", "line", "model", "kind", "kind_ar", "size")] + list(attrs.get("specs") or [])
+    seen: dict[str, None] = {}
+    for b in bits:
+        if isinstance(b, str):
+            for w in b.lower().split():
+                seen.setdefault(w, None)
+    return " ".join(seen)[:1000]
+
+
+async def understand(limit: int = UNDERSTAND_MAX) -> dict:
+    """The LLM reads the titles of new index products (light models first, at quiet times: a cron job) and saves
+    brand, line, model, kind (English and Arabic), size and specs, so a search can find a product by any of them."""
+    mk = market.current().code
+    todo = await asyncio.to_thread(db.catalog_to_understand, mk, limit)
+    done, failed = 0, 0
+    for start in range(0, len(todo), UNDERSTAND_BATCH):
+        part = todo[start:start + UNDERSTAND_BATCH]
+        items = "\n".join(f"{i}. {r['title'][:160]}" for i, r in enumerate(part))
+        try:
+            got = await llm.ask_json(UNDERSTAND_PROMPT.format(items=items), timeout=30, budget=60, prefer="bulk",
+                                     spread=start // UNDERSTAND_BATCH, step="understand")
+        except llm.LLMError as e:  # the free quota is out for now: the next run goes on from here
+            log.warning("catalog: understanding titles stopped: %s", e.details or e)
+            failed += len(part)
+            break
+        rows = []
+        for a in got.get("items") or []:
+            i = a.get("i") if isinstance(a, dict) else None
+            if not isinstance(i, int) or not 0 <= i < len(part):
+                continue
+            attrs = {k: a.get(k) for k in ("brand", "line", "model", "kind", "kind_ar", "size")
+                     if isinstance(a.get(k), str) and a.get(k).strip()}
+            attrs["specs"] = [s for s in a.get("specs") or [] if isinstance(s, str)][:5]
+            attrs["accessory"] = a.get("accessory") is True
+            rows.append((part[i]["url"], json.dumps(attrs, ensure_ascii=False), _words(attrs)))
+        missed = len(part) - len(rows)
+        got_urls = {u for u, _, _ in rows}
+        # a title the LLM skipped isn't asked again and again (it is still found by its own words)
+        rows += [(r["url"], "{}", "") for r in part if r["url"] not in got_urls]
+        await asyncio.to_thread(db.save_understood, rows)
+        done += len(rows) - missed
+        failed += missed
+    return {"understood": done, "not_understood": failed, "asked": len(todo)}
