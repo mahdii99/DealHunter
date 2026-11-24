@@ -806,6 +806,7 @@ function render(d, turn) {  // one assistant turn
     (d.results.length > 1 ? `<div class="sorts" role="group" aria-label="${t('sortLabel')}">${['cheap', 'trust', 'deals'].map(k =>
       `<button class="sort" type="button" data-sort="${k}" aria-pressed="${sort === k}">${t(k)}</button>`).join('')}</div>` : '') +
     (d.summary ? `<div class="sum">${SPARK}<span>${esc(d.summary)}</span></div>` : '') +
+    (d.pending ? `<div class="hint-line pending">${L('لسه بدور في باقي المتاجر، ولو لقيت عروض تانية هتظهر هنا لوحدها.', 'Still searching other stores; more offers will appear here by themselves.')}</div>` : '') +
     (errs.length ? `<div class="err">${L('صفحات مقدرناش نفتحها: ', 'Pages we couldn’t open: ')}${errs.map(k => esc(k) + ' (' + esc(d.store_errors[k]).slice(0, 60) + ')').join('، ')}</div>` : '') +
     (alt ? `<div class="err">${L('مالقيناش المطلوب بالظبط، ودي أقرب بدائل من متاجر حقيقية:', 'We didn’t find exactly that; these are the closest alternatives from real stores:')}</div>` : '') +
     `<div class="grid">${list.length ? list.map((x, rank) => card(x.p, x.i, rank, turn)).join('') : `<div class="hint-line">${d.results.length ? t('noDeals') : L('ملقيناش عرض نقدر نتأكد من سعره من صفحة المتجر دلوقتي. جرّب تكتب الطلب بشكل تاني.', 'No offer whose price we could confirm on the store page right now. Try wording it differently.')}</div>`}</div>` +
@@ -897,6 +898,23 @@ async function send(text) {
       `<div class="grid">${d.results.map((p, i) => card(p, i, i, earlyIdx)).join('')}</div>`;
   };
   const timer = setInterval(() => { secs.textContent = Math.round((Date.now() - t0) / 1000) + ' ' + t('sec'); }, 1000);
+  // the answer on screen: at the end, or after ~25 s with the offers checked so far (pending: the search goes on in
+  // the other stores, the shopper can read and type meanwhile, and the full answer replaces it when it comes)
+  let interimShown = false, histIdx = null, turnIdx = null, myTurns = null;
+  const showAnswer = (d, pending) => {
+    if (myTurns && myTurns !== turns) return;  // the shopper opened another chat meanwhile
+    if (d.action === 'search') currentRequest = d.request || currentRequest;
+    const msg = {role: 'assistant', text: said(d).slice(0, 1500)};
+    if (histIdx === null) { histIdx = history.length; history.push(msg); } else history[histIdx] = msg;
+    const idx = earlyIdx ?? (interimShown ? Number(a.dataset.turn) : shown.length);
+    a.dataset.turn = idx; shown[idx] = d;
+    const kept = {u: text, d: {...d, pending: false}};  // a refresh shows it as it is, not as still searching
+    if (turnIdx === null) { if (!turns.length) chatId = newId(); turnIdx = turns.length; turns.push(kept); myTurns = turns; }
+    else turns[turnIdx] = kept;
+    saveChat();
+    a.innerHTML = render(d, idx);
+    if (pending && !interimShown) { interimShown = true; clearInterval(timer); b.disabled = false; q.focus(); }
+  };
   b.disabled = true;
   try {
     // progress arrives line by line (what the agent is doing now, and its reply while it's written),
@@ -919,8 +937,9 @@ async function send(text) {
           const ev = JSON.parse(line);
           if (ev.type === 'status') step.textContent = ev.text;
           else if (ev.type === 'reply') { live.hidden = false; liveText.textContent = ev.text; }
-          else if (ev.type === 'partial') showEarly(ev.data);
-          else if (ev.type === 'done') return ev.data;
+          else if (ev.type === 'partial') { if (!interimShown) showEarly(ev.data); }
+          else if (ev.type === 'done' && ev.data.pending) showAnswer(ev.data, true);  // the rest keeps coming
+          else if (ev.type === 'done' || ev.type === 'update') return ev.data;
           else if (ev.type === 'error') throw Object.assign(new Error(ev.status), {status: ev.status});
         }
       }
@@ -929,6 +948,9 @@ async function send(text) {
     let d;
     try { d = await once(); }
     catch (e) {
+      if (interimShown) {  // the checked offers are on screen already: only the late ones are lost
+        a.querySelector('.hint-line.pending')?.remove(); return;
+      }
       // a dropped connection or a server hiccup: try once more by itself before showing an error
       // (not for answers the server meant, like the daily limit or a bad message)
       if (e.status && e.status < 500) throw e;
@@ -936,20 +958,15 @@ async function send(text) {
       await new Promise(res => setTimeout(res, 1500));
       d = await once();
     }
-    if (d.action === 'search') currentRequest = d.request || currentRequest;
-    history.push({role: 'assistant', text: said(d).slice(0, 1500)});
-    const idx = earlyIdx ?? shown.length;
-    a.dataset.turn = idx; shown[idx] = d;
-    if (!turns.length) chatId = newId();
-    turns.push({u: text, d}); saveChat();
-    a.innerHTML = render(d, shown.length - 1);
+    showAnswer(d, false);
   } catch (err) {
+    if (interimShown) return;
     history.pop();
     if (earlyIdx !== null) {  // the first offers stay on screen (their prices were checked): only the rest failed
       a.querySelector('.meta.live')?.remove(); a.querySelector('.sum[hidden]')?.remove();
       a.insertAdjacentHTML('beforeend', `<div class="err">${t('error')}</div>`);
     } else a.innerHTML = `<div class="err">${t('error')}</div>`;
-  } finally { clearInterval(timer); b.disabled = false; q.focus(); }
+  } finally { clearInterval(timer); if (!interimShown) { b.disabled = false; q.focus(); } }
 }
 function newChat() {
   turns = []; chatId = newId(); saveChat(); setPrice(null, null);

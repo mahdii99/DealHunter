@@ -1777,6 +1777,8 @@ def test_planner_checks_todays_market_prices_before_offering_ranges(monkeypatch)
     assert searched == ["سعر لابتوب RTX 4070 استيراد"]
     assert "38,500 جنيه | import-shop.com" in prompts[1][1] and prompts[1][0] == "plan_market"
     assert live == ["اللابات اللي تنفع"]  # the first, uninformed reply was never shown
+    # the price range came from other sites' snippets, not from a store page: only the question is said
+    assert plan["question"] == "ميزانيتك قد إيه؟"
     asyncio.run(agent.plan_turn(msgs))
     assert len(searched) == 1  # the same check today: from the database, no new search
 

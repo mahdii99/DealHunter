@@ -242,6 +242,14 @@ async def chat(turn: ChatTurn, request: Request):
 
 
 KEEPALIVE_SECONDS = 8
+SEARCH_CAP_SECONDS = 25  # the shopper gets checked results by then; the other stores' search goes on and updates them
+
+
+def _interim(partial: dict) -> dict:
+    """The answer sent when the search passes SEARCH_CAP_SECONDS: the offers already checked on their own pages,
+    marked pending (the full answer follows as an "update" line when the rest of the search ends)."""
+    return {**partial, "action": "search", "pending": True, "query": partial.get("request") or "", "cached": False,
+            "demo": DEMO, "mode": "llm", "suggestions": [], "candidates_checked": partial.get("count") or 0}
 
 
 @app.post("/api/chat/stream")
@@ -249,7 +257,9 @@ async def chat_stream(turn: ChatTurn, request: Request):
     """Same as /api/chat, but sends progress lines while it works (NDJSON: one JSON object per line):
     {"type": "status", "text": ...} and {"type": "reply", "text": <the reply so far, while the LLM writes it>},
     {"type": "partial", "data": {"results": [...], ...}} (the first checked offers while the search goes on) ...
-    then {"type": "done", "data": <the /api/chat answer>}."""
+    then {"type": "done", "data": <the /api/chat answer>}.
+    A search still going after SEARCH_CAP_SECONDS with checked offers already found answers with those right away:
+    {"type": "done", "data": {..., "pending": true}}, then {"type": "update", "data": <the full answer>} at the end."""
     queue: asyncio.Queue = asyncio.Queue()
     client = client_id(request)
     user = await asyncio.to_thread(current_user, request)
@@ -276,18 +286,35 @@ async def chat_stream(turn: ChatTurn, request: Request):
 
     async def lines():
         task = asyncio.create_task(work())
+        t0, early, answered = time.monotonic(), None, False
+
+        def line(event: dict) -> str:
+            return json.dumps(event, ensure_ascii=False) + "\n"
         try:
             while True:
+                left = SEARCH_CAP_SECONDS - (time.monotonic() - t0)
+                wait = min(KEEPALIVE_SECONDS, left) if not answered and left > 0 else KEEPALIVE_SECONDS
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
+                    event = await asyncio.wait_for(queue.get(), timeout=wait)
                 except asyncio.TimeoutError:
-                    # nothing new for a while (a slow model): a small line keeps proxies and phones from
-                    # closing a connection that looks idle, which the page showed as an error
-                    yield '{"type": "ping"}\n'
+                    if not answered and early and time.monotonic() - t0 >= SEARCH_CAP_SECONDS:
+                        answered = True
+                        yield line({"type": "done", "data": _interim(early)})
+                    else:
+                        # nothing new for a while (a slow model): a small line keeps proxies and phones from
+                        # closing a connection that looks idle, which the page showed as an error
+                        yield '{"type": "ping"}\n'
                     continue
-                yield json.dumps(event, ensure_ascii=False) + "\n"
-                if event["type"] in ("done", "error"):
+                if event["type"] == "done" and answered:
+                    event = {**event, "type": "update"}
+                yield line(event)
+                if event["type"] in ("done", "update", "error"):
                     break
+                if event["type"] == "partial":
+                    early = event["data"]
+                    if not answered and time.monotonic() - t0 >= SEARCH_CAP_SECONDS:
+                        answered = True
+                        yield line({"type": "done", "data": _interim(early)})
         finally:
             if not task.done():  # the shopper closed the page: stop working for nobody
                 task.cancel()
@@ -1255,6 +1282,6 @@ def _page_title(html: str) -> str:
     return " ".join(m.group(1).split())[:60] if m else "-"
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])  # uptime monitors (UptimeRobot) ask with HEAD
 def health():
     return {"ok": True}

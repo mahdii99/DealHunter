@@ -118,7 +118,10 @@ Reply JSON (in this order):
   "market_query": "one short web search for today's prices in Egypt, or null (see above)",
   "reply": "what you say to the shopper now, as a salesperson: for ask the question itself; for recommend one short
             intro line; for answer 1-5 short sentences answering; for search one short line saying what you'll look
-            for (mention the change if a follow-up)",
+            for (mention the change if a follow-up). NEVER write a price, price range or 'starts from' amount here
+            (not even from the Market check: those are other sites' snippets, not checked prices; the shopper sees
+            only prices we check on the store page), and never say how many products you'll show or suggest;
+            budget amounts belong only in the tap answers",
   "action": "search" or "ask" or "recommend" or "answer",
   "options": ["if ask: 2-4 short quick answers the shopper can tap, else []"],
   "recommendations": [{"name": "if recommend: a specific product, e.g. 'Samsung Galaxy A16'", "tier": "2-3 words,
@@ -181,6 +184,77 @@ def unchecked_prices(text: str, shown: list[dict]) -> bool:
             if n >= 50 and not any(abs(n - k) <= 1 for k in known):
                 return True
     return False
+
+
+_NUMBER = re.compile(r"\d")
+_THOUSANDS = re.compile(r"^\s*(?:ألف|الف|آلاف|الاف|k\b)", re.I)
+_MONEY_WORD = re.compile(r"^\s*\+?\s*(?:ألف|الف|آلاف|الاف|k\b|جنيه|ج\.?\s?م|egp|le\b|pounds?)", re.I)
+_MONEY_BEFORE = re.compile(r"(?:egp|le|جنيه|ج\.?\s?م)\s*$", re.I)
+_RANGE_JOIN = re.compile(r"^\s*\+?\s*(?:-|–|لحد|لـ|ل|إلى|الى|و|to)\s*$", re.I)
+_SENTENCE = re.compile(r"(?<=[.!؟?\n،:])\s+")
+
+
+def _money_amounts(text: str) -> list[float]:
+    """Money amounts a text names: a number with a currency or thousands word next to it ("9000 جنيه", "25 ألف",
+    "EGP 4,999"), including both ends of a range ("من 9000 لـ 25000+ جنيه")."""
+    text = text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,."))
+    nums = list(re.finditer(r"\d[\d,.]*", text))
+    found: list[float] = []
+    for i, m in enumerate(nums):
+        try:
+            n = float(m.group(0).replace(",", "").rstrip("."))
+        except ValueError:
+            continue
+        after = text[m.end():m.end() + 12]
+        money = bool(_MONEY_WORD.match(after)) or bool(_MONEY_BEFORE.search(text[max(0, m.start() - 6):m.start()]))
+        # the first end of a range takes the money word of the second ("من 9 لـ 25 ألف")
+        nxt = nums[i + 1] if i + 1 < len(nums) else None
+        if not money and nxt and _RANGE_JOIN.match(text[m.end():nxt.start()]):
+            tail = text[nxt.end():nxt.end() + 12]
+            money = bool(_MONEY_WORD.match(tail))
+            if _THOUSANDS.match(tail) and n < 1000:
+                n *= 1000
+        if money:
+            if _THOUSANDS.match(after) and n < 1000:
+                n *= 1000
+            found.append(n)
+    return found
+
+
+def without_unchecked_prices(text: str, shown: list[dict] | None = None, live: bool = False) -> str:
+    """The LLM's own words (its reply, question, recommendation lines) with every sentence that names a price none
+    of the shown results has taken out: its memory of prices and the web snippets it read aren't prices checked on
+    a store page (e.g. "الغسالات دي بتبدأ من 9000 لحد 25000+ جنيه"). `live`: the text is still being written,
+    so its unfinished last sentence waits while it has a number (its currency word may come next)."""
+    if not text:
+        return text
+    known = {round(float(r["price"])) for r in shown or [] if isinstance(r.get("price"), (int, float))}
+    parts = _SENTENCE.split(text)
+    keep = []
+    for i, part in enumerate(parts):
+        if live and i == len(parts) - 1 and _NUMBER.search(part):
+            break
+        if any(n >= 50 and not any(abs(n - k) <= 1 for k in known) for n in _money_amounts(part)):
+            continue
+        keep.append(part)
+    return " ".join(keep).strip()
+
+
+_COUNT_WORDS = (r"\d+|واحد|اتنين|إتنين|اثنين|تلات[ةه]?|ثلاث[ةه]?|تلت|أربع[ةه]?|اربع[ةه]?|خمس[ةه]?|ست[ةه]?|سبع[ةه]?|"
+                r"تمان[يي]?[ةه]?|ثماني[ةه]?|تسع[ةه]?|عشر[ةه]?|one|two|three|four|five|six|seven|eight|nine|ten")
+_COUNTED = re.compile(r"(?<![\w])(?:" + _COUNT_WORDS + r")\s+(?=(?:من\s+)?(?:ال)?(?:موديلات|موديل|اختيارات|اختيار|خيارات|"
+                      r"منتجات|عروض|ترشيحات|أنواع|انواع|options?|models?|products?|offers?|picks?)\b)", re.I)
+
+
+def without_counts(text: str) -> str:
+    """"رشحتلك 3 موديلات" -> "رشحتلك موديلات": the LLM writes how many products it suggests before the list is
+    final, and the shopper then sees another number of them. The list itself shows how many."""
+    return _COUNTED.sub("", text or "")
+
+
+def shopper_text(text: str, shown: list[dict] | None = None, live: bool = False) -> str:
+    """What the LLM says to the shopper, without prices nobody checked and without counts that may not match."""
+    return without_counts(without_unchecked_prices(text, shown, live))
 
 
 MAX_SHOWN = 10  # results of the last search the planner sees (to answer and compare)
@@ -353,7 +427,7 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
     live = REPLY.get()
 
     def on_text(text: str) -> None:  # the reply is shown while it's written, unless a market check comes first
-        if live and not _MARKET_ASKED.search(text) and (t := reply_so_far(text)):
+        if live and not _MARKET_ASKED.search(text) and (t := shopper_text(reply_so_far(text), shown, live=True)):
             live(t)
     block = _chat_block(messages, current, shown, price)
     if hits:
@@ -374,11 +448,14 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
                                   if isinstance(x, str) and x.strip()]
     reply = plan.get("reply") if isinstance(plan.get("reply"), str) else ""
     reply = reply.strip() or str(plan.get("question") or plan.get("answer") or "").strip()  # older field names
-    plan["reply"] = reply
+    if plan.get("action") != "answer":  # (an answer naming unchecked prices becomes a search, in main)
+        reply = shopper_text(reply, shown)
+    plan["reply"] = without_counts(reply)
+    reply = plan["reply"]
     plan["suggestions"] = _strs(plan.get("suggestions"), 4, 60)
     if not isinstance(plan.get("request"), str) or not plan["request"].strip():
         plan["request"] = last
-    recs = [{"name": str(r["name"]).strip()[:120], "why": str(r.get("why") or "").strip()[:200],
+    recs = [{"name": str(r["name"]).strip()[:120], "why": shopper_text(str(r.get("why") or "").strip()[:200], shown),
              "tier": str(r.get("tier") or "").strip()[:40]}
             for r in plan.get("recommendations") or [] if isinstance(r, dict) and str(r.get("name") or "").strip()]
     action = plan.get("action")
@@ -394,7 +471,7 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
         plan["options"] = _strs(plan.get("options"), 4, 60)
     else:
         plan["action"] = "search"
-        plan["understood"] = str(plan.get("understood") or reply).strip()
+        plan["understood"] = shopper_text(str(plan.get("understood") or reply).strip(), shown)
     if hits and plan["action"] in ("search", "recommend"):
         plan["checked"], plan["check_hits"] = True, hits
     log.info("agent: plan %s -> %r", plan["action"], reply if plan["action"] != "search" else plan["request"])
@@ -522,7 +599,10 @@ and your knowledge of that model. Variants of one product line are DIFFERENT pro
 (e.g. knob/mechanical vs digital, Hero vs Hero Plus/Turbo/Lite, 50L vs 30L): drop any candidate whose title, model
 number or link shows the wrong variant. Use model numbers in the title or link (e.g. 945105411 = Hero 50L mechanical)
 to confirm. Store titles are often short: if nothing shows the variant either way, KEEP it with "sure": false and
-say in the note what to check. Set "sure": true only when the title/model/link confirms the exact variant. And
+say in the note what to check. Set "sure": true when the title/model/link confirms the exact variant: the brand,
+type and size/capacity/spec the shopper asked for all show in it (a model number you don't know is NOT a mismatch:
+judge by what the title says). A candidate you keep fits: its note never says the model/variant doesn't match (if
+it doesn't, drop it); with "sure": false the note only names the detail to check on its page. And
 (2) come from a legitimate retailer selling new items in Egypt. Smaller, lesser-known shops are WELCOME and often
 cheaper: keep them when their trust is 35+ (real Egyptian phone, cash on delivery, return policy, warranty...).
 Drop shops with trust below 30, copies/replicas, blogs, price-list / specs sites (titles like "سعر ومواصفات في مصر",
@@ -1207,10 +1287,29 @@ VERDICT_PRICE_MOVE = 0.15  # ... unless its price moved more than this since (a 
 _VERDICTS: dict[str, dict] = {}  # verdict key -> {page id: verdict}, also kept in the database (see _verdicts)
 
 
+VERDICTS_VERSION = "__verdicts2__:"  # a new judge prompt: verdicts the older one gave aren't reused
+
+
 def verdict_key(plan: dict, raw: str, options: str = "") -> str:
     """What a verdict is about: the request as planned and the options the shopper must have. The same request
     (a popular product, a tapped idea, the second round of one search) reuses the verdicts already given."""
-    return "__verdicts__:" + db.cache_key(f"{plan.get('request') or raw}|{options}", market.current().code)
+    return VERDICTS_VERSION + db.cache_key(f"{plan.get('request') or raw}|{options}", market.current().code)
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def _names_code(p: Product, codes: list[str]) -> bool:
+    """The listing (title or link) carries one of the requested product's model numbers ("FTM-8S" = "ftm8s")."""
+    have = f"{p.title} {unquote(p.url)}".lower()
+    for code in (_squash(x) for x in codes):
+        if len(code) < 4 or not (re.search(r"\d", code) and re.search(r"[a-z]", code)):
+            continue  # "a55" or "2024" alone names many products
+        # the same letters and digits, with or without - / space between them, and not the start of a longer code
+        if re.search(r"(?<![a-z0-9])" + r"[\s_-]?".join(map(re.escape, code)) + r"(?![a-z0-9])", have):
+            return True
+    return False
 
 
 def _vid(p: Product) -> str:
@@ -1243,7 +1342,8 @@ def _known_verdict(v: dict | None, p: Product) -> dict | None:
 
 async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, codes: list[str],
                  web_queries: list[str], vkey: str = "", known: list[Product] | None = None,
-                 info: dict | None = None) -> tuple[list[Product], list[Product], str, float | None, list[str]]:
+                 info: dict | None = None, budget: float | None = None
+                 ) -> tuple[list[Product], list[Product], str, float | None, list[str]]:
     """Budget, stock and trust filters, then the LLM judge picks the offers that fit.
     `vkey` (verdict_key): candidates judged before for this request keep that verdict and aren't sent again; when
     every candidate has one, no LLM call at all. `known`: offers already checked and shown for this request, given to
@@ -1300,7 +1400,8 @@ async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, code
                 avoid=json.dumps(plan.get("avoid", []), ensure_ascii=False), minp=minp, maxp=maxp, items=items,
                 codes=json.dumps(codes, ensure_ascii=False), known=known_text,
                 suggested=json.dumps(plan.get("suggested_products") or [], ensure_ascii=False))
-            verdict = await llm.ask_json(prompt, timeout=20, budget=plan.get("judge_budget") or 40, prefer="strong",
+            verdict = await llm.ask_json(prompt, timeout=min(20, budget or 20),
+                                         budget=budget or plan.get("judge_budget") or 40, prefer="strong",
                                          step="judge")  # the big call: give it time, it decides quality
             TIMES["judge"] = round(time.monotonic() - tj, 1)
             _save_debug("last_judge.json", {"request": raw, "plan": {k: v for k, v in plan.items() if k != "check_hits"},
@@ -1324,6 +1425,10 @@ async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, code
                     p = fresh[i]
                     p.note = m.get("note")
                     p.unconfirmed = m.get("sure") is False
+                    if p.unconfirmed and _names_code(p, codes):
+                        # the requested model's own number is on the listing: the exact product, whatever the
+                        # judge's note says (live 2026-11-24: Fresh FTM-8S flagged "model doesn't match")
+                        p.unconfirmed, p.note = False, None
                     p.alternative = alternatives
                     picks.append(p)
                     if not alternatives:
@@ -1428,7 +1533,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     picks = list({id(p): p for p in picks}.values())
     gone, unchecked, pool_size = 0, [], len(pool) + (len(early["pool"]) if early else 0)
     if early:
-        unchecked, gone = list(early["unchecked"]), early["gone"]
+        gone = early["gone"]
+        picks = early["later"] + picks
     if (picks or shown_first) and VERIFY_PICKS:
         if picks:
             _progress(f"بفتح صفحة كل نتيجة ({len(picks)}) وبتأكد إنها متوفرة وإن سعرها لسه زي ما هو...")
@@ -1500,23 +1606,28 @@ async def _first_results(stocked: list[Product], plan: dict, raw: str, minp, max
     t = time.monotonic()
     try:
         info: dict = {}
-        pool, picks, _, typical, _ = await _judge(stocked, plan, raw, minp, maxp, codes, web_queries, vkey, info=info)
+        pool, picks, _, typical, _ = await _judge(stocked, plan, raw, minp, maxp, codes, web_queries, vkey, info=info,
+                                                  budget=FIRST_JUDGE_BUDGET)
         if info.get("failed"):
             return None
         # close alternatives are only offered when no store at all has the product: not before the web is searched
         picks = [p for p in {id(p): p for p in picks}.values() if not p.alternative]
-        shown, unchecked, gone = await checked_only(picks, options) if picks else ([], [], 0)
+        shown, unchecked, gone = await checked_only(picks, options, quick=True) if picks else ([], [], 0)
     except Exception as e:  # the full search still runs
         log.warning("agent: first results failed: %s: %s", type(e).__name__, e)
         return None
+    # pages the quick check had no time for are checked again with the full answer (not lost)
+    later_urls = {u["url"] for u in unchecked}
+    later = [p for p in picks if p.url in later_urls]
     TIMES["first_results"] = round(time.monotonic() - t, 1)
     log.info("agent: %d first results from our price list in %.1fs", len(shown), time.monotonic() - t)
     if shown:
         firsts = _ordered(list(shown), options)
-        _partial({"results": [p.to_dict() for p in firsts], "count": len(firsts),
+        _partial({"results": [p.to_dict() for p in firsts], "count": len(firsts), "request": plan.get("request") or raw,
+                  "understood": plan.get("understood", ""),
                   "summary": _honest_summary("", firsts),
                   "note": "دي أول عروض من المتاجر الكبيرة واتأكدنا من سعرها، ولسه بدور في باقي المتاجر..."})
-    return {"pool": pool, "shown": shown, "unchecked": unchecked, "gone": gone, "typical": typical}
+    return {"pool": pool, "shown": shown, "later": later, "gone": gone, "typical": typical}
 
 
 MIN_RESULTS = 4  # fewer offers than this after the checks: one more search round in other stores
@@ -1585,11 +1696,15 @@ def _price_moved(html: str, before: float, now: float) -> bool:
     return now in seen and before not in seen
 
 
+QUICK_DEADLINE = 5          # the first results (shown by SEARCH_CAP_SECONDS): opening their pages
+QUICK_LLM_DEADLINE = 9      # ... and the LLM reading those without clear product data
+FIRST_JUDGE_BUDGET = 12     # the judge of the first results (our price list's offers): seconds
 PATIENT_DEADLINE = 25      # background checks (today's deals list): nobody waits, so pages get more time
 PATIENT_LLM_DEADLINE = 75
 
 
-async def _verify_stock(picks: list[Product], options: str = "", patient: bool = False) -> tuple[list[Product], int]:
+async def _verify_stock(picks: list[Product], options: str = "", patient: bool = False,
+                        quick: bool = False) -> tuple[list[Product], int]:
     """Before results are shown, open each one's own product page: drop it when the store now says sold out,
     take the page's current price when it changed, and mark it `verified` only when that page, opened just now,
     shows the price we'd show (or its own product data says exactly that price). Anything else - a page we
@@ -1606,7 +1721,7 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
     to_read: list[tuple[Product, str]] = []  # pages the LLM reads for their main product's price
     async with httpx.AsyncClient() as client:
         sem = asyncio.Semaphore(8)
-        pages = await _within(PATIENT_DEADLINE if patient else VERIFY_DEADLINE,
+        pages = await _within(PATIENT_DEADLINE if patient else QUICK_DEADLINE if quick else VERIFY_DEADLINE,
                               [_fetch_page(client, sem, p.url) for p in todo])
         retry = []
         for p, res in zip(todo, pages):
@@ -1642,7 +1757,8 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
                 continue
             to_read.append((p, html))
         if retry:  # the reader service opens the page now (where robots.txt allows): live, not a stored copy
-            texts, _ = await fetchers.read_pages(client, [p.url for p in retry], deadline=VERIFY_READER_DEADLINE)
+            texts, _ = await fetchers.read_pages(client, [p.url for p in retry],
+                                                 deadline=QUICK_DEADLINE if quick else VERIFY_READER_DEADLINE)
             for p in retry:
                 if (text := texts.get(p.url)) is None:
                     continue
@@ -1663,6 +1779,8 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
         cap, deadline = (VERIFY_LLM_MAX + 8, VERIFY_LLM_DEADLINE + 8) if options else (VERIFY_LLM_MAX, VERIFY_LLM_DEADLINE)
         if patient:  # every page that needs it is read, with time to spare
             cap, deadline = VERIFY_MAX, PATIENT_LLM_DEADLINE
+        elif quick:  # the first results: the shopper is waiting, what isn't read by then comes with the full answer
+            deadline = min(deadline, QUICK_LLM_DEADLINE)
         to_read = sorted(to_read, key=lambda x: (not x[0].trusted, -(x[0].trust_score or 0), _paid(x[0])))[:cap]
         reads = await _within(deadline, [read(i, p, page) for i, (p, page) in enumerate(to_read)])
         for (p, _), got in zip(to_read, reads):
@@ -1701,25 +1819,22 @@ def _shown_numbers(page: str) -> set[float]:
     return extract_mod._visible_numbers(page.translate(_ARABIC_DIGITS))
 
 
-async def checked_only(picks: list[Product], options: str = "",
-                       patient: bool = False) -> tuple[list[Product], list[dict], int]:
+async def checked_only(picks: list[Product], options: str = "", patient: bool = False,
+                       quick: bool = False) -> tuple[list[Product], list[dict], int]:
     """What may be shown with a price: only offers whose own page, opened just now, shows that price (and, when the
     shopper named a size/color..., offers that option). Returns (those offers, the others (never shown to the
     shopper), how many were sold out or without that option)."""
     if not (picks and VERIFY_PICKS):
         return picks, [], 0
-    picks, gone = await _verify_stock(picks, options, patient)
+    picks, gone = await _verify_stock(picks, options, patient, quick)
     unchecked = [{"store": p.store, "title": p.title, "url": p.url} for p in picks if not p.verified]
     return [p for p in picks if p.verified], unchecked, gone
-
-
-_NUMBER = re.compile(r"\d")
 
 
 def _honest_summary(summary: str, picks: list[Product]) -> str:
     """The judge's summary names prices from before the page check; they may now be wrong or not shown at all.
     Keep only its sentences without numbers, and state the cheapest checked price ourselves."""
-    keep = " ".join(x for x in re.split(r"(?<=[.!؟?])\s+", summary or "") if x and not _NUMBER.search(x))
+    keep = without_counts(" ".join(x for x in re.split(r"(?<=[.!؟?])\s+", summary or "") if x and not _NUMBER.search(x)))
     if not picks:
         return keep
     best = min(picks, key=_paid)
@@ -1849,14 +1964,15 @@ def _flag_price_outliers(picks: list[Product], typical: float | None = None) -> 
         others = [x for x in prices if x != _paid(p)] or prices
         median = others[len(others) // 2]
         if len(picks) >= 3 and not alternatives and _paid(p) < OUTLIER_RATIO * median:
-            ref = median
+            ref, where = median, "المتاجر التانية هنا"  # the other offers' prices were checked on their pages
         elif typical and _paid(p) < TOO_CHEAP * typical:
-            ref = typical
+            ref, where = typical, ""  # the judge's estimate: never shown as a price
         else:
             continue
         p.unconfirmed = True
         p.best_deal = False
-        p.note = (f"السعر أقل بكتير من سعره المعتاد (حوالي {ref:,.0f} ج.م)، ممكن يكون تقليد أو غلط في الإعلان أو "
+        usual = f"من سعره في {where} (حوالي {ref:,.0f} ج.م)" if where else "من سعره المعتاد"
+        p.note = (f"السعر أقل بكتير {usual}، ممكن يكون تقليد أو غلط في الإعلان أو "
                   "موديل/حالة مختلفة. اتأكد من صفحة المنتج والمتجر قبل الشراء.")
         log.info("agent: price outlier %s %s (reference %s)", p.store, _paid(p), ref)
 
