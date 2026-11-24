@@ -150,6 +150,10 @@ Reply JSON (in this order):
          945105411 price Egypt'; for a need, the store wording or the best suggested products, e.g.
          'Samsung Galaxy A16 5000mAh price Egypt' or 'men black crew neck basic cotton t-shirt'"],
   "model_codes": ["official model / part numbers of the requested product if you know them, else []"],
+  "product": {"kind": "for search/recommend: what the shopper wants in plain English, e.g. 'washing machine',
+              'smartphone', 'wireless earbuds'", "brand": "the brand they asked for, or null",
+              "size": "the size/capacity/storage they asked for, e.g. '8 kg', '256GB', '55 inch', or null",
+              "model": "a model number only when they want ONE exact product, else null"} or null,
   "queries": ["1-2 short English store search queries, most specific first"],
   "requirements": ["hard requirements a matching product must meet, in English, from the need too, e.g.
      'battery 5000 mAh or more', 'black', 'crew (round) neck', 'plain, no print'"],
@@ -1510,10 +1514,16 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         # ("غسالة 7 كيلو") don't find a product among English titles
         shelf = shelf + await _catalog_queries(want)
     stocked = await asyncio.to_thread(_catalog_offers, shelf, codes)
+    # the index's products with the attributes the shopper asked for: checked and shown in seconds, no LLM call
+    indexed = await asyncio.to_thread(_index_offers, plan, minp, maxp)
+    have = {p.url for p in stocked}
+    stocked = stocked + [p for p in indexed if p.url not in have]
     covered = {trust.domain(p.url) for p in stocked}
+    judged: dict = {}
+    fast = asyncio.create_task(_index_first(indexed, options, raw, plan, judged)) if indexed and VERIFY_PICKS else None
     # the shopper sees those first (checked on their pages) while the other stores are searched
-    first = asyncio.create_task(_first_results(stocked, plan, raw, minp, maxp, codes, web_queries, options, vkey)) \
-        if stocked else None
+    first = asyncio.create_task(_first_results(stocked, plan, raw, minp, maxp, codes, web_queries, options, vkey,
+                                               judged)) if stocked else None
     famous = _famous_sites(plan)
     searched = web_queries
     try:
@@ -1534,9 +1544,12 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             source = "stores"
             products, errors = await _search_all(queries)
         early = await first if first else None
+        if fast:
+            await fast
     except BaseException:
-        if first:
-            first.cancel()
+        for task in (first, fast):
+            if task:
+                task.cancel()
         raise
     if early:  # the price list's offers were judged and checked already: only the rest goes to the judge now
         early_ids = {_vid(p) for p in early["pool"]}
@@ -1616,7 +1629,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
 
 
 async def _first_results(stocked: list[Product], plan: dict, raw: str, minp, maxp, codes: list[str],
-                         web_queries: list[str], options: str, vkey: str) -> dict | None:
+                         web_queries: list[str], options: str, vkey: str, judged: dict | None = None) -> dict | None:
     """The big stores' offers from our own price list: judged and checked on their own pages right away, and sent
     to the page as the first results (in ~10-20 s) while the web search for the other stores goes on. None when the
     judge couldn't run (then they're judged with the rest)."""
@@ -1638,6 +1651,8 @@ async def _first_results(stocked: list[Product], plan: dict, raw: str, minp, max
     later = [p for p in picks if p.url in later_urls]
     TIMES["first_results"] = round(time.monotonic() - t, 1)
     log.info("agent: %d first results from our price list in %.1fs", len(shown), time.monotonic() - t)
+    if judged is not None:
+        judged["sent"] = True  # the index-only preview (if still running) must not replace this
     if shown:
         firsts = _ordered(list(shown), options)
         _partial({"results": [p.to_dict() for p in firsts], "count": len(firsts), "request": plan.get("request") or raw,
@@ -1925,6 +1940,83 @@ def _catalog_offers(queries: list[str], codes: list[str]) -> list[Product]:
 
 _SEARCH_NOISE = {"price", "prices", "egypt", "سعر", "اسعار", "أسعار", "مصر", "في", "من", "the", "and", "for", "with",
                  "best", "buy", "online", "جنيه", "تحت", "عايز"}
+
+
+INDEX_MAX = 12  # offers of the index shown first (checked on their pages) before any judge
+
+
+def _squash_size(text: str) -> str:
+    return re.sub(r"[^a-z0-9.]", "", (text or "").lower().replace("gigabyte", "gb").replace("inches", "inch")
+                  .replace("kilo", "kg").replace("kgs", "kg"))
+
+
+def _index_offers(plan: dict, minp=None, maxp=None) -> list[Product]:
+    """The index's products whose attributes (what the LLM made of each title, offline) are what the planner says the
+    shopper wants: the same kind, and the brand / size / model when the shopper named them. No LLM call, a database
+    query: these are the first offers a shopper sees (each still checked on its own page before it's shown)."""
+    want = plan.get("product") if isinstance(plan.get("product"), dict) else {}
+    kind = str(want.get("kind") or "").lower().strip()
+    if not kind:
+        return []
+    brand, size, model = (str(want.get(k) or "").lower().strip() for k in ("brand", "size", "model"))
+    words = [w for w in ([model] if model else []) + ([brand] if brand else []) + [kind] if w]
+    rows = _db_safe(db.catalog_like, words, market.current().code, time.time() - catalog.FRESH_HOURS * 3600,
+                    300, time.time() - catalog.FOUND_DAYS * 86400) or []
+    kind_words = set(kind.split())
+    out = []
+    for r in rows:
+        try:
+            a = json.loads(r.get("attrs") or "{}")
+        except ValueError:
+            continue
+        if not a or a.get("accessory"):
+            continue
+        theirs = set(str(a.get("kind") or "").lower().split())
+        if not theirs or not (kind_words <= theirs or theirs <= kind_words):  # "washing machine" vs "machine": no
+            continue
+        if brand and str(a.get("brand") or "").lower() != brand:
+            continue
+        if size and _squash_size(size) not in (_squash_size(a.get("size") or ""), ) \
+                and _squash_size(size) not in _squash_size(r["title"]):
+            continue
+        p = Product(store=r["store"], title=r["title"], price=r["price"], url=r["url"], image=r["image"] or None,
+                    old_price=r["old_price"])
+        if model and not _names_code(p, [model]):
+            continue
+        if (maxp is not None and p.price > maxp) or (minp is not None and p.price < minp):
+            continue
+        if r.get("trust") is None and r.get("category") != db.FOUND:
+            p.trusted, p.trust_score, p.trust_signals = True, 100, ["متجر مشهور"]
+        else:
+            p.trusted, p.trust_score = trust.is_known(r["url"]), r.get("trust")
+            if not p.trusted and (p.trust_score or 0) < MIN_TRUST:
+                continue
+        out.append(p)
+    out = sorted({p.url: p for p in out}.values(), key=_paid)
+    # several stores, not the 12 cheapest of one
+    by_store: dict[str, int] = {}
+    picked = []
+    for p in out:
+        if by_store.get(p.store, 0) < PER_STORE_FIRST // 2:
+            by_store[p.store] = by_store.get(p.store, 0) + 1
+            picked.append(p)
+    return picked[:INDEX_MAX]
+
+
+async def _index_first(found: list[Product], options: str, raw: str, plan: dict, judged: dict) -> list[Product]:
+    """The index's offers, checked on their own pages, sent to the shopper right away (before any judge). The judge
+    still sees them with the rest: the next answer replaces these if it drops one."""
+    t = time.monotonic()
+    shown, _, _ = await checked_only([Product(**{f.name: getattr(p, f.name) for f in fields(p)}) for p in found],
+                                     options, quick=True)
+    TIMES["index_first"] = round(time.monotonic() - t, 1)
+    log.info("agent: %d of %d index offers checked in %.1fs", len(shown), len(found), time.monotonic() - t)
+    if shown and not judged.get("sent"):
+        firsts = _ordered(list(shown), options)
+        _partial({"results": [p.to_dict() for p in firsts], "count": len(firsts), "request": plan.get("request") or raw,
+                  "understood": plan.get("understood", ""), "summary": _honest_summary("", firsts),
+                  "note": "دي أول عروض لقيناها في فهرس الأسعار بتاعنا واتأكدنا من سعرها دلوقتي، ولسه بدور في باقي المتاجر..."})
+    return shown
 
 
 def _fallback_pick(pool: list[Product], queries: list[str], keep: float = 0.6) -> list[Product]:

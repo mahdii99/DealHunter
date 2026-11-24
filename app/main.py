@@ -63,6 +63,7 @@ async def _lifespan(app):
 app = FastAPI(title="Easy Found", lifespan=_lifespan)
 # Same request again within this time = answered from the price database (instant, saves the free quotas).
 CACHE_TTL = float(os.getenv("CACHE_HOURS", "6")) * 3600
+PLAN_TTL = 24 * 3600  # how long the plan of a first message is reused for the same words
 # New searches per visitor per day (each costs ~7 web searches and many LLM calls from the shared free quotas).
 # 0 = no limit (e.g. on your own PC). Searches answered from the cache don't count.
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "0"))
@@ -411,7 +412,16 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
     log.info("CHAT: %s (current request: %s)", newest, turn.request or "-")
     plan, failed = None, None
     agent.llm.reset_usage()
-    if agent.llm.available():
+    # a first message with nothing else around it (no chat, no results, no price range) is planned once a day: the
+    # next shopper writing the same words gets the same plan with no LLM call and no web search
+    users = [m for m in messages if m["role"] == "user"]
+    plan_key = ("__plan__:" + db.cache_key(newest, market.current().code)
+                if len(users) == len(messages) == 1 and not turn.shown and not turn.request and not rng else "")
+    if plan_key and not DEMO and (plan := await _db(db.cached_search, plan_key, PLAN_TTL)):
+        log.info("chat: the same first message was planned today: reusing its plan")
+        if plan.get("reply") and (live := agent.REPLY.get()):
+            live(plan["reply"])
+    elif agent.llm.available():
         hits, words = [], ""
         if not turn.shown:  # a new request: the planner checks the product against the web in the same call
             words = agent.plain_request([next(m["text"] for m in messages if m["role"] == "user")])
@@ -419,6 +429,8 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         try:
             plan = await agent.plan_turn(messages, turn.request, [r.model_dump() for r in turn.shown], (lo, hi),
                                          hits=hits, hits_for=words)
+            if plan_key and not DEMO:
+                await _db(db.save_search, plan_key, market.current().code, plan)
         except agent.llm.LLMError as e:
             log.warning("chat planner failed: %s", e.details or e)
             failed = e
