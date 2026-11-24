@@ -414,12 +414,21 @@ def _size(model: str) -> float:
     return max(sizes) if sizes else 0
 
 
+CHAT_FAMILIES = ("gpt-oss", "deepseek", "llama", "kimi", "glm-4", "qwen", "mistral", "mixtral", "gemma", "nemotron")
+
+
 def _big_model(model: str) -> bool:
+    """A big general chat model, from a provider's long list. Lists also hold special-purpose models with big sizes
+    in their names (live test 2026-11-24: NVIDIA's 'ising-calibration-1.5-31b' was picked to read prices), so the
+    name must also belong to a known chat model family or say it follows instructions."""
     name = model.lower()
     if any(x in name for x in ("vision", "-vl", "coder", "embed", "guard", "audio", "image", "reasoning", "thinking",
-                               "omni", "nano", "reward", "creative")):  # slow "thinking" models time out on our 10-20 s budget
+                               "omni", "nano", "reward", "creative", "calibrat", "retriev", "rerank", "safety",
+                               "parse", "translate", "math")):  # slow "thinking" models time out on our 10-20 s budget
         return False
-    return _size(name) >= 24 or any(x in name for x in ("gpt-oss", "deepseek", "llama-4", "kimi", "glm-4", "qwen3-235"))
+    general = any(x in name for x in CHAT_FAMILIES) or "instruct" in name or "chat" in name
+    return general and (_size(name) >= 24 or any(x in name for x in ("gpt-oss", "deepseek", "llama-4", "kimi", "glm-4",
+                                                                      "qwen3-235")))
 
 
 def gemma(model: str) -> bool:
