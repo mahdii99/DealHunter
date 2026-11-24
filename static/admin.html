@@ -110,7 +110,7 @@
 
     <div class="grid">
       <section class="card wide"><h2>مشاكل السيرفر</h2><p class="muted">ليميت الموديلات المجانية وخدمات البحث والأخطاء. الزوار مش بيشوفوا التفاصيل دي، بيشوفوا رسالة بسيطة بس.</p><div id="problems"></div><div class="scroll" id="problemLog" style="margin-top:10px"></div></section>
-      <section class="card wide"><h2>استهلاك الذكاء الاصطناعي</h2><p class="muted">كام طلب للموديلات المجانية في كل خطوة. الحصص اليومية المجانية محدودة، فكل ما الرقم ده يقل كل ما نقدر نخدم ناس أكتر في اليوم.</p><div id="llmTiles" class="llm-tiles"></div><div class="scroll" id="llmSteps"></div><div class="scroll" id="llmDaily" style="margin-top:10px"></div></section>
+      <section class="card wide"><h2>استهلاك الذكاء الاصطناعي</h2><p class="muted">كام طلب للموديلات المجانية في كل خطوة. الحصص اليومية المجانية محدودة، فكل ما الرقم ده يقل كل ما نقدر نخدم ناس أكتر في اليوم.</p><div id="llmTiles" class="llm-tiles"></div><div class="scroll" id="llmSteps"></div><div class="scroll" id="llmDaily" style="margin-top:10px"></div><h2 style="margin-top:16px">النهارده لكل موديل</h2><p class="muted">اليوم بيبدأ الساعة 10 الصبح بتوقيت القاهرة (نص الليل في أمريكا، لما الحصص المجانية بتتجدد). شغل الخلفية (العروض وفهم العناوين) بيقف عند <span id="llmShare">60</span>٪ من حصة كل موديل، والباقي للعملاء.</p><div class="scroll" id="llmModels"></div></section>
       <section class="card"><h2>أكتر حاجات اتدور عليها</h2><div class="scroll" id="searches"></div></section>
       <section class="card"><h2>المتاجر اللي الناس فتحت لينكاتها</h2><div class="scroll" id="stores"></div></section>
       <section class="card wide"><h2>المنتجات اللي اتفتحت أكتر</h2><div class="scroll" id="products"></div></section>
@@ -159,7 +159,8 @@ const ACTIONS = {search: 'بحث عن أسعار', ask: 'سأل سؤال يفه�
 const PRODUCT_KINDS = {click: 'فتح لينك', follow: 'تابع السعر', save: 'حفظ منتج', share: 'شارك منتج'};
 const KINDS = {complaint: 'شكوى', suggestion: 'اقتراح', result: 'مشكلة في نتيجة', question: 'سؤال'};
 const PROBLEMS = {llm_busy: 'كل موديلات الـ LLM مشغولة أو بطيئة', llm_quota: 'موديل خلص الحد اليومي المجاني',
-                  search_error: 'مشكلة في خدمة البحث', server_error: 'خطأ في السيرفر'};
+                  search_error: 'مشكلة في خدمة البحث', server_error: 'خطأ في السيرفر',
+                  llm_budget: 'كل الموديلات وصلت حصتها اليومية (أو حصة شغل الخلفية)'};
 const REASONS = {wrong_product: 'منتج تاني', wrong_price: 'السعر غلط', bad_store: 'متجر مش موثوق', sold_out: 'خلصان', other: 'حاجة تانية'};
 const METRICS = [['visitors', 'الزوار'], ['visits', 'الزيارات'], ['turns', 'رسائل الشات'], ['clicks', 'ضغطات على المتاجر']];
 let data = null, metric = 'visitors';
@@ -248,6 +249,15 @@ function drawLLM() {
     ['رسائل', r => `<td class="n">${num(r.turns)}</td>`],
     ['طلبات للموديلات', r => `<td class="n">${num(r.calls)}</td>`],
     ['توكن', r => `<td class="n">${num(r.tokens)}</td>`]]) : '';
+  const models = data.llm_today || [];
+  $('#llmShare').textContent = num(Math.round((data.llm_background_share ?? 0.6) * 100));
+  $('#llmModels').innerHTML = table(models, [
+    ['الموديل', r => `<td class="t">${esc(r.model)} <span class="muted">${esc(r.provider)}</span>${r.limit ? bar(r.used_of_limit, r.limit) : ''}</td>`],
+    ['طلبات', r => `<td class="n">${num(r.calls)}</td>`],
+    ['الحد اليومي', r => `<td class="n">${r.limit ? num(r.used_of_limit) + ' من ' + num(r.limit) : 'مش معروف'}</td>`],
+    ['في', r => `<td>${esc(Object.entries(r.steps).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${STEPS[k] || k} ${num(n)}`).join('، '))}</td>`],
+    ['حالته', r => `<td>${r.resting_until ? 'مستريح لحد ' + new Date(r.resting_until * 1000).toLocaleTimeString('ar-EG', {hour: 'numeric', minute: '2-digit'}) : 'شغال'}</td>`]],
+    'مفيش طلبات للموديلات النهارده لسه.');
 }
 
 function draw() {

@@ -58,6 +58,7 @@ async def _lifespan(app):
     except Exception:
         log.exception("removing old price-drop alerts failed")
     yield
+    await asyncio.to_thread(agent.llm.flush_usage)  # today's LLM counts, so a restart doesn't forget them
 
 
 app = FastAPI(title="Easy Found", lifespan=_lifespan)
@@ -623,6 +624,11 @@ async def admin_stats(request: Request, days: int = Query(7, ge=1, le=db.EVENTS_
     except Exception:
         log.exception("admin stats failed")
         raise HTTPException(503, "database unavailable")
+    try:  # today's free-quota use per model (llm.DAILY_LIMITS), with each one's free daily limit
+        stats["llm_today"] = await asyncio.to_thread(agent.llm.today_report)
+        stats["llm_background_share"] = agent.llm.BACKGROUND_SHARE
+    except Exception:
+        log.exception("admin: LLM use today failed")
     for row in stats.get("stores", []):  # which stores can pay us for these clicks (AFFILIATE_TAGS)
         row["affiliate"] = affiliate.store_has_code(row.get("store") or "")
     return JSONResponse(stats, headers=NO_INDEX)

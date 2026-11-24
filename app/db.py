@@ -180,7 +180,16 @@ CREATE TABLE IF NOT EXISTS coupons (
     expires_at {FLOAT},                 -- NULL = the source gave no end date
     added_at {FLOAT} NOT NULL
 );
-CREATE INDEX IF NOT EXISTS coupons_market ON coupons (market, store)
+CREATE INDEX IF NOT EXISTS coupons_market ON coupons (market, store);
+CREATE TABLE IF NOT EXISTS llm_usage (
+    day TEXT NOT NULL,                  -- the free-quota day (starts at midnight US Pacific, app/llm.quota_day)
+    model TEXT NOT NULL,
+    step TEXT NOT NULL,                 -- plan / judge / read_price / understand / ... (what the call was for)
+    provider TEXT NOT NULL,
+    calls INTEGER NOT NULL,
+    tokens INTEGER NOT NULL,
+    PRIMARY KEY (day, model, step)
+)
 """
 # columns added after a table first went live (CREATE TABLE IF NOT EXISTS doesn't add them to an existing table)
 _ADDED_COLUMNS = ["ALTER TABLE watches ADD COLUMN wanted TEXT NOT NULL DEFAULT ''",
@@ -531,6 +540,18 @@ def unblock(domain: str) -> bool:
 
 def _today() -> str:
     return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def add_llm_usage(rows: list[tuple]) -> None:
+    """rows: (day, model, step, provider, calls, tokens) to add to that day's counts."""
+    _db.run_many("INSERT INTO llm_usage (day, model, step, provider, calls, tokens) VALUES (?, ?, ?, ?, ?, ?) "
+                 "ON CONFLICT (day, model, step) DO UPDATE SET calls = llm_usage.calls + excluded.calls, "
+                 "tokens = llm_usage.tokens + excluded.tokens, provider = excluded.provider", rows)
+
+
+def llm_usage_day(day: str) -> list[dict]:
+    rows = _db.run("SELECT model, step, provider, calls, tokens FROM llm_usage WHERE day = ?", (day,))
+    return [dict(zip(("model", "step", "provider", "calls", "tokens"), r)) for r in rows]
 
 
 def searches_today(client: str) -> int:
