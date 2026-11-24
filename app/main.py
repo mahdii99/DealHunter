@@ -331,7 +331,8 @@ async def _chat_turn(turn: ChatTurn, client: str | None = None, user: dict | Non
         client = client and _user_client(user)
     token = market.use(user and user["market"])
     try:
-        d = await _chat_turn_in_market(turn, client, USER_DAILY_LIMIT if user and USER_DAILY_LIMIT else DAILY_LIMIT)
+        with agent.llm.live():  # background LLM work (cron jobs) waits while a shopper waits
+            d = await _chat_turn_in_market(turn, client, USER_DAILY_LIMIT if user and USER_DAILY_LIMIT else DAILY_LIMIT)
     finally:
         market.reset(token)
     used = agent.llm.usage()  # this turn's own calls (a saved answer served again carries its first run's count)
@@ -1012,6 +1013,7 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
     secret = os.getenv("CRON_SECRET", "")
     if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
         raise HTTPException(403, "forbidden")
+    agent.llm.background()  # waits for shoppers' searches (this request's own context: nothing to undo)
     # every=1 (a run started by hand): all followed pages now, not only those not checked for a while
     urls = await asyncio.to_thread(accounts.urls_to_check, 0 if every else CHECK_HOURS * 3600 * 0.8, limit)
     sem = asyncio.Semaphore(4)
@@ -1101,7 +1103,11 @@ async def understand_catalog(request: Request, limit: int = Query(catalog.UNDERS
     secret = os.getenv("CRON_SECRET", "")
     if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
         raise HTTPException(403, "forbidden")
-    return await catalog.understand(limit)
+    token = agent.llm.background()  # waits for shoppers' searches
+    try:
+        return await catalog.understand(limit)
+    finally:
+        agent.llm.background_end(token)
 
 
 @app.post("/api/cron/deals")
@@ -1111,7 +1117,11 @@ async def build_deals(request: Request):
     secret = os.getenv("CRON_SECRET", "")
     if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
         raise HTTPException(403, "forbidden")
-    got = await deals.build()
+    token = agent.llm.background()  # waits for shoppers' searches
+    try:
+        got = await deals.build()
+    finally:
+        agent.llm.background_end(token)
     return {k: v for k, v in got.items() if k != "deals"} | {"deals": len(got["deals"])}
 
 
@@ -1121,7 +1131,11 @@ async def refresh_coupons(request: Request):
     secret = os.getenv("CRON_SECRET", "")
     if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
         raise HTTPException(403, "forbidden")
-    return await coupons.refresh()
+    token = agent.llm.background()  # waits for shoppers' searches
+    try:
+        return await coupons.refresh()
+    finally:
+        agent.llm.background_end(token)
 
 
 @app.get("/api/coupons")

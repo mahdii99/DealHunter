@@ -414,11 +414,16 @@ def catalog_like(words: list[str], market: str, since: float, limit: int = 300, 
     words = [w.lower() for w in words if w][:8]
     if not words:
         return []
-    like = " OR ".join("LOWER(title || ' ' || keywords) LIKE ?" for _ in words)
+    text = "LOWER(title || ' ' || keywords)"
+    like = " OR ".join(f"{text} LIKE ?" for _ in words)
+    # the products with the most of these words first (the words come rarest first, so the first ones weigh more):
+    # with thousands of products, "samsung" alone matches TVs and fridges too, and a newest-first cut lost the phone
+    score = " + ".join(f"(CASE WHEN {text} LIKE ? THEN {len(words) - i} ELSE 0 END)" for i in range(len(words)))
     fresh = "(seen_at > ? OR (category = 'found' AND seen_at > ?))"
+    pats = [f"%{w}%" for w in words]
     rows = _db.run(f"SELECT {', '.join(_CATALOG_COLS)} FROM catalog "
-                   f"WHERE market = ? AND {fresh} AND ({like}) ORDER BY seen_at DESC LIMIT ?",
-                   (market, since, since if found_since is None else found_since, *[f"%{w}%" for w in words], limit))
+                   f"WHERE market = ? AND {fresh} AND ({like}) ORDER BY ({score}) DESC, seen_at DESC LIMIT ?",
+                   (market, since, since if found_since is None else found_since, *pats, *pats, limit))
     return [dict(zip(_CATALOG_COLS, r)) for r in rows]
 
 

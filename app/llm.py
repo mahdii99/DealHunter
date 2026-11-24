@@ -27,6 +27,40 @@ TOTAL_BUDGET = float(os.getenv("LLM_BUDGET_SECONDS", "25"))  # give up and use t
 
 
 _TEMPERATURE: contextvars.ContextVar = contextvars.ContextVar("temperature", default=0.0)  # set per ask_json call
+# Live searches first: the free models' per-minute limits are shared by everything. Work nobody is waiting for (the
+# deals list, reading new titles, checking followed products, learning a store's page) waits while a shopper's search
+# is running, so twice a day the cron jobs don't make shoppers' searches slow or empty (live test 2026-11-24).
+_LIVE = 0
+_BACKGROUND: contextvars.ContextVar = contextvars.ContextVar("llm_background", default=False)
+BACKGROUND_WAIT = 90  # seconds a background call waits at most for the live searches to end
+
+
+class _Live:
+    def __enter__(self):
+        global _LIVE
+        _LIVE += 1
+
+    def __exit__(self, *exc):
+        global _LIVE
+        _LIVE -= 1
+
+
+def live() -> _Live:
+    """`with llm.live():` around a shopper's search: background LLM work waits meanwhile."""
+    return _Live()
+
+
+def background() -> contextvars.Token:
+    """Marks this task's LLM calls (and the tasks it starts) as background work; undo with background_end(token)."""
+    return _BACKGROUND.set(True)
+
+
+def background_end(token: contextvars.Token) -> None:
+    _BACKGROUND.reset(token)
+
+
+def live_searches() -> int:
+    return _LIVE
 
 
 BUSY_TEXT = "الموديلات المجانية مشغولة دلوقتي"
@@ -393,6 +427,11 @@ async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, 
     temperature: 0 (default) = the same answer every time, for planning searches and judging; a bit more for talk."""
     if not available():
         raise LLMError(details="no LLM key in .env")
+    if _BACKGROUND.get():
+        waited = 0.0
+        while _LIVE > 0 and waited < BACKGROUND_WAIT:
+            await asyncio.sleep(1)
+            waited += 1
     token = _TEMPERATURE.set(temperature)
     try:
         return await _ask_json(prompt, timeout, prefer, spread, budget, step, on_text)
