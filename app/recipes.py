@@ -198,6 +198,7 @@ async def after_llm_read(url: str, html: str, title: str, price: float) -> None:
 
 async def learn(url: str, html: str, title: str, price: float) -> dict | None:
     """One LLM call: which of this page's elements is the main price, the buy button, the sold-out mark."""
+    llm.background()  # (a task of its own: its context ends with it) shoppers' searches go first
     domain = trust.domain(url)
     tree = HTMLParser(html)
     prices, buys = _candidates(tree, price)

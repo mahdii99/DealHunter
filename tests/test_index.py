@@ -205,3 +205,38 @@ def test_the_same_first_message_is_planned_once_a_day(monkeypatch):
     c.post("/api/chat", json={"messages": [{"role": "user", "text": "غسالة فريش 8 كيلو"},
                                            {"role": "assistant", "text": "x"}, {"role": "user", "text": "أرخص"}]})
     assert len(plans) == 3
+
+
+def test_the_best_matching_products_come_first_however_big_the_index():
+    """Live 2026-11-24: with 6000 products, "samsung" matched TVs and fridges too, and a newest-first cut of 300
+    rows left 2 offers for "Samsung A56 256GB"."""
+    db.save_catalog([{"url": "https://www.jumia.com.eg/a56.html", "store": "Jumia", "title": "Samsung Galaxy A56 256GB",
+                      "price": 19000}], "EG", "phones")
+    db.save_catalog([{"url": f"https://www.amazon.eg/dp/TV{i}", "store": "Amazon.eg", "title": f"Samsung Smart TV {i}",
+                      "price": 9000 + i} for i in range(30)], "EG", "tvs")
+    rows = db.catalog_like(["a56", "256gb", "samsung"], "EG", time.time() - 60, limit=5)
+    assert rows[0]["title"] == "Samsung Galaxy A56 256GB"
+
+
+def test_background_llm_work_waits_while_a_shopper_searches(monkeypatch):
+    monkeypatch.setattr(llm, "available", lambda: True)
+    order = []
+
+    async def fake(prompt, *a, **kw):
+        order.append(prompt)
+        return {}
+    monkeypatch.setattr(llm, "_ask_json", fake)
+
+    async def go():
+        async def shopper():
+            with llm.live():
+                await asyncio.sleep(1.5)
+                await llm.ask_json("shopper")
+
+        async def cron():
+            llm.background()
+            await asyncio.sleep(0.1)
+            await llm.ask_json("cron")
+        await asyncio.gather(shopper(), cron())
+    asyncio.run(go())
+    assert order == ["shopper", "cron"]
