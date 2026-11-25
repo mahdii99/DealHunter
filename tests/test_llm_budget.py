@@ -128,3 +128,22 @@ def test_special_purpose_models_in_long_lists_are_not_used():
     picked = llm._pick(listed, (), None, "nvidia")
     assert "nvidia/ising-calibration-1.5-31b" not in picked and "foo/bar-70b" not in picked
     assert {"meta/llama-3.3-70b-instruct", "nvidia/llama-3.3-nemotron-super-49b-v1"} <= set(picked)
+
+
+def test_a_search_keeps_which_models_failed_each_step(monkeypatch):
+    """Live 2026-11-25: page reads timed out on every big store, and nothing said which models were slow."""
+    _setup(monkeypatch, {"groq": ["llama-3.1-8b-instant", "openai/gpt-oss-120b"]})
+
+    async def busy(client, model, prompt, on_text=None):
+        if model == "llama-3.1-8b-instant":
+            return httpx.Response(429, json={"error": "rate"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}]})
+    monkeypatch.setattr(llm, "_caller", lambda p: busy)
+
+    async def run():
+        llm.reset_usage()
+        await llm.ask_json("page", prefer="bulk", step="read_page")
+        return llm.usage()
+    used = asyncio.run(run())
+    step = used["by_step"]["read_page"]
+    assert step["fails"] == {"llama-3.1-8b-instant: 429": 1} and step["calls"] == 1

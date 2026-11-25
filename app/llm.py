@@ -105,6 +105,15 @@ def reset_usage() -> None:
     _USAGE.set({"calls": 0, "tokens": 0, "by_step": {}})
 
 
+def _failed(step: str, model: str, why: str) -> None:
+    """A model that didn't answer this step, kept with the search's count: a slow step can be traced to its models
+    (the live search check prints them)."""
+    s = usage()["by_step"].setdefault(step, {"calls": 0, "tokens": 0})
+    fails = s.setdefault("fails", {})
+    key = f"{model}: {why}"
+    fails[key] = fails.get(key, 0) + 1
+
+
 def _count(provider: str, r: httpx.Response, step: str, model: str = "") -> None:
     try:
         data = r.json()
@@ -617,6 +626,7 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
         behind = _BACKGROUND.get()
         attempts = [a for a in attempts if not over_budget(a[0], a[1], behind)]
         if not attempts:
+            _failed(step, "every model", "daily budget used")
             problems.note("llm_budget", f"step {step}: every model is at its daily "
                           + ("background share" if behind else "free limit"))
             raise LLMError(BUSY_TEXT, details="daily budget used" + (" (background share)" if behind else ""))
@@ -746,6 +756,7 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
                         if leader[0] == model:
                             leader[0] = None
                         errors.append(f"{model}: {type(err).__name__}")
+                        _failed(step, model, type(err).__name__)
                         timed_out = isinstance(err, (asyncio.TimeoutError, httpx.TimeoutException))
                         log.warning("LLM %s failed after %.1fs: %s", model, took, type(err).__name__)
                         _rest(model, slow=timed_out and limit >= timeout - 0.5)
@@ -758,6 +769,7 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
                             data = _json(_text(provider, r))
                         except (KeyError, IndexError, ValueError, TypeError):  # TypeError: no text in the reply (cut off)
                             errors.append(f"{model}: bad reply")
+                            _failed(step, model, "bad reply")
                             exhausted, last_launch = False, -1e9
                             continue
                         if not isinstance(data, dict):  # e.g. a bare list: callers expect an object
@@ -768,6 +780,7 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
                             _save_state()
                         return data
                     errors.append(f"{model}: {r.status_code}")
+                    _failed(step, model, str(r.status_code))
                     log.warning("LLM %s said: %s", model, r.text[:200].replace("\n", " "))
                     if r.status_code in RETRY_STATUS or r.status_code in (401, 403, 404, 410):  # busy/quota/not allowed/gone
                         _rest(model, r)
@@ -778,6 +791,7 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
             for task, (model, since) in running.items():
                 task.cancel()
                 errors.append(f"{model}: out of time")
+                _failed(step, model, "out of time")
                 if time.monotonic() - since >= hedge:  # it was slow too: let the others go first next time
                     _rest(model)
             if running:
