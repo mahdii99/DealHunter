@@ -1776,7 +1776,7 @@ PATIENT_LLM_DEADLINE = 75
 
 
 async def _verify_stock(picks: list[Product], options: str = "", patient: bool = False,
-                        quick: bool = False) -> tuple[list[Product], int]:
+                        quick: bool = False, use_llm: bool = True) -> tuple[list[Product], int]:
     """Before results are shown, open each one's own product page: drop it when the store now says sold out,
     take the page's current price when it changed, and mark it `verified` only when that page, opened just now,
     shows the price we'd show (or its own product data says exactly that price). Anything else - a page we
@@ -1838,6 +1838,9 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
                     sold.add(id(p))
                 else:
                     to_read.append((p, text))
+    if not use_llm:  # (today's deals list) no LLM call at all: its free daily quota is kept for shoppers' searches
+        _check_without_llm(to_read, sold, options)
+        to_read = []
     # a number somewhere on the page isn't enough (related items, other sellers, sizes): the LLM reads the price of
     # the page's own product, and only that price is shown
     if to_read and llm.available():
@@ -1881,6 +1884,24 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
     return [p for p in picks if id(p) not in sold], len(sold)
 
 
+def _check_without_llm(to_read: list[tuple[Product, str]], sold: set[int], options: str) -> None:
+    """Pages without product data for the offer, checked with no LLM call (today's deals list): the store's learned
+    recipe (app/recipes.py) reads the main product's price and stock; without one, the page must show exactly the
+    price the store's own list page gave a few hours ago. Pages that pass neither stay unchecked (not shown)."""
+    for p, page in to_read:
+        if options or "<" not in page[:2000]:  # a size/color, or reader text: only the LLM can tell
+            continue
+        if got := recipes.read(p.url, page):
+            price, stock = got
+            if stock is False:
+                sold.add(id(p))
+            elif abs(price - p.price) < 1:
+                p.verified, p.in_stock = True, True
+            continue
+        if shows(_shown_numbers(page), p.price):
+            p.verified, p.in_stock = True, True
+
+
 def shows(shown: set[float], price: float) -> bool:
     """The page shows this price: the same number, or its pounds part (stores often write the piasters apart,
     small and raised: "EGP2,413" then "43", so the page text holds 2413 and 43, not 2413.43)."""
@@ -1892,13 +1913,13 @@ def _shown_numbers(page: str) -> set[float]:
 
 
 async def checked_only(picks: list[Product], options: str = "", patient: bool = False,
-                       quick: bool = False) -> tuple[list[Product], list[dict], int]:
+                       quick: bool = False, use_llm: bool = True) -> tuple[list[Product], list[dict], int]:
     """What may be shown with a price: only offers whose own page, opened just now, shows that price (and, when the
     shopper named a size/color..., offers that option). Returns (those offers, the others (never shown to the
     shopper), how many were sold out or without that option)."""
     if not (picks and VERIFY_PICKS):
         return picks, [], 0
-    picks, gone = await _verify_stock(picks, options, patient, quick)
+    picks, gone = await _verify_stock(picks, options, patient, quick, use_llm)
     unchecked = [{"store": p.store, "title": p.title, "url": p.url} for p in picks if not p.verified]
     return [p for p in picks if p.verified], unchecked, gone
 
