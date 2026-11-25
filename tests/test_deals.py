@@ -99,7 +99,7 @@ def test_cheap_accessories_found_by_a_category_search_go_under_accessories():
     _seen("https://a.eg/bag", "Shoe washing bag", 88, old=142)
     db._db.run("UPDATE catalog SET category = 'washers'")
     got = {d["title"]: d["category"] for d in deals.candidates()}
-    assert "Shoe washing bag" not in got and got["Washer 0"] == "washers"  # only the products shoppers come for
+    assert got["Shoe washing bag"] == "accessories" and got["Washer 0"] == "washers"
     assert deals.category_name("accessories") == "إكسسوارات"
 
 
@@ -117,11 +117,11 @@ def test_the_deals_check_makes_no_llm_call_and_covers_every_batch(monkeypatch):
     assert calls == [(25, False), (25, False), (25, False), (5, False)]
 
 
-def test_broad_sections_are_left_out_of_the_deals():
+def test_broad_sections_are_in_the_deals_too():
     db.save_catalog([{"url": "https://j.eg/sock", "store": "Jumia", "title": "Socks", "price": 50, "old_price": 100}],
                     "EG", "fashion")
     _seen("https://j.eg/p1", "Phone 1", 8000, old=10000)
-    assert [d["title"] for d in deals.candidates()] == ["Phone 1"]
+    assert {d["title"] for d in deals.candidates()} == {"Phone 1", "Socks"}
 
 
 def test_a_page_is_checked_without_the_llm_only_when_it_shows_the_listed_price(monkeypatch):
