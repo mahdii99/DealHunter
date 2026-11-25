@@ -35,7 +35,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, admin, affiliate, agent, catalog, coupons, db, deals, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, affiliate, agent, catalog, coupons, db, deals, fetchers, market, noon_index, problems, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -1284,6 +1284,16 @@ async def refresh_coupons(request: Request):
         return await coupons.refresh()
     finally:
         agent.llm.background_end(token)
+
+
+@app.post("/api/cron/noon-probe")
+async def noon_probe(request: Request, pages: int = Query(20, ge=1, le=30)):
+    """Checks from this server that noon's public product sitemaps and a sample of its product pages open for our
+    crawler name (app/noon_index.py). Nothing is saved."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    return await noon_index.probe(pages)
 
 
 @app.get("/api/coupons")
