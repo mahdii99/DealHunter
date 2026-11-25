@@ -161,6 +161,7 @@ async def _sitemap_files(client: httpx.AsyncClient, country: str) -> list[int]:
 
 async def build(first: int = 0, last: int = PDP_FILES - 1, mk: str = "eg", client: httpx.AsyncClient | None = None) -> dict:
     """Reads sitemap files first..last (one at a time) into the index, each in place of what it had before."""
+    mk = mk.lower()  # our market codes are "EG", "SA", ...
     country = MARKETS.get(mk)
     if not country:
         return {"error": f"no noon sitemaps for market {mk}"}
@@ -229,7 +230,7 @@ def links(product: dict | None, codes: list[str] | None = None, mk: str | None =
     ("galaxy-a56-...", "iphone-16-..."), so both are looked up; every word of the model must be in the name, and the
     size when the shopper gave one. Parts, accessories and used products are left out unless the shopper wants an
     accessory. [] when the request names no brand (too vague to point anywhere)."""
-    mk = mk or market.current().code
+    mk = (mk or market.current().code).lower()
     country = MARKETS.get(mk)
     p = product if isinstance(product, dict) else {}
     brand = _tokens(str(p.get("brand") or ""))

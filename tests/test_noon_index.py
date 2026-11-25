@@ -44,7 +44,7 @@ def _build():
         seen.append(str(request.url))
         assert request.headers["user-agent"].startswith("DealHunterBot/")
         return httpx.Response(200, text=INDEX if request.url.path.endswith("sitemap-index.xml") else SITEMAP)
-    report = asyncio.run(noon_index.build(client=httpx.AsyncClient(transport=httpx.MockTransport(handler))))
+    report = asyncio.run(noon_index.build(mk="EG", client=httpx.AsyncClient(transport=httpx.MockTransport(handler))))
     return report, seen
 
 
@@ -75,6 +75,7 @@ def test_links_fit_the_request_and_leave_out_accessories():
     assert len(both) == 3  # the colours, never the case
     case = noon_index.links({"brand": "Samsung", "kind": "phone case", "model": "Galaxy A56"}, mk="eg")
     assert any("case" in g["url"] for g in case)
+    assert noon_index.links({"brand": "Samsung", "model": "Galaxy A56"}, mk="EG") == both  # the site's market code
     assert noon_index.links({"kind": "smartphone"}, mk="eg") == []  # no brand: too vague to point anywhere
     assert noon_index.links({"brand": "Samsung", "model": "A56"}, mk="sa") == []  # no index for that market yet
 
