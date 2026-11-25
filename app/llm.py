@@ -658,7 +658,16 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
                                      not preferred(a),
                                      prefer == "strong" and "gpt-oss-120b" not in a[1],  # fast + strong judge
                                      a[1] not in _LAST_GOOD))
-        ready = [a for a in attempts if _COOLDOWN.get(a[1], 0) <= now] or attempts
+        ready = [a for a in attempts if _COOLDOWN.get(a[1], 0) <= now]
+        if not ready:
+            # every model is resting: only the ones free again within this call's time are worth waiting for. A model
+            # retired (410) or out of its daily quota can't answer now; asking it again only adds another failure
+            # (live 2026-11-25: one search asked a retired model 8 times while the shopper waited)
+            ready = [a for a in attempts if _COOLDOWN.get(a[1], 0) - now < (budget or TOTAL_BUDGET)]
+            if not ready:
+                _failed(step, "every model", "resting")
+                problems.note("llm_busy", f"step {step}: every model is resting")
+                raise LLMError(BUSY_TEXT, details="every model is resting")
         if spread and prefer:
             mine = [a for a in ready if preferred(a)]
             if mine:
