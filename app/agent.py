@@ -1578,6 +1578,12 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         first_picks = picks
         if len(picks) < MIN_RESULTS and source == "web" and llm.available():
             # a shopper who sees one offer leaves: look in other stores before answering
+            if picks:  # meanwhile the shopper sees the offers checked so far (the widening takes a minute or more)
+                so_far = _ordered(list(picks), options)
+                _partial({"results": [p.to_dict() for p in so_far], "count": len(so_far),
+                          "request": plan.get("request") or raw, "understood": plan.get("understood", ""),
+                          "summary": _honest_summary("", so_far),
+                          "note": "دي العروض اللي اتأكدنا من سعرها لحد دلوقتي، ولسه بدور في متاجر تانية..."})
             tw, times = time.monotonic(), dict(TIMES)
             seen_urls = {_page_id(p.url) or p.url for p in pool}
             try:
@@ -1663,6 +1669,7 @@ async def _first_results(stocked: list[Product], plan: dict, raw: str, minp, max
 
 
 MIN_RESULTS = 4  # fewer offers than this after the checks: one more search round in other stores
+WIDEN_JUDGE_BUDGET = 12  # seconds for judging that round's offers (the first round's are on screen meanwhile)
 
 WIDEN_PROMPT = """A shopper in Egypt asked: {request}
 We searched with: {queries}
@@ -1698,7 +1705,7 @@ async def _widen(plan: dict, raw: str, found: list[Product], seen: set[str], wan
     if not products:
         return [], [], 0, 0
     pool, picks, _, _, _ = await _judge(products, plan, raw, minp, maxp, codes, queries,
-                                        verdict_key(plan, raw, options), known=found)
+                                        verdict_key(plan, raw, options), known=found, budget=WIDEN_JUDGE_BUDGET)
     picks = list({id(p): p for p in picks}.values())
     if not picks:
         return [], [], 0, len(pool)
