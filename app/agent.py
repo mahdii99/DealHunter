@@ -94,6 +94,18 @@ results. When a Market check is given, base the prices on it and set market_quer
 
 A budget the shopper gave anywhere in the chat (or the price range set below) stays for every later search and
 recommendation until they change it: put it in max_price/min_price again each time.
+Read the budget the way a shopper means it, and say which kind it is in budget_kind:
+- "around": "في حدود 500", "حوالي 500", "ب 500", "around 500", "بـ 500 كده" = roughly that amount, not far below
+  or far above: min_price about 70% of it and max_price about 115% (e.g. 350 and 575). Something for 70 is not
+  "in the range of 500", and neither is something for 10,000.
+- "under": "تحت 8000", "أقل من", "مش أكتر من", "max": max_price only (a gift or need "under X" should still be
+  worth that money: suggest things near the top of the range, not the cheapest junk).
+- "over": "فوق 3000", "أكتر من": min_price only. "between": "من 400 لـ 600": both.
+- "cheaper": the shopper wants cheaper than the results on screen ("أرخص من كده", "فيه أرخص؟"): max_price just
+  under the cheapest shown price, and widen the search to other models/brands of the same kind (keep the product
+  type and the other requirements). If they asked for ONE exact model, there is nothing cheaper to find (the shown
+  offers already are the cheapest checked ones): "answer" that honestly and suggest cheaper similar models instead.
+Set budget_cleared true only when the shopper drops their budget ("مش مهم السعر", "أي سعر").
 
 The chat is a conversation. A new message usually CHANGES THE CURRENT REQUEST instead of starting over:
 "سامسونج بس" / "عايزه أرخص" / "بلاش الأحمر" / "مقاس XL" / "تحت 5000" -> keep everything from the current request
@@ -110,6 +122,7 @@ so no-name products don't count as a match. The web queries must then NAME the b
 The search fields (need_based and everything after "request") are needed for "search" and "recommend": leave them
 empty for "ask" and "answer".
 
+{can_do}
 {chat}
 Reply JSON (in this order):
 {
@@ -130,7 +143,7 @@ Reply JSON (in this order):
   "table": null or, for an answer that compares: {"columns": ["", "product 1", "product 2"],
            "rows": [["السعر", "...", "..."], ["الضمان", "...", "..."]]} (2-6 short rows),
   "suggestions": ["2-4 short Egyptian Arabic next messages the shopper may want to tap, written as the shopper
-     would say them (e.g. 'أرخص من كده', 'سامسونج بس', 'إيه الفرق بينهم؟', 'دوّرلي على أسعارهم'); [] for ask"],
+     would say them; ONLY things we can do (see "Suggestions" above); [] for ask"],
   "request": "the full standalone request in Egyptian Arabic built from the whole conversation, e.g.
               'موبايل سامسونج سعره مش غالي وبطاريته كبيرة تكمل يومين'",
   "need_based": true if the shopper described a need/use rather than naming a specific product,
@@ -164,8 +177,24 @@ Reply JSON (in this order):
   "max_price": number or null,   // ONLY when the shopper clearly states a price/budget ("تحت 8000", "بحدود 5000 جنيه",
                                  // "budget 3000"). A bare number is a spec or model ("مكواه 650", "2200 وات"): put it
                                  // in requirements/queries, NOT here. Words like "رخيص" / "مش غالي" -> null.
-  "min_price": number or null
+  "min_price": number or null,
+  "budget_kind": "around" | "under" | "over" | "between" | "cheaper" | null,
+  "budget_cleared": true only if the shopper dropped their budget, else false
 }"""
+# What a tapped suggestion can really get done: every suggestion is a button that sends its text as the shopper's
+# next message, so one we can't deliver costs the shopper time and us an LLM call for nothing.
+CAN_DO = """Suggestions are buttons: tapping one sends its text as the shopper's next message. Offer ONLY what this site
+can really do right away:
+- change or narrow the search: another brand, size, color or spec, or a price range written with numbers
+  ("تحت 3000", "من 400 لـ 600");
+- other models of the same kind when the shopper wants a kind of product rather than one exact model: cheaper ones
+  ("موديلات أرخص") only if cheaper models exist, a step up ("حاجة أحسن شوية"), other ideas for a need or a gift;
+- questions about the offers on screen: compare them, which is the better value, warranty, is it original.
+Never offer what it can't do: cheaper offers of the same exact model (the results already are the cheapest checked
+offers we found), searching more stores (the page has its own button for that), sorting or filtering the list (the
+page does that), price alerts, delivery times, installments, reviews or ratings, used items, or anything outside
+these stores. Fewer good suggestions beat one that does nothing."""
+UNDERSTAND_PROMPT = UNDERSTAND_PROMPT.replace("{can_do}", CAN_DO)
 MAX_HISTORY = 8  # chat messages the planner sees
 _PRICE_TAIL = re.compile(r"\s*[-–—:,(]*\s*(?:EGP|LE|ج\.?م|جنيه)?\s*\d[\d,.]*\s*(?:EGP|LE|ج\.?م|جنيه)\)?\s*$"
                          r"|\s*[-–—:,(]+\s*(?:EGP|LE)\s*\d[\d,.]*\)?\s*$", re.I)
@@ -588,7 +617,8 @@ Requirements: {req}
 Model numbers of the requested product (from the planner, may be incomplete): {codes}
 Products the planner thinks fit the shopper's need (examples, NOT a complete list): {suggested}
 Avoid: {avoid}
-Budget (EGP): min {minp}, max {maxp}
+Budget (EGP): min {minp}, max {maxp} (every candidate is inside it already; for a need or a gift, things worth
+about the budget fit better than the cheapest trinkets)
 {known}Candidates (id, store, store trust 0-100 with the signals found on its site, condition if not new,
 price EGP, discount, title, product link path (often holds the model number):
 {items}
@@ -629,9 +659,10 @@ asked for them. Real discounts are a plus. Reply JSON:
   "summary": "1-2 Egyptian Arabic sentences: the best cheap option from a trusted store and any useful advice
               (name stores and prices, never the candidate ids; if the cheapest offer looks too cheap to be genuine,
               say so)",
-  "suggestions": ["2-4 short Egyptian Arabic next messages the shopper may want to tap after seeing these results,
-                   written as the shopper would say them, e.g. 'أرخص من كده', 'من متجر مشهور بس', 'إيه الفرق بين أول
-                   اتنين؟', 'فيه لون تاني؟'"]}}"""
+  "suggestions": ["0-4 short Egyptian Arabic next messages the shopper may want to tap after seeing these results,
+                   written as the shopper would say them, e.g. 'إيه الفرق بين أول اتنين؟', 'فيه لون تاني؟', 'سامسونج
+                   بس'. Only what we can do (below)"]}}
+{can_do}"""
 
 
 PAGE_READ_PROMPT = """This is the text of a web page found while searching Egyptian online stores (links shown as
@@ -1178,13 +1209,61 @@ async def _search_all(queries: list[str]) -> tuple[list[Product], dict[str, str]
 
 BUDGET_WORDS = re.compile(
     r"تحت|اقل من|أقل من|مش اكتر من|مش أكتر من|ميزاني|حدود|بحد|لحد|في حدود|اكتر من|أكثر من|فوق|من \d+ ل|جنيه|جنية|ج\.?م|"
-    r"\begp\b|\ble\b|budget|under|below|less than|max|over|above|between|\$|£",
+    r"حوالي|حوالى|تقريبا|تقريبًا|(?:^|\s)بـ?\s?\d|\d\s*(?:ألف|الف|آلاف|الاف)|"
+    r"\begp\b|\ble\b|budget|under|below|less than|max|over|above|between|around|about|\$|£",
     re.I)
 
 
 def _states_budget(raw: str) -> bool:
     """A price limit counts only if the shopper used price words; '650' alone is usually a model or spec."""
     return bool(BUDGET_WORDS.search(raw))
+
+
+AROUND_LOW, AROUND_HIGH = 0.7, 1.15  # "في حدود 500": what a shopper still calls "around" that amount
+
+
+def _amount(x) -> float | None:
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return None
+    return x if x > 0 else None
+
+
+def settle_budget(plan: dict, said: str, shown_prices: list[float] | None = None,
+                  earlier: tuple[float | None, float | None] = (None, None)) -> tuple[float | None, float | None]:
+    """The price range a search must keep to, from the planner's reading of the budget (its kind: around / under /
+    over / between / cheaper). The LLM understands the words; this applies them the same way every time:
+    - kept only when the shopper really stated a budget (price words), wants cheaper than the offers on screen, or
+      it is the budget from earlier in the chat (a bare "650" is usually a model or a spec, not a budget);
+    - "around X" becomes a band near X, so neither a 70 nor a 10,000 item counts as "in the range of 500";
+    - "cheaper" stays under the cheapest offer on screen; a budget from earlier carries on until the shopper drops it.
+    Sets plan max_price / min_price / budget_ok and returns (min, max)."""
+    lo, hi = _amount(plan.get("min_price")), _amount(plan.get("max_price"))
+    kind = str(plan.get("budget_kind") or "").lower().strip()
+    earlier = (_amount(earlier[0]), _amount(earlier[1]))
+    cheapest = min((p for p in (shown_prices or []) if _amount(p)), default=None)
+    if kind == "cheaper" and cheapest:
+        hi = hi if hi is not None and hi < cheapest else max(cheapest - 1, 1)
+        lo = None
+        ok = True
+    elif lo is None and hi is None:
+        ok = False
+    else:
+        ok = _states_budget(said) or (lo, hi) == earlier
+    if not ok:
+        if lo is not None or hi is not None:
+            log.info("agent: ignoring budget %s-%s the LLM guessed (no price words in the request)", lo, hi)
+        lo, hi = (None, None) if plan.get("budget_cleared") else earlier
+        kind = ""
+    if kind == "around" and (lo is None or hi is None or lo == hi) and (lo or hi):
+        x = hi or lo
+        lo, hi = round(x * AROUND_LOW), round(x * AROUND_HIGH)
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    plan["min_price"], plan["max_price"] = lo, hi
+    plan["budget_ok"] = lo is not None or hi is not None
+    return lo, hi
 
 
 def _slug(url: str) -> str:
@@ -1420,7 +1499,7 @@ async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, code
             prompt = JUDGE_PROMPT.format(
                 raw=raw, req=json.dumps(plan.get("requirements", []), ensure_ascii=False),
                 avoid=json.dumps(plan.get("avoid", []), ensure_ascii=False), minp=minp, maxp=maxp, items=items,
-                codes=json.dumps(codes, ensure_ascii=False), known=known_text,
+                codes=json.dumps(codes, ensure_ascii=False), known=known_text, can_do=CAN_DO,
                 suggested=json.dumps(plan.get("suggested_products") or [], ensure_ascii=False))
             verdict = await llm.ask_json(prompt, timeout=min(20, budget or 20),
                                          budget=budget or plan.get("judge_budget") or 40, prefer="strong",
@@ -1504,9 +1583,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     TIMES["understand"] = round(time.monotonic() - t0, 1)
     want = plan.get("request") or raw
     maxp, minp = plan.get("max_price"), plan.get("min_price")
-    if (maxp is not None or minp is not None) and not _states_budget(budget_text or raw):
-        log.info("agent: ignoring budget %s-%s the LLM guessed (no price words in the request)", minp, maxp)
-        maxp = minp = None
+    if not plan.get("budget_ok"):  # (a chat turn settled it already, in main: settle_budget)
+        minp, maxp = settle_budget(plan, budget_text or raw)
     options = "، ".join(_strs(plan.get("pick_options"), 4, 60))
     vkey = verdict_key(plan, raw, options)
     # what our own price list (the big stores' category pages, read every day) already has for this request. Its
@@ -1965,6 +2043,8 @@ async def recheck(payload: dict) -> dict:
     picks = [Product(**{k: v for k, v in r.items() if k in names}) for r in rows]
     extra = {id(p): {k: v for k, v in r.items() if k not in names} for p, r in zip(picks, rows)}
     shown, unchecked, gone = await checked_only(picks, payload.get("options") or "")
+    lo, hi = _amount(payload.get("min_price")), _amount(payload.get("max_price"))
+    shown = [p for p in shown if (hi is None or _paid(p) <= hi) and (lo is None or p.price >= lo)]  # price moved
     return {**payload, "results": [extra[id(p)] | p.to_dict() for p in _ordered(shown, payload.get("options") or "")],
             "unchecked": unchecked + [u for u in payload.get("unchecked") or [] if u not in unchecked],
             "count": len(shown), "summary": _honest_summary(payload.get("summary", ""), shown),

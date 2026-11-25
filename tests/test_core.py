@@ -2187,3 +2187,70 @@ def test_light_steps_use_small_models_anywhere_before_gemini(monkeypatch):
     asyncio.run(llm.ask_json("page", prefer="bulk", spread=1))
     assert used == ["mistral-small-latest"]
     llm._COOLDOWN.clear(); llm._LAST_GOOD.clear()
+
+
+def test_budget_around_becomes_a_band_near_it():
+    plan = {"max_price": 500, "budget_kind": "around"}
+    assert agent.settle_budget(plan, "عايز هديه لصاحبي في حدود 500 جنيه") == (350, 575)
+    assert plan["budget_ok"] and plan["min_price"] == 350 and plan["max_price"] == 575
+    # "ب 500" is a budget too; the planner's own band is kept as it gave it
+    assert agent.settle_budget({"min_price": 400, "max_price": 600, "budget_kind": "around"}, "هديه ب 500") == (400, 600)
+    # "under" keeps no floor
+    assert agent.settle_budget({"max_price": 8000, "budget_kind": "under"}, "موبايل تحت 8000") == (None, 8000)
+
+
+def test_budget_guessed_from_a_model_number_is_dropped_but_an_earlier_one_carries_on():
+    assert agent.settle_budget({"max_price": 650}, "مكواه 650") == (None, None)
+    # a follow-up with no budget words keeps the budget of the last turn
+    assert agent.settle_budget({"max_price": None}, "سامسونج بس", earlier=(350, 575)) == (350, 575)
+    assert agent.settle_budget({"max_price": None, "budget_cleared": True}, "مش مهم السعر", earlier=(350, 575)) == \
+        (None, None)
+
+
+def test_cheaper_stays_under_the_cheapest_offer_on_screen():
+    plan = {"max_price": None, "budget_kind": "cheaper"}
+    assert agent.settle_budget(plan, "أرخص من كده", [900, 700, 1200], earlier=(350, 1500)) == (None, 699)
+    # a ceiling the planner gave above the cheapest shown would only find the same offers again
+    assert agent.settle_budget({"max_price": 800, "budget_kind": "cheaper"}, "فيه أرخص؟", [700])[1] == 699
+    assert agent.settle_budget({"max_price": 600, "budget_kind": "cheaper"}, "فيه أرخص؟", [700])[1] == 600
+
+
+def test_chat_budget_filters_results_and_carries_to_the_next_turn(monkeypatch):
+    seen = {}
+
+    async def fake_plan(messages, current="", shown=None, price=(None, None), hits=None, hits_for=""):
+        return {"action": "search", "request": "هدية لراجل", "max_price": 500, "budget_kind": "around",
+                "suggestions": [], "reply": "", "understood": ""}
+
+    async def fake_search(q, plan=None, budget_text=None):
+        seen.update(q=q, minp=plan["min_price"], maxp=plan["max_price"])
+        return {"results": [], "max_price": plan["max_price"], "min_price": plan["min_price"], "mode": "llm"}
+
+    async def no_hits(words):
+        return []
+
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(agent, "plan_turn", fake_plan)
+    monkeypatch.setattr(agent, "shopper_hits", no_hits)
+    monkeypatch.setattr(main, "_search", fake_search)
+    d = TestClient(main.app).post("/api/chat", json={
+        "messages": [{"role": "user", "text": "عايز هديه لصاحبي في حدود 500 جنيه"}]}).json()
+    assert (seen["minp"], seen["maxp"]) == (350, 575) and d["min_price"] == 350
+    # the budget is in the request (its cache key), so another budget never gets this answer
+    assert "350" in seen["q"] and "575" in seen["q"]
+
+    async def plan_without_budget(messages, current="", shown=None, price=(None, None), hits=None, hits_for=""):
+        return {"action": "ask", "question": "لونه إيه؟", "options": ["أسود"], "suggestions": []}
+    monkeypatch.setattr(agent, "plan_turn", plan_without_budget)
+    d = TestClient(main.app).post("/api/chat", json={
+        "messages": [{"role": "user", "text": "عايز هديه"}, {"role": "user", "text": "ساعة"}],
+        "request": "هدية لراجل", "budget_min": 350, "budget_max": 575}).json()
+    assert d["action"] == "ask" and (d["min_price"], d["max_price"]) == (350, 575)
+
+
+def test_suggestions_are_limited_to_what_the_agent_can_do():
+    for prompt in (agent.UNDERSTAND_PROMPT, agent.JUDGE_PROMPT.format(
+            raw="", req="", avoid="", minp=None, maxp=None, items="", codes="", known="", suggested="",
+            can_do=agent.CAN_DO)):
+        assert "Offer ONLY what this site" in prompt and "cheaper offers of the same exact model" in prompt
+    assert "أرخص من كده'" not in agent.JUDGE_PROMPT

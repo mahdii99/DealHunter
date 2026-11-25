@@ -332,6 +332,9 @@ class ChatTurn(BaseModel):
     shown: list[ShownResult] = Field(default_factory=list, max_length=20)  # the last search's results, cheapest first
     price_min: float | None = Field(None, ge=0, le=10_000_000)  # the price range set in the search box, if any
     price_max: float | None = Field(None, gt=0, le=10_000_000)
+    # the budget the agent applied on the last turn (from the shopper's words), so it carries on to the next one
+    budget_min: float | None = Field(None, ge=0, le=10_000_000)
+    budget_max: float | None = Field(None, ge=0, le=10_000_000)
 
 
 @app.post("/api/chat")
@@ -544,10 +547,16 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
             log.exception("chat planner crashed")
             problems.note("server_error", f"planner: {type(e).__name__}: {e}"[:300], request=newest)
             failed = e
+    shown = [r.model_dump() for r in turn.shown]
+    earlier = (turn.budget_min or None, turn.budget_max or None)  # the budget in force from the last turn
+    if plan:  # the planner's reading of the budget, applied the same way every time (a real filter on the offers)
+        agent.settle_budget(plan, said, [r["price"] for r in shown if r.get("price")], earlier)
+    budget = {"max_price": plan["max_price"], "min_price": plan["min_price"]} if plan else \
+        {"max_price": earlier[1], "min_price": earlier[0]}
     if plan and plan["action"] == "ask":  # like a salesperson: one question first, to recommend the right thing
         log.info("=" * 70 + "\n")
         return {"action": "ask", "question": plan["question"], "options": plan.get("options") or [],
-                "request": turn.request, "results": [], "demo": DEMO}
+                "request": turn.request, "results": [], "demo": DEMO, **budget}
     if plan and plan["action"] == "recommend":
         # products that fit the need: found in the stores right away, so the shopper sees real offers (checked price,
         # picture, store), not just names
@@ -555,7 +564,6 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         plan["need_based"] = True
         plan["suggested_products"] = plan.get("suggested_products") or names
         plan["understood"] = plan.get("reply") or plan.get("understood")
-    shown = [r.model_dump() for r in turn.shown]
     if plan and plan["action"] == "answer" and agent.unchecked_prices(
             " ".join([plan["answer"]] + [" ".join(map(str, r)) for r in (plan.get("table") or {}).get("rows", [])]), shown):
         log.info("chat: the answer names prices no result shows: searching instead")
@@ -564,7 +572,7 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         log.info("=" * 70 + "\n")
         return {"action": "answer", "answer": plan["answer"], "table": plan.get("table"),
                 "suggestions": plan["suggestions"], "request": turn.request or plan["request"],
-                "results": [], "demo": DEMO}
+                "results": [], "demo": DEMO, **budget}
     if failed and turn.request and newest.rstrip().endswith(("?", "؟")):
         # a question about the results needs the LLM; gluing it onto the old request would search for nonsense
         log.info("=" * 70 + "\n")
@@ -576,9 +584,14 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         agent.plain_request([m["text"] for m in messages if m["role"] == "user"])
     if rng:  # the range set in the box is the budget: always applied, and part of the request (and its cache key)
         if plan:
-            plan["max_price"], plan["min_price"] = hi, lo
+            plan["max_price"], plan["min_price"], plan["budget_ok"] = hi, lo, True
         if not agent._states_budget(request):
             request = f"{request} ({rng})"
+    elif plan and plan.get("budget_ok") and (words := agent.price_range_text(plan["min_price"], plan["max_price"])):
+        # the budget in force is part of the request and its cache key: the same words with another budget
+        # (or "cheaper than these") must not get the saved answer of a different range
+        if not all(f"{x:g}" in request for x in (plan["min_price"], plan["max_price"]) if x):
+            request = f"{request} ({words})"
     if (client and limit and await _db(db.searches_today, client, default=0) >= limit
             and not await _db(db.cached_search, db.cache_key(request, market.current().code), CACHE_TTL)):
         log.info("daily limit reached for %s", client)
