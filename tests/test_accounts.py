@@ -385,3 +385,8 @@ def test_old_loose_price_alerts_are_removed_once(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: accounts.LOOSE_ALERTS_BEFORE + 60)
     accounts.notify("g:1", "price_drop", "السعر نزل: X", "")  # a new alert stays
     assert accounts.drop_loose_price_alerts() == 0 and len(accounts.list_notifications("g:1")) == 2
+
+
+def test_noon_probe_needs_the_cron_secret(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "s3cret")
+    assert TestClient(main.app).post("/api/cron/noon-probe").status_code == 403
