@@ -52,8 +52,6 @@ CATEGORIES: dict[str, dict] = {
         "ar": "موبايلات", "pages": 8,
         "stores": {
             "jumia.com.eg": "https://www.jumia.com.eg/mobile-phones/?page={n}",
-            "noon.com": "https://www.noon.com/egypt-en/electronics-and-mobiles/mobiles-and-accessories/"
-                        "mobiles-20905/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=smartphone&i=electronics&language=en_AE&page={n}",
         },
     },
