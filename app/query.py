@@ -89,6 +89,25 @@ AR_WORDS = {
     "كريستال": "crystal", "سمارت": "smart", "انفرتر": "inverter", "ديجيتال": "digital", "وايرلس": "wireless",
 }
 _UNITS = {"inch", "kg", "gb", "tb", "hp", "liter"}
+BRANDS = {"samsung", "xiaomi", "realme", "oppo", "apple", "iphone", "huawei", "infinix", "tecno", "honor", "nokia",
+          "vivo", "motorola", "lenovo", "dell", "acer", "asus", "toshiba", "sharp", "tornado", "fresh", "zanussi",
+          "beko", "ariston", "unionaire", "carrier", "gree", "hisense", "sony", "panasonic", "philips", "braun",
+          "anker", "soundcore", "bosch", "kenwood", "tefal", "hitachi", "midea", "lg", "hp", "tcl", "jbl", "oneplus",
+          "redmi", "poco", "msi", "haier", "white", "whirlpool", "ikon", "kiriazi", "olympic", "jac"} - {"white"}
+_AR_UNITS = {"inch": "بوص|بوصه|بوصة|انش", "kg": "كيلو|كجم|كغ", "gb": "جيجا|جيجابايت", "tb": "تيرا", "hp": "حصان",
+             "liter": "لتر"}
+
+
+def wanted_sizes(eng: str) -> list[tuple[str, str]]:
+    """The sizes the request names in english_words' output ("55 inch", "10 kg"): (number, unit)."""
+    return re.findall(r"(\d+(?:\.\d+)?) (" + "|".join(sorted(_UNITS)) + r")\b", eng)
+
+
+def shows_size(title: str, number: str, unit: str) -> bool:
+    """The title names this size, in English or Arabic ("55 Inch", "55-inch", '55"', "55 بوصة", "10 كجم")."""
+    t = normalize(title)
+    ar = _AR_UNITS.get(unit, unit)
+    return bool(re.search(rf"(?<![\d.]){re.escape(number)}\s*(?:-\s*)?(?:{unit}|{ar}|\"|''|”)", t))
 
 
 def english_words(text: str) -> str:
@@ -98,6 +117,8 @@ def english_words(text: str) -> str:
     out: list[str] = []
     for w in normalize(text).split():
         w = w.strip(".,!?؟،()")
+        plus = len(w) > 1 and w.endswith("+")  # "برو+" / "pro+": the plus model
+        w = w.rstrip("+") if plus else w
         w = w[2:] if w.startswith("ال") and w[2:] in AR_WORDS else w
         eng = AR_WORDS.get(w) or (w if re.fullmatch(r"[a-z0-9][a-z0-9+.\-]*", w) else "")
         if not eng or eng in STOPWORDS:
@@ -106,4 +127,6 @@ def english_words(text: str) -> str:
             out[-1] += " " + eng
         elif eng not in out:
             out.append(eng)
+        if plus and "plus" not in out:
+            out.append("plus")
     return " ".join(out)

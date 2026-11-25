@@ -83,3 +83,21 @@ def test_a_chip_or_size_alone_does_not_name_the_product():
     found = [P("Amazon.eg", "HP 15 Laptop Core i5 8GB", 30000, "https://a.eg/dp/hp"),
              P("Amazon.eg", "Lenovo IdeaPad Slim 3 15IRH10 Core i5-13420H", 34444, "https://a.eg/dp/len")]
     assert [p.url for p in agent._fitting(found, "laptop lenovo ideapad slim 3 i5")] == ["https://a.eg/dp/len"]
+
+
+def test_with_no_model_an_offer_must_be_the_brand_and_size_asked_for():
+    P = agent.Product
+    eng = "tv samsung crystal 55 inch"
+    assert agent._matches_request(P("Amazon.eg", "Samsung 55-inch Crystal UHD TV", 20499, "u1"), eng)
+    assert agent._matches_request(P("B.TECH", "شاشة سامسونج 55 بوصة سمارت", 20999, "u2"), eng)
+    assert not agent._matches_request(P("B.TECH", "Samsung Odyssey G55C 32 Inch Monitor", 9899, "u3"), eng)
+    assert not agent._matches_request(P("Amazon.eg", "Samsung 43-inch Mini LED TV", 15999, "u4"), eng)
+    washer = "washing machine toshiba automatic 10 kg"
+    assert not agent._matches_request(P("B.TECH", "Fresh Top Load Half Automatic Washing Machine, 10 kg", 7699, "u5"),
+                                      washer)
+    assert agent._matches_request(P("B.TECH", "Toshiba Top Load Automatic Washing Machine, 10 kg", 18500, "u6"), washer)
+
+
+def test_a_plus_model_is_asked_for_in_english_too():
+    from app.query import english_words
+    assert english_words("موبايل ريلمي 12 برو+ 512") == "phone realme 12 pro plus 512"
