@@ -181,6 +181,19 @@ CREATE TABLE IF NOT EXISTS coupons (
     added_at {FLOAT} NOT NULL
 );
 CREATE INDEX IF NOT EXISTS coupons_market ON coupons (market, store);
+-- one page per product for shoppers coming from Google (app/pages.py): the offers checked on their store page
+CREATE TABLE IF NOT EXISTS product_pages (
+    slug TEXT NOT NULL,                 -- the page address: /p/<slug>
+    market TEXT NOT NULL,
+    name TEXT NOT NULL,                 -- "Samsung Galaxy A56 256GB"
+    category TEXT NOT NULL,
+    brand TEXT NOT NULL,
+    urls TEXT NOT NULL,                 -- JSON: the store pages of this product (its price history)
+    offers TEXT NOT NULL,               -- JSON: the offers whose page showed their price at their checked_at
+    checked_at {FLOAT} NOT NULL,        -- when the offers were last checked
+    first_made {FLOAT} NOT NULL,
+    PRIMARY KEY (slug, market)
+);
 CREATE TABLE IF NOT EXISTS llm_usage (
     day TEXT NOT NULL,                  -- the free-quota day (starts at midnight US Pacific, app/llm.quota_day)
     model TEXT NOT NULL,
@@ -480,6 +493,41 @@ def recipe_result(domain: str, right: bool | None) -> None:
 def recipes_list() -> list[dict]:
     return _rows("SELECT domain, ok, fails, uses, learned_at FROM recipes ORDER BY uses DESC", (),
                  "domain ok fails uses learned_at")
+
+
+def save_product_page(slug: str, market: str, name: str, category: str, brand: str, urls: list[str],
+                      offers: list[dict], now: float) -> None:
+    """A product page after a check. A check that confirmed no offer keeps the offers of the last good one (they stop
+    being shown once that check is too old, app/pages.SHOW_HOURS)."""
+    keep = "product_pages.offers" if not offers else "excluded.offers"
+    when = "product_pages.checked_at" if not offers else "excluded.checked_at"
+    _db.run("INSERT INTO product_pages (slug, market, name, category, brand, urls, offers, checked_at, first_made) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (slug, market) DO UPDATE SET name = excluded.name, "
+            f"category = excluded.category, brand = excluded.brand, urls = excluded.urls, offers = {keep}, "
+            f"checked_at = {when}",
+            (slug, market, name, category, brand, json.dumps(urls), json.dumps(offers, ensure_ascii=False),
+             now if offers else 0, now))
+
+
+_PAGE_COLS = ("slug", "name", "category", "brand", "urls", "offers", "checked_at", "first_made")
+
+
+def _page_row(r: tuple) -> dict:
+    d = dict(zip(_PAGE_COLS, r))
+    d["urls"], d["offers"] = json.loads(d["urls"] or "[]"), json.loads(d["offers"] or "[]")
+    return d
+
+
+def product_page(slug: str, market: str) -> dict | None:
+    rows = _db.run(f"SELECT {', '.join(_PAGE_COLS)} FROM product_pages WHERE slug = ? AND market = ?", (slug, market))
+    return _page_row(rows[0]) if rows else None
+
+
+def product_pages(market: str, since: float) -> list[dict]:
+    """Product pages whose offers were checked since then, newest check first."""
+    rows = _db.run(f"SELECT {', '.join(_PAGE_COLS)} FROM product_pages WHERE market = ? AND checked_at >= ? "
+                   "ORDER BY checked_at DESC LIMIT 5000", (market, since))
+    return [_page_row(r) for r in rows]
 
 
 def catalog_since(market: str, since: float) -> list[dict]:
