@@ -56,3 +56,54 @@ def parse_query(raw: str) -> ParsedQuery:
     if not keywords:
         keywords = [t for t in tokens if t not in must_have]
     return ParsedQuery(raw=raw, keywords=keywords, must_have=must_have, max_price=max_price, min_price=min_price)
+
+
+# Words shoppers write in Arabic for brands, kinds of products and units, with the English word stores use in their
+# titles. Matched word by word (never inside another word). Used when no model is free to translate the request:
+# the big stores' own search pages (English titles) are searched with these words.
+AR_WORDS = {
+    # brands
+    "سامسونج": "samsung", "شاومي": "xiaomi", "ريلمي": "realme", "اوبو": "oppo", "أوبو": "oppo", "ابل": "apple",
+    "آبل": "apple", "ايفون": "iphone", "آيفون": "iphone", "هواوي": "huawei", "انفنكس": "infinix",
+    "إنفينكس": "infinix", "انفينكس": "infinix", "تكنو": "tecno", "هونر": "honor", "نوكيا": "nokia", "فيفو": "vivo",
+    "موتورولا": "motorola", "لينوفو": "lenovo", "ديل": "dell", "ايسر": "acer", "أيسر": "acer", "اسوس": "asus",
+    "أسوس": "asus", "توشيبا": "toshiba", "شارب": "sharp", "تورنيدو": "tornado", "فريش": "fresh",
+    "زانوسي": "zanussi", "بيكو": "beko", "اريستون": "ariston", "يونيون": "unionaire", "كاريير": "carrier",
+    "جري": "gree", "هايسنس": "hisense", "سوني": "sony", "باناسونيك": "panasonic", "فيليبس": "philips",
+    "براون": "braun", "انكر": "anker", "أنكر": "anker", "ساوندكور": "soundcore", "بوش": "bosch",
+    "كينوود": "kenwood", "تيفال": "tefal", "هيتاشي": "hitachi", "ميديا": "midea", "شاومى": "xiaomi",
+    # kinds of products
+    "شاشة": "tv", "شاشه": "tv", "تلفزيون": "tv", "تليفزيون": "tv", "غسالة": "washing machine",
+    "غساله": "washing machine", "تلاجة": "refrigerator", "تلاجه": "refrigerator", "ثلاجة": "refrigerator",
+    "ثلاجه": "refrigerator", "تكييف": "air conditioner", "مكيف": "air conditioner", "ميكروويف": "microwave",
+    "سخان": "water heater", "بوتاجاز": "cooker", "مكنسة": "vacuum", "مكنسه": "vacuum", "قلاية": "air fryer",
+    "قلايه": "air fryer", "تابلت": "tablet", "ايباد": "ipad", "موبايل": "phone", "تليفون": "phone",
+    "لابتوب": "laptop", "لاب": "laptop", "سماعة": "earbuds", "سماعه": "earbuds", "سماعات": "earbuds",
+    "ساعة": "watch", "ساعه": "watch", "شاحن": "charger", "خلاط": "blender", "مكواة": "iron", "مكواه": "iron",
+    "ديب": "freezer", "فريزر": "freezer", "مروحة": "fan", "مروحه": "fan", "كاميرا": "camera", "طابعة": "printer",
+    "طابعه": "printer", "راوتر": "router", "بلايستيشن": "playstation",
+    # units and model words
+    "بوصة": "inch", "بوصه": "inch", "انش": "inch", "كيلو": "kg", "جيجا": "gb", "جيجابايت": "gb", "تيرا": "tb",
+    "حصان": "hp", "لتر": "liter", "برو": "pro", "بلس": "plus", "ماكس": "max", "الترا": "ultra", "ألترا": "ultra",
+    "لايت": "lite", "ميني": "mini", "اوتوماتيك": "automatic", "أوتوماتيك": "automatic", "اتوماتيك": "automatic",
+    "كريستال": "crystal", "سمارت": "smart", "انفرتر": "inverter", "ديجيتال": "digital", "وايرلس": "wireless",
+}
+_UNITS = {"inch", "kg", "gb", "tb", "hp", "liter"}
+
+
+def english_words(text: str) -> str:
+    """The shopper's request in the English words stores use in their titles, with no model: each Arabic word we
+    know replaced by its English word, Latin words and numbers kept, numbers joined to their unit ("55 بوصة" ->
+    "55inch"); Arabic words we don't know are left out. '' when nothing is left."""
+    out: list[str] = []
+    for w in normalize(text).split():
+        w = w.strip(".,!?؟،()")
+        w = w[2:] if w.startswith("ال") and w[2:] in AR_WORDS else w
+        eng = AR_WORDS.get(w) or (w if re.fullmatch(r"[a-z0-9][a-z0-9+.\-]*", w) else "")
+        if not eng or eng in STOPWORDS:
+            continue
+        if eng in _UNITS and out and out[-1].isdigit():
+            out[-1] += " " + eng
+        elif eng not in out:
+            out.append(eng)
+    return " ".join(out)

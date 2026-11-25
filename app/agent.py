@@ -25,7 +25,7 @@ from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, we
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
-from .query import parse_query
+from .query import english_words, parse_query
 from .ranking import rank
 from .stores import ALL_STORES
 from .stores.amazon import parse_amazon_cards
@@ -2362,8 +2362,14 @@ async def run_rules(raw: str, note: str) -> dict:
         q = plain_request([raw])
         # every model is resting for a while: the web search's pages couldn't be judged either (live 2026-11-25:
         # 50-80 s, then nothing). Answer in seconds from our own price list instead, each price checked on its page
+        wait = None
         if llm.available() and ((wait := await llm.free_in()) is None or wait > OUTAGE_WAIT):
             return await _outage_answer(raw, q, wait, note)
+        # no model could plan it, though some aren't resting: they're failing or slow now (live 2026-11-25: 141 s,
+        # then nothing). The quick answer first; the slow search only when it found nothing
+        quick = await _outage_answer(raw, q, wait, note)
+        if quick["results"]:
+            return quick
         out = await run(q, plan={"action": "search", "request": q, "queries": [q], "web_queries": [q],
                                  "simple": True, "judge_budget": 20}, budget_text=raw)
         out["understood"] = note
@@ -2473,6 +2479,33 @@ def _shelf_offers(raw: str, request: str) -> list[Product]:
     return sorted(picked, key=_paid)
 
 
+async def _nothing() -> tuple[list, dict]:
+    return [], {}
+
+
+def _fitting(products: list[Product], eng: str) -> list[Product]:
+    """The store search's products that are what the shopper wrote (no model to judge them): most of the request's
+    words in the title (60%), or every model number they wrote when there is one (a word with letters and digits,
+    e.g. r50i: Arabic titles have little else in English), cheapest first. Accessories that share a phone's words are far cheaper than it: those under a quarter of the middle price
+    of the fitting products are left out."""
+    words = [_squash_size(w) for w in eng.split() if _squash_size(w)]
+    if not words:
+        return []
+    codes = [w for w in words if re.search(r"[a-z]", w) and re.search(r"\d", w)]
+    # a model's own number (r50i, a55, 15irh10) names the product; a size or a chip (512gb, i5) doesn't
+    names = [c for c in codes if len(c) >= 4 and not re.fullmatch(r"\d+(gb|tb|inch|kg|hp|mah|w|liter)", c)]
+    need = max(1, -(-len(words) * 6 // 10))
+    out = []
+    for p in products:
+        title = _squash_size(p.title)
+        if all(c in title for c in codes) and (names or sum(w in title for w in words) >= need):
+            out.append(p)
+    if len(out) >= 3:
+        mid = sorted(_paid(p) for p in out)[len(out) // 2]
+        out = [p for p in out if _paid(p) >= mid / 4]
+    return sorted(out, key=_paid)
+
+
 def _wait_text(wait: float | None) -> str:
     if wait is None or wait > 3 * 3600:
         return "بعد شوية"
@@ -2487,7 +2520,12 @@ async def _outage_answer(raw: str, request: str, wait: float | None, note: str) 
     none, an honest message and today's deals."""
     t0 = time.monotonic()
     _progress("الموديلات الذكية مشغولة دلوقتي، فبدورلك في فهرس الأسعار بتاعنا وبتأكد من كل سعر من صفحة المتجر...")
-    picks = await asyncio.to_thread(_shelf_offers, raw, request)
+    eng = english_words(request)
+    # our price list, and the big stores' own search pages for the request in English words (no model needed)
+    shelf, (found, _) = await asyncio.gather(asyncio.to_thread(_shelf_offers, raw, request),
+                                             _store_search([eng]) if eng else _nothing())
+    have = {p.url for p in shelf}
+    picks = shelf + [p for p in _fitting(found, eng) if p.url not in have][:OUTAGE_MAX]
     shown, unchecked, gone = await checked_only(picks, quick=True) if picks else ([], [], 0)
     for p in shown:
         p.unconfirmed = True

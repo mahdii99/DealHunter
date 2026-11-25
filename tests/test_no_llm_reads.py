@@ -38,3 +38,48 @@ def test_the_big_stores_own_search_pages_are_read_without_the_llm(monkeypatch):
     got, errors = asyncio.run(agent._store_search(["realme 12 pro plus", "ريلمي 12 برو"]))
     assert len(asked) == 2 and "amazon.eg/s?k=realme+12+pro+plus" in asked[0]  # Arabic words: no store search
     assert [(p.price, p.trusted) for p in got] == [(21999.0, True)] and "btech.com search" in errors
+
+
+def test_the_request_in_english_words_with_no_model():
+    from app.query import english_words
+    assert english_words("ريلمي 12 برو بلس 512 جيجا") == "realme 12 pro plus 512 gb"
+    assert english_words("شاشة سامسونج 55 بوصة كريستال") == "tv samsung 55 inch crystal"
+    assert english_words("سماعة انكر r50i") == "earbuds anker r50i"
+    assert english_words("عايز حاجة حلوة") == ""
+
+
+def test_store_search_results_must_be_what_the_shopper_wrote():
+    P = agent.Product
+    found = [P("Amazon.eg", "Anker Soundcore R50i True Wireless Earbuds", 848, "https://a.eg/dp/1"),
+             P("Amazon.eg", "Anker Soundcore R50 NC Earbuds", 700, "https://a.eg/dp/2"),  # another model
+             P("Amazon.eg", "Earbuds case for Anker R50i", 120, "https://a.eg/dp/3"),  # accessory: far cheaper
+             P("B.TECH", "ايربودز انكر R50i اسود", 1240, "https://b.com/p/4"),
+             P("Amazon.eg", "Anker R50i earbuds black", 990, "https://a.eg/dp/5")]
+    got = agent._fitting(found, "earbuds anker r50i")
+    assert [p.url for p in got] == ["https://a.eg/dp/1", "https://a.eg/dp/5", "https://b.com/p/4"]
+
+
+def test_the_quick_answer_also_searches_the_big_stores(monkeypatch):
+    shelf_calls = []
+    monkeypatch.setattr(agent, "_shelf_offers", lambda raw, req: shelf_calls.append(req) or [])
+    hit = agent.Product("Amazon.eg", "Samsung 55 Inch Crystal UHD 4K Smart TV", 20499, "https://a.eg/dp/tv")
+
+    async def store_search(queries):
+        assert queries == ["tv samsung 55 inch crystal"]
+        return [hit], {}
+
+    async def checked(picks, options="", patient=False, quick=False, use_llm=True):
+        for p in picks:
+            p.verified = True
+        return picks, [], 0
+    monkeypatch.setattr(agent, "_store_search", store_search)
+    monkeypatch.setattr(agent, "checked_only", checked)
+    out = asyncio.run(agent._outage_answer("شاشة سامسونج 55 بوصة كريستال", "شاشة سامسونج 55 بوصة كريستال", None, ""))
+    assert [r["price"] for r in out["results"]] == [20499] and shelf_calls
+
+
+def test_a_chip_or_size_alone_does_not_name_the_product():
+    P = agent.Product
+    found = [P("Amazon.eg", "HP 15 Laptop Core i5 8GB", 30000, "https://a.eg/dp/hp"),
+             P("Amazon.eg", "Lenovo IdeaPad Slim 3 15IRH10 Core i5-13420H", 34444, "https://a.eg/dp/len")]
+    assert [p.url for p in agent._fitting(found, "laptop lenovo ideapad slim 3 i5")] == ["https://a.eg/dp/len"]
