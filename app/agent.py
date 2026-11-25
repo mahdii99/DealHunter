@@ -17,7 +17,7 @@ import logging
 import re
 import time
 from html import unescape
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import quote_plus, unquote, urljoin, urlparse
 
 import httpx
 
@@ -28,6 +28,7 @@ from .models import ParsedQuery, Product
 from .query import parse_query
 from .ranking import rank
 from .stores import ALL_STORES
+from .stores.amazon import parse_amazon_cards
 from .stores.base import DEBUG_DIR, HEADERS
 
 log = logging.getLogger("uvicorn.error")
@@ -999,6 +1000,46 @@ def _cheapest_variant(products: list[Product]) -> list[Product]:
     return out
 
 
+JUDGE_BUDGET = 20  # seconds for the judge across models: when the free ones are busy, the cheapest fitting offers instead
+STORE_SEARCH_DEADLINE = 12  # the big stores' own search pages, read with no LLM call
+STORE_SEARCHES = {"EG": ["https://www.amazon.eg/s?k={q}&language=en_AE", "https://btech.com/en/s?q={q}"],
+                  "SA": ["https://www.amazon.sa/s?k={q}&language=en_AE"],
+                  "AE": ["https://www.amazon.ae/s?k={q}&language=en_AE"]}
+
+
+async def _store_search(queries: list[str]) -> tuple[list[Product], dict[str, str]]:
+    """The big stores' own search pages for the request's English words, read with no LLM call (each store's
+    product data or its product cards): every product they sell, not only those on the category pages of our price
+    list. robots.txt is read first, as for every page we open. Their prices are checked on each product's own page
+    before they're shown, like any other offer."""
+    qs = [q for q in queries if re.search(r"[A-Za-z]", q)][:2]
+    urls = [t.format(q=quote_plus(q)) for q in qs for t in STORE_SEARCHES.get(market.current().code, [])]
+    if not urls:
+        return [], {}
+    t = time.monotonic()
+    async with httpx.AsyncClient() as client:
+        pages = await _within(STORE_SEARCH_DEADLINE, [_fetch_page(client, asyncio.Semaphore(4), u) for u in urls])
+    out, errors, seen = [], {}, set()
+    for url, res in zip(urls, pages):
+        if isinstance(res, Exception):
+            code = getattr(getattr(res, "response", None), "status_code", None)
+            errors[f"{trust.domain(url)} search"] = f"{code}" if code else type(res).__name__
+            continue
+        products, html = res
+        if not products:
+            products = parse_amazon_cards(html, trust.store_name(url), url)[:MAX_PER_PAGE]
+        for p in products:
+            if p.url and p.url not in seen:
+                seen.add(p.url)
+                p.store, p.trusted, p.trust_score, p.trust_signals = (trust.store_name(p.url), True, 100,
+                                                                      ["متجر مشهور"])
+                out.append(p)
+    TIMES["store_search"] = round(time.monotonic() - t, 1)
+    log.info("stores: %d products from %d search pages in %.1fs, errors=%s", len(out), len(urls),
+             time.monotonic() - t, errors)
+    return out, errors
+
+
 async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                     famous: list[str] | None = None, want: str = "",
                     named: list[str] | None = None) -> tuple[list[Product], dict[str, str]]:
@@ -1065,6 +1106,13 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
             if not page_products and _is_article(html):
                 errors[trust.domain(url)] = "article page (not a store)"  # news / blog: nothing to buy, no LLM read
                 continue
+            if not page_products and _page_id(url) and (main := extract_mod.main_product(html)):
+                # a clear product page (one product named, one price right by its name): no LLM read. Its price is
+                # still checked on the page before it's shown, like any other
+                page_products = [Product(store=trust.store_name(url), title=main[0], price=main[1], url=url,
+                                         image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
+                                         in_stock=False if extract_mod._page_says_sold_out(
+                                             html, extract_mod._visible_text(html), main[0]) else None)]
             if not page_products:
                 # Little visible text = a JavaScript-only page; a reader service renders it better.
                 if len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", html, flags=re.S))) < 1500:
@@ -1509,7 +1557,7 @@ async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, code
                 codes=json.dumps(codes, ensure_ascii=False), known=known_text, can_do=CAN_DO,
                 suggested=json.dumps(plan.get("suggested_products") or [], ensure_ascii=False))
             verdict = await llm.ask_json(prompt, timeout=min(20, budget or 20),
-                                         budget=budget or plan.get("judge_budget") or 40, prefer="strong",
+                                         budget=budget or plan.get("judge_budget") or JUDGE_BUDGET, prefer="strong",
                                          step="judge")  # the big call: give it time, it decides quality
             TIMES["judge"] = round(time.monotonic() - tj, 1)
             _save_debug("last_judge.json", {"request": raw, "plan": {k: v for k, v in plan.items() if k != "check_hits"},
@@ -1612,9 +1660,22 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     covered = {trust.domain(p.url) for p in stocked}
     judged: dict = {}
     fast = asyncio.create_task(_index_first(indexed, options, raw, plan, judged)) if indexed and VERIFY_PICKS else None
-    # the shopper sees those first (checked on their pages) while the other stores are searched
-    first = asyncio.create_task(_first_results(stocked, plan, raw, minp, maxp, codes, web_queries, options, vkey,
-                                               judged)) if stocked else None
+    # the big stores' own search pages, side by side with the web search: no LLM call, every product they sell
+    # (not only the ones on our price list's category pages)
+    direct = asyncio.create_task(_store_search(queries + web_queries)) if websearch.available() else None
+    found_direct: dict = {"products": [], "errors": {}}
+
+    async def first_round():
+        """Our price list's offers and the big stores' own search results: judged and checked on their pages, and
+        shown first while the other stores are searched on the web."""
+        pool = list(stocked)
+        if direct:
+            got, found_direct["errors"] = await direct
+            found_direct["products"] = got
+            pool += [p for p in got if p.url not in have]
+        return await _first_results(pool, plan, raw, minp, maxp, codes, web_queries, options, vkey,
+                                    judged) if pool else None
+    first = asyncio.create_task(first_round()) if stocked or direct else None
     famous = _famous_sites(plan)
     searched = web_queries
     try:
@@ -1635,10 +1696,12 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             source = "stores"
             products, errors = await _search_all(queries)
         early = await first if first else None
+        products = found_direct["products"] + products
+        errors = {**errors, **found_direct["errors"]}
         if fast:
             await fast
     except BaseException:
-        for task in (first, fast):
+        for task in (first, fast, direct):
             if task:
                 task.cancel()
         raise

@@ -416,3 +416,46 @@ def page_image(html: str, base_url: str) -> str | None:
         if m and m.group(1).strip():
             return urljoin(base_url, unescape(m.group(1).strip()))
     return None
+
+
+_PRICE_BY_CURRENCY = re.compile(
+    r"(?:(?:EGP|E\.?G\.?P|L\.?E\.?|ج\.?\s?م\.?|جنيه(?:\s?مصري)?)\s*(\d[\d,]*(?:\.\d{1,2})?)"
+    r"|(\d[\d,]*(?:\.\d{1,2})?)\s*(?:EGP|E\.?G\.?P|L\.?E\.?|ج\.?\s?م\.?|جنيه))", re.I)
+_ARABIC_NUMS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")
+_OLD_PRICE = re.compile(r"<(span|div|p|del)\b[^>]*class=[\"'][^\"']*\b(?:old|was|before|regular|strike|crossed)"
+                        r"[\w-]*[^\"']*[\"'][^>]*>[^<]*</\1>", re.I)
+MAIN_WINDOW = 1200  # where a product page names its product: its own price is shown there, before related items
+
+
+def main_product(html: str) -> tuple[str, float] | None:
+    """A single product page read with no LLM call: (its product's name, its price), or None when the page isn't
+    clear (the LLM reads it then). Clear means the page names one product (its <h1>, or og:title) and right after
+    that name shows exactly one price written with the currency. Two prices there (old and new, installments, a
+    size's price) or a size/color to choose with prices of their own: not clear."""
+    h1 = re.search(r"<h1\b[^>]*>(.*?)</h1>", html, re.S | re.I)
+    title = " ".join(unescape(re.sub(r"<[^>]+>", " ", h1.group(1))).split()) if h1 else ""
+    if len(title.split()) < 2:
+        og = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.I)
+        title = " ".join(unescape(og.group(1)).split()) if og else ""
+    if len(title.split()) < 2 or len(title) > 300:
+        return None
+    variants = variant_stock(html)
+    if len({p for _, _, p in variants if p}) > 1:
+        return None
+    # a crossed-out old price isn't the price: it's dropped, the price shown beside it is read
+    shown = re.sub(r"<(del|s|strike)\b[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
+    shown = _OLD_PRICE.sub(" ", shown)
+    visible = _visible_text(shown)
+    i = visible.find(title[:60])
+    if i == -1:
+        return None
+    window = visible[i + len(title[:60]):i + MAIN_WINDOW].translate(_ARABIC_NUMS)
+    prices = set()
+    for m in _PRICE_BY_CURRENCY.finditer(window):
+        try:
+            v = float((m.group(1) or m.group(2)).replace(",", ""))
+        except ValueError:
+            continue
+        if v >= 5:
+            prices.add(v)
+    return (title, prices.pop()) if len(prices) == 1 else None
