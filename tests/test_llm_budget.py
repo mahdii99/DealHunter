@@ -161,3 +161,19 @@ def test_models_resting_past_the_call_are_not_asked_again(monkeypatch):
     llm._COOLDOWN["llama-3.1-8b-instant"] = time.time() + 1  # free again within the call: it waits and asks it
     asyncio.run(llm.ask_json("page", prefer="bulk", step="read_page"))
     assert used == ["llama-3.1-8b-instant"]
+
+
+def test_a_key_without_an_active_plan_rests_half_an_hour(monkeypatch):
+    """Live 2026-11-25: a new Mistral key answered 402 (no plan yet) and was asked 8 times in one search."""
+    used = _setup(monkeypatch, {"groq": ["llama-3.1-8b-instant", "openai/gpt-oss-120b"]})
+
+    async def pay(client, model, prompt, on_text=None):
+        used.append(model)
+        if model == "llama-3.1-8b-instant":
+            return httpx.Response(402, json={"message": "No active plan"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}]})
+    monkeypatch.setattr(llm, "_caller", lambda p: pay)
+    asyncio.run(llm.ask_json("page", prefer="bulk", step="read_page"))
+    asyncio.run(llm.ask_json("page", prefer="bulk", step="read_page"))
+    assert used.count("llama-3.1-8b-instant") == 1
+    assert 1700 < llm._COOLDOWN["llama-3.1-8b-instant"] - time.time() <= 1800

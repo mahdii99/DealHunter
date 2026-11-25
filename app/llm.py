@@ -182,6 +182,7 @@ _LAST_GOOD: list[str] = []        # the model that answered last time is tried f
 _SLOW_COUNT: dict[str, int] = {}  # model -> timeouts in a row
 COOLDOWN_SECONDS = 180   # timed out (busy right now, or the prompt was big): try others for a few minutes
 GONE_SECONDS = 30 * 86400  # 410: the provider retired the model
+UNPAID_SECONDS = 1800   # 402 (no active plan on the key): ask again after this
 BUSY_SECONDS = 60        # 429 per-minute limit / 503 overloaded: usually fine again within a minute
 SLOW_MAX = 3600         # a model that keeps timing out rests longer each time (3, 6, 12... min), up to an hour
 HEDGE_MIN = 4           # a model that hasn't answered after this long (or 40% of its timeout): ask the next one too,
@@ -372,11 +373,15 @@ def _rest(model: str, r: httpx.Response | None = None, slow: bool = False) -> No
     busy = r is not None and r.status_code in (429, 503)
     hint = retry_hint(r) if busy and not daily else None
     refused = r is not None and r.status_code in (401, 403, 404)  # not available to us: skip it until tomorrow
+    # 402: the key has no active plan yet (e.g. Mistral before its free Experiment plan is turned on). The owner may
+    # turn it on any minute, so it is asked again after half an hour, not tomorrow
+    unpaid = r is not None and r.status_code == 402
     if r is not None and r.status_code == 410:  # the provider retired this model: don't try it again for a month
         _COOLDOWN[model] = time.time() + GONE_SECONDS
         log.warning("LLM %s was retired by its provider, using other models", model)
     else:
-        _COOLDOWN[model] = (_daily_quota_reset(utc_midnight=model.startswith("@cf/")) if daily or refused
+        _COOLDOWN[model] = (time.time() + UNPAID_SECONDS if unpaid
+                            else _daily_quota_reset(utc_midnight=model.startswith("@cf/")) if daily or refused
                             else time.time() + min(BUSY_SECONDS, hint + 0.5) if hint is not None
                             else time.time() + (BUSY_SECONDS if busy else COOLDOWN_SECONDS))
     if slow:
@@ -791,7 +796,7 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
                     errors.append(f"{model}: {r.status_code}")
                     _failed(step, model, str(r.status_code))
                     log.warning("LLM %s said: %s", model, r.text[:200].replace("\n", " "))
-                    if r.status_code in RETRY_STATUS or r.status_code in (401, 403, 404, 410):  # busy/quota/not allowed/gone
+                    if r.status_code in RETRY_STATUS or r.status_code in (401, 402, 403, 404, 410):  # busy/quota/not allowed/gone
                         _rest(model, r)
                         if r.status_code in (429, 503):
                             busy.add(model)
