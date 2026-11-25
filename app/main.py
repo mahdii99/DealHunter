@@ -310,6 +310,10 @@ async def chat_stream(turn: ChatTurn, request: Request):
                     continue
                 if event["type"] == "done" and answered:
                     event = {**event, "type": "update"}
+                if event["type"] == "partial" and answered:  # more offers checked since: they replace the answer
+                    early = event["data"]
+                    yield line({"type": "done", "data": _interim(early)})
+                    continue
                 yield line(event)
                 if event["type"] in ("done", "update", "error"):
                     break

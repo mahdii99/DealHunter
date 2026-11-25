@@ -91,3 +91,23 @@ def test_a_too_cheap_note_never_names_the_llms_estimate():
 def test_uptime_monitors_can_ping_health():
     c = TestClient(main.app)
     assert c.head("/health").status_code == 200 and c.get("/health").json() == {"ok": True}
+
+
+def test_offers_checked_after_the_cap_reach_the_shopper_before_the_end(monkeypatch):
+    """Live 2026-11-25: one offer at 25 s, then nothing until the full answer at 166 s (the widening round took
+    100 s). The first round's checked offers replace the 25-second answer as soon as they are ready."""
+    monkeypatch.setattr(main, "SEARCH_CAP_SECONDS", 0.2)
+
+    async def fake_turn(turn, client=None, user=None):
+        one = {"title": "Samsung 55", "price": 20899, "store": "Jumia", "url": "u1"}
+        two = {"title": "Samsung 55 mini LED", "price": 23999, "store": "B.TECH", "url": "u2"}
+        agent._partial({"results": [one], "count": 1, "request": "شاشة سامسونج 55"})
+        await asyncio.sleep(0.4)
+        agent._partial({"results": [one, two], "count": 2, "request": "شاشة سامسونج 55"})
+        await asyncio.sleep(0.2)
+        return {"action": "search", "request": "شاشة سامسونج 55", "count": 3, "results": [one, two, one]}
+    monkeypatch.setattr(main, "_chat_turn", fake_turn)
+    events = [e for e in _events(_post()) if e["type"] != "ping"]
+    assert [(e["type"], len((e.get("data") or {}).get("results") or [])) for e in events] == [
+        ("partial", 1), ("done", 1), ("done", 2), ("update", 3)]
+    assert all(e["data"].get("pending") for e in events[1:3])
