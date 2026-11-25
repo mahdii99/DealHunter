@@ -25,7 +25,7 @@ from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, we
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
-from .query import english_words, parse_query
+from .query import AR_WORDS, BRANDS, english_words, parse_query, shows_size, wanted_sizes
 from .ranking import rank
 from .stores import ALL_STORES
 from .stores.amazon import parse_amazon_cards
@@ -1601,7 +1601,12 @@ async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, code
             # all came from searches for this request, so show the cheapest of them rather than nothing
             if info is not None:
                 info["failed"] = True
-            guess = _fallback_pick(fresh, [raw, plan.get("request") or ""] + web_queries)[:JUDGE_DOWN_RESULTS]
+            # the request's own words in English (no model): the offers with most of them or the model's number,
+            # and always the brand and size the shopper wrote
+            eng = english_words(raw)
+            guess = [p for p in _fitting(fresh, eng) if _matches_request(p, eng)] if eng else []
+            guess = (guess or [p for p in _fallback_pick(fresh, [raw, plan.get("request") or ""] + web_queries)
+                               if _matches_request(p, eng)])[:JUDGE_DOWN_RESULTS]
             for p in guess:
                 p.unconfirmed = True
             picks += guess
@@ -2479,6 +2484,18 @@ def _shelf_offers(raw: str, request: str) -> list[Product]:
     return sorted(picked, key=_paid)
 
 
+def _matches_request(p: Product, eng: str) -> bool:
+    """With no model to judge it, an offer must at least be the brand and the size the shopper wrote: a Samsung
+    55-inch TV request never shows a 32-inch monitor or a 43-inch TV, a Toshiba 10 kg washer never a Fresh 6 kg one.
+    The brand may be written in English or Arabic in the title."""
+    title = _fold(p.title)
+    for brand in {w for w in eng.split() if w in BRANDS}:
+        arabic = [_fold(a) for a, e in AR_WORDS.items() if e == brand]
+        if brand not in title and not any(a in title for a in arabic):
+            return False
+    return all(shows_size(p.title, n, u) for n, u in wanted_sizes(eng))
+
+
 async def _nothing() -> tuple[list, dict]:
     return [], {}
 
@@ -2526,6 +2543,7 @@ async def _outage_answer(raw: str, request: str, wait: float | None, note: str) 
                                              _store_search([eng]) if eng else _nothing())
     have = {p.url for p in shelf}
     picks = shelf + [p for p in _fitting(found, eng) if p.url not in have][:OUTAGE_MAX]
+    picks = [p for p in picks if _matches_request(p, eng)]
     shown, unchecked, gone = await checked_only(picks, quick=True) if picks else ([], [], 0)
     for p in shown:
         p.unconfirmed = True
