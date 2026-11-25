@@ -5,18 +5,25 @@ them, and we never try to get around such a check. But noon publishes sitemaps f
 robots.txt), and its robots.txt allows product pages for every crawler. A product page carries the price as
 structured data (JSON-LD Product / Offer).
 
-This module starts with a probe: before building anything on it, the server checks that the sitemap files and a
-sample of product pages open for our honest crawler name.
+A probe from our server (2026-11-25) showed noon's own site never answers our crawler, product pages included, while
+the sitemap files on noon's public storage open fine. So we can't read a noon price, and a price we didn't read on
+the store's own page is never shown. What we can do: keep the names and addresses from the sitemaps (once a week),
+and when a shopper searches, show the few noon products that fit as a plain "see the price on noon" link, without
+any price. Clicks on those links are counted (/go), which is the traffic noon's affiliate program asks for.
+
+probe() is kept to check again later whether noon answers our crawler.
 """
 import asyncio
 import json
 import logging
 import re
+import os
 import time
+from urllib.parse import quote
 
 import httpx
 
-from . import fetchers
+from . import db, fetchers, market
 from .catalog import BOT_HEADERS
 from .extract import extract_products
 
@@ -116,3 +123,160 @@ async def probe(pages: int = 20, pause: float = 3.0) -> dict:
         }
     log.info("noon probe: %s", json.dumps(out.get("summary") or out.get("index"), ensure_ascii=False))
     return out
+
+
+# ---------- the index: names and addresses from the sitemaps, rebuilt once a week ----------
+
+MARKETS = {"eg": "egypt"}  # our market -> the word noon uses in its sitemap files and addresses
+PDP_FILES = 80             # sitemap-eg-pdp-0 ... -79 today; the index lists how many there are
+DB_MAX_MB = float(os.getenv("NOON_DB_MAX_MB", "430"))  # stop filling the index before the free database is full
+URL_BLOCK = re.compile(r"<url>(.*?)</url>", re.S)
+IMG = re.compile(r"https://f\.nooncdn\.com/p/v(\d+)/([A-Z0-9]+)_1\.jpg")
+SLUG_OK = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+MAX_SLUG = 110
+
+
+def read_sitemap(text: str, country: str = "egypt") -> list[tuple[str, str, str, str]]:
+    """(head, sku, slug, img) of every product in one sitemap file whose address has a name (some have none)."""
+    loc = re.compile(rf"<loc>https://www\.noon\.com/{country}-en/([^/<]*)/([A-Z0-9]+)/p/</loc>")
+    out = []
+    for block in URL_BLOCK.finditer(text):
+        b = block.group(1)
+        m = loc.search(b)
+        if not m:
+            continue
+        slug, sku = m.group(1)[:MAX_SLUG].strip("-"), m.group(2)
+        if not slug or not SLUG_OK.match(slug):
+            continue
+        im = IMG.search(b)
+        out.append((slug.split("-", 1)[0], sku, slug, im.group(1) if im and im.group(2) == sku else ""))
+    return out
+
+
+async def _sitemap_files(client: httpx.AsyncClient, country: str) -> list[int]:
+    r = await client.get(SITEMAP_INDEX, headers=BOT_HEADERS, timeout=60)
+    r.raise_for_status()
+    return sorted({int(n) for n in re.findall(rf"sitemap-{country[:2]}-pdp-(\d+)\.xml", r.text)})
+
+
+async def build(first: int = 0, last: int = PDP_FILES - 1, mk: str = "eg", client: httpx.AsyncClient | None = None) -> dict:
+    """Reads sitemap files first..last (one at a time) into the index, each in place of what it had before."""
+    country = MARKETS.get(mk)
+    if not country:
+        return {"error": f"no noon sitemaps for market {mk}"}
+    own = client is None
+    client = client or httpx.AsyncClient()
+    report: dict = {"files": {}, "products": 0}
+    t = time.monotonic()
+    try:
+        files = [n for n in await _sitemap_files(client, country) if first <= n <= last]
+        for n in files:
+            size = await asyncio.to_thread(db.size_mb)
+            if size is not None and size > DB_MAX_MB:
+                report["stopped"] = f"database is {size} MB (limit {DB_MAX_MB:.0f} MB)"
+                break
+            try:
+                r = await client.get(f"{SITEMAP_HOST}sitemap-{country[:2]}-pdp-{n}.xml", headers=BOT_HEADERS, timeout=120)
+                r.raise_for_status()
+                rows = read_sitemap(r.text, country)
+                del r
+            except Exception as e:  # the next run reads it again; what the file had stays meanwhile
+                report["files"][n] = f"{type(e).__name__}: {e}"[:120]
+                continue
+            await asyncio.to_thread(db.noon_replace_file, mk, n, rows)
+            report["files"][n] = len(rows)
+            report["products"] += len(rows)
+        report["db_mb"] = await asyncio.to_thread(db.size_mb)
+    finally:
+        if own:
+            await client.aclose()
+    report["seconds"] = round(time.monotonic() - t, 1)
+    log.info("noon index: %d products from %d files in %.0fs", report["products"], len(report["files"]), report["seconds"])
+    return report
+
+
+# ---------- at search time ----------
+
+LINKS_MAX = 3
+# words that make a product an accessory/part for another one: those aren't shown for a search of the product itself
+ACCESSORY = {"case", "cases", "cover", "covers", "protector", "tempered", "film", "skin", "strap", "straps", "holder",
+             "mount", "cable", "charger", "adapter", "replacement", "compatible", "sticker", "stickers", "pouch",
+             "sleeve", "spare", "parts", "bracket", "tpu", "bumper"}
+CONDITION = {"refurbished", "renewed", "used"}  # like everywhere on the site: new products only
+
+
+def _tokens(text: str) -> list[str]:
+    return [w for w in re.split(r"[^a-z0-9]+", (text or "").lower()) if w]
+
+
+def _size_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9.]", "", (text or "").lower().replace("inches", "inch").replace("gigabyte", "gb"))
+
+
+def title(slug: str) -> str:
+    """A readable name from noon's address words: model numbers in capitals, the rest with a capital first letter."""
+    words = slug.split("-")[:14]
+    return " ".join(w.upper() if any(c.isdigit() for c in w) and len(w) <= 8 else w.capitalize() for w in words)
+
+
+def url(country: str, slug: str, sku: str) -> str:
+    return f"https://www.noon.com/{country}-ar/{slug}/{sku}/p/"
+
+
+def links(product: dict | None, codes: list[str] | None = None, mk: str | None = None) -> list[dict]:
+    """The few noon products that fit what the shopper asked for (the planner's brand / model / size / kind), as
+    links without a price. noon's names start with the brand ("samsung-galaxy-a56-...") or with the product line
+    ("galaxy-a56-...", "iphone-16-..."), so both are looked up; every word of the model must be in the name, and the
+    size when the shopper gave one. Parts, accessories and used products are left out unless the shopper wants an
+    accessory. [] when the request names no brand (too vague to point anywhere)."""
+    mk = mk or market.current().code
+    country = MARKETS.get(mk)
+    p = product if isinstance(product, dict) else {}
+    brand = _tokens(str(p.get("brand") or ""))
+    if not country or not brand:
+        return []
+    kind = _tokens(str(p.get("kind") or ""))
+    model = _tokens(str(p.get("model") or "")) or [w for c in codes or [] for w in _tokens(c)][:3]
+    model = [w for w in model if w not in brand]
+    size = _size_key(str(p.get("size") or ""))
+    rows: dict[str, dict] = {}
+    lookups = [(brand[0], brand[1:] + model)] + ([(model[0], model[1:])] if model else [])
+    for head, need in lookups:
+        for r in db.noon_find(mk, head, list(dict.fromkeys(need))[:5]):
+            rows.setdefault(r["slug"], r)  # the same name twice (two sellers' listings): shown once
+    want_accessory = bool(set(kind) & ACCESSORY)
+    picked = []
+    for r in rows.values():
+        words = set(r["slug"].split("-"))
+        if words & CONDITION or (not want_accessory and words & ACCESSORY):
+            continue
+        if size and size not in _size_key(r["slug"]):
+            continue
+        n = len(r["slug"].split("-"))
+        # the names that say what the product is (its kind) first, then noon's own catalogue products (their numbers
+        # start with N; the sellers' own listings with Z, often with a vague name like "samsung-galaxy-a56"), then
+        # the fuller names
+        picked.append((-sum(1 for w in kind if w in words), not r["sku"].startswith("N"), -min(n, 12), r))
+    picked.sort(key=lambda x: x[:3])
+    out = []
+    for *_, r in picked[:LINKS_MAX]:
+        u = url(country, r["slug"], r["sku"])
+        out.append({"title": title(r["slug"]), "url": u, "store": "noon",
+                    "image": f"https://f.nooncdn.com/p/v{r['img']}/{r['sku']}_1.jpg" if r["img"] else None,
+                    "go": "/go?src=noon&u=" + quote(u, safe="")})
+    return out
+
+
+NOON_URL = re.compile(r"^https://www\.noon\.com/([a-z]+)-(?:ar|en)/([a-z0-9-]+)/([A-Z0-9]+)/p/?$")
+
+
+def known(u: str) -> dict | None:
+    """A noon product address from our index (the /go link only opens addresses we showed)."""
+    m = NOON_URL.match(u or "")
+    if not m:
+        return None
+    mk = next((k for k, c in MARKETS.items() if c == m.group(1)), None)
+    slug, sku = m.group(2), m.group(3)
+    if not mk or not db.noon_known(mk, slug.split("-", 1)[0], sku, slug):
+        return None
+    return {"store": "noon.com", "title": title(slug), "price": None}

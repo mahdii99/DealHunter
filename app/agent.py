@@ -21,7 +21,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
-from . import catalog, db, fetchers, llm, market, recipes, trust, websearch
+from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, websearch
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
@@ -1704,9 +1704,13 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         picks = shown_first + [p for p in picks if _vid(p) not in seen_ids]
     _flag_price_outliers(picks, typical)
     picks = _ordered(picks, options)
+    # noon doesn't answer our crawler, so its prices can't be checked: the products of its public sitemaps that fit
+    # are shown apart, as links without a price (app/noon_index.py)
+    noon = await asyncio.to_thread(_db_safe, noon_index.links, plan.get("product"), codes) or []
     used = llm.usage()
     return {
         "mode": "llm", "source": source, "timings": dict(TIMES),
+        "noon": noon,
         "more_stores": bool(more),  # the page offers "search more stores" (main keeps `_more` for that, server side)
         "_more": more,
         "llm_usage": {"calls": used["calls"], "tokens": used["tokens"], "by_step": dict(used["by_step"])},
