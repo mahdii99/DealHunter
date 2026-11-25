@@ -1824,7 +1824,8 @@ def test_only_prices_confirmed_on_the_store_page_are_shown(monkeypatch):
     shown, unchecked, gone = asyncio.run(agent.checked_only(picks))
     # B's page shows 4,850 for its product: that is the price shown; C's page couldn't be opened: not shown
     assert [(p.store, p.price, p.verified) for p in shown] == [("A", 3999, True), ("B", 4850, True)] and gone == 0
-    assert [u["store"] for u in unchecked] == ["C"] and "price" not in unchecked[0] and len(reads) == 2
+    # A's page shows our price right where it names the product: no LLM read; only B's (another price) is read
+    assert [u["store"] for u in unchecked] == ["C"] and "price" not in unchecked[0] and len(reads) == 1
     s = agent._honest_summary("أرخص عرض في C بـ 3500. اختار ماركة معروفة.", shown)
     assert "3500" not in s and "3,999" in s and "اختار ماركة معروفة." in s
     saved = {"results": [dict(p.to_dict(), price_context="x") for p in picks], "summary": "C بـ 3500", "count": 3}
