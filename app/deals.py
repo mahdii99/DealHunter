@@ -22,7 +22,7 @@ MAX_AGE_HOURS = 14          # an older list isn't shown (prices move)
 HISTORY_DAYS = 30
 MIN_DROP = 5                # % below the lowest price seen before today, to count as a real drop
 MIN_STORE_DISCOUNT = 15     # % off the store's own old price, for the store-discount part
-CHECK = 150                 # candidates opened per run (each one is a store page, read with no LLM call)
+CHECK = 300                 # candidates opened per run (each one is a store page, read with no LLM call)
 BATCH = 25                  # opened together (agent.checked_only checks at most VERIFY_MAX pages per call)
 PER_CATEGORY = 40
 PER_STORE = 200
@@ -44,8 +44,6 @@ def candidates(now: float | None = None) -> list[dict]:
         drop = round((low - r["price"]) / low * 100) if low and low > r["price"] else 0
         off = (round((r["old_price"] - r["price"]) / r["old_price"] * 100)
                if r.get("old_price") and r["old_price"] > r["price"] else 0)
-        if catalog.CATEGORIES.get(r["category"], {}).get("broad") or r["category"] == ACCESSORY:
-            continue  # only the products shoppers come for (phones, TVs, appliances...): not socks or phone cases
         if drop >= MIN_DROP and drop <= 70:
             out.append({**r, "kind": "drop", "was": low, "pct": drop})
         elif MIN_STORE_DISCOUNT <= off <= 70:
