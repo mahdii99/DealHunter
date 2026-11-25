@@ -140,5 +140,17 @@ def test_a_trusted_recipe_reads_the_page_without_the_llm(monkeypatch):
     ok = agent.Product(store="Amazon", title="A", price=8499, url="https://a.eg/ok")
     gone = agent.Product(store="Amazon", title="B", price=8499, url="https://a.eg/gone")
     sold: set[int] = set()
-    agent._check_without_llm([(ok, "<html>x</html>"), (gone, "<html>x</html>")], sold, "")
+    agent._check_without_llm([(ok, "<html>EGP 8,499</html>"), (gone, "<html>x</html>")], sold, "")
     assert ok.verified and not gone.verified and sold == {id(gone)}
+
+
+def test_a_search_page_is_clear_without_the_llm_only_when_the_price_sits_by_the_product_name(monkeypatch):
+    monkeypatch.setattr(agent.recipes, "read", lambda url, html: None)
+    p = agent.Product(store="Jumia", title="Toshiba Washer 10 KG", price=17999, url="https://j.eg/w")
+    far = "<html><h1>Toshiba Washer 10 KG</h1><p>EGP 19,500</p>" + "<p>menu item</p>" * 400 + \
+          "<div>Related: Toshiba Washer 8 KG EGP 17,999</div></html>"
+    near = "<html><h1>Toshiba Washer 10 KG</h1><p>EGP 17,999</p></html>"
+    sold: set[int] = set()
+    assert not agent._settled_without_llm(p, far, sold, "") and not p.verified  # the LLM reads this one
+    assert not agent._settled_without_llm(p, near, sold, "مقاس 42")  # a size to check: the LLM reads it
+    assert agent._settled_without_llm(p, near, sold, "") and p.verified and not sold

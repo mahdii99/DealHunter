@@ -805,6 +805,7 @@ PAGE:
 {text}"""
 
 
+NEAR_TITLE_CHARS = 1200  # where a page names its product: its price is shown there too, before related items
 MAIN_PRICE_CHARS = 6000  # page text for a main-price read: the top of the page, where the product and its price are
 
 
@@ -1841,6 +1842,8 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
     if not use_llm:  # (today's deals list) no LLM call at all: its free daily quota is kept for shoppers' searches
         _check_without_llm(to_read, sold, options)
         to_read = []
+    else:  # a clear page needs no LLM read: only the pages that aren't clear go to the LLM
+        to_read = [(p, page) for p, page in to_read if not _settled_without_llm(p, page, sold, options)]
     # a number somewhere on the page isn't enough (related items, other sellers, sizes): the LLM reads the price of
     # the page's own product, and only that price is shown
     if to_read and llm.available():
@@ -1885,21 +1888,39 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
 
 
 def _check_without_llm(to_read: list[tuple[Product, str]], sold: set[int], options: str) -> None:
-    """Pages without product data for the offer, checked with no LLM call (today's deals list): the store's learned
-    recipe (app/recipes.py) reads the main product's price and stock; without one, the page must show exactly the
-    price the store's own list page gave a few hours ago. Pages that pass neither stay unchecked (not shown)."""
+    """Today's deals list: every page is checked with no LLM call (see _settled_without_llm). The price was read from
+    the store's own list page a few hours ago, so the page showing that exact number anywhere is enough."""
     for p, page in to_read:
-        if options or "<" not in page[:2000]:  # a size/color, or reader text: only the LLM can tell
-            continue
-        if got := recipes.read(p.url, page):
-            price, stock = got
-            if stock is False:
-                sold.add(id(p))
-            elif abs(price - p.price) < 1:
-                p.verified, p.in_stock = True, True
-            continue
-        if shows(_shown_numbers(page), p.price):
+        _settled_without_llm(p, page, sold, options, near_title=False)
+
+
+def _settled_without_llm(p: Product, page: str, sold: set[int], options: str, near_title: bool = True) -> bool:
+    """A page without product data for the offer, checked with no LLM call: the store's learned recipe
+    (app/recipes.py) reads the main product's price and stock; without one, the page must show exactly the price we'd
+    show. `near_title`: (a search, where a price can come from anywhere) that number must sit right where the page
+    names the product, before the related items lower down. True when the page settled it (checked or sold out);
+    False leaves it to the LLM (a size/color to check, reader text, or a page that isn't clear)."""
+    if options or "<" not in page[:2000]:
+        return False
+    if got := recipes.read(p.url, page):
+        price, stock = got
+        if stock is False:
+            sold.add(id(p))
+            return True
+        if abs(price - p.price) < 1 and shows(_shown_numbers(page), price):
             p.verified, p.in_stock = True, True
+            return True
+        return False
+    if near_title:
+        words = [w for w in re.split(r"\W+", p.title) if len(w) > 2]
+        top = _page_text(page, words, NEAR_TITLE_CHARS, base_url=p.url, top=True)
+        named = sum(w.lower() in top.lower() for w in words)
+        if not words or named < max(2, len(words) * 0.6) or not shows(_shown_numbers(top), p.price):
+            return False
+    elif not shows(_shown_numbers(page), p.price):
+        return False
+    p.verified, p.in_stock = True, True
+    return True
 
 
 def shows(shown: set[float], price: float) -> bool:
