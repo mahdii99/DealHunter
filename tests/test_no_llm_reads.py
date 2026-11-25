@@ -24,6 +24,7 @@ def test_a_page_that_is_not_clear_goes_to_the_llm():
 
 def test_the_big_stores_own_search_pages_are_read_without_the_llm(monkeypatch):
     monkeypatch.setattr(market, "current", lambda: market.MARKETS["EG"])
+    monkeypatch.setattr(agent, "STORE_SEARCHES", {"EG": ["https://www.amazon.eg/s?k={q}", "https://btech.com/en/s?q={q}"]})
     asked = []
 
     async def fake_fetch(client, sem, url):

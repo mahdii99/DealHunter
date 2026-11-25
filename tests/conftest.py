@@ -91,3 +91,10 @@ def _llm_counts_in_memory():
     llm._loaded_days.clear()
     yield
     llm.PERSIST = False
+
+
+@pytest.fixture(autouse=True)
+def _no_real_store_searches(monkeypatch):
+    """The big stores' own search pages (agent._store_search) are real sites: tests that need them set their own."""
+    from app import agent
+    monkeypatch.setattr(agent, "STORE_SEARCHES", {})
