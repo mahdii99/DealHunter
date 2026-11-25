@@ -142,6 +142,18 @@ CREATE TABLE IF NOT EXISTS events (
     cached INTEGER                      -- turn: 1 = answered from the price database
 );
 CREATE INDEX IF NOT EXISTS events_at ON events (kind, at);
+-- noon's public product sitemaps (app/noon_index.py): name and address of every product noon lists, no price. A
+-- search shows the few that fit as a "see it on noon" link. Rebuilt one sitemap file at a time (`file`, with no index on
+-- it: ~1.2M rows on the free database, a weekly delete can read the table).
+CREATE TABLE IF NOT EXISTS noon_index (
+    market TEXT NOT NULL,
+    file INTEGER NOT NULL,              -- the sitemap file it came from (sitemap-eg-pdp-<file>.xml)
+    head TEXT NOT NULL,                 -- the first word of its name (usually the brand): what a search looks it up by
+    sku TEXT NOT NULL,
+    slug TEXT NOT NULL,                 -- its name as noon writes it in the address, e.g. samsung-galaxy-a56-5g-...
+    img TEXT NOT NULL                   -- the version part of its picture's address, or ''
+);
+CREATE INDEX IF NOT EXISTS noon_index_head ON noon_index (market, head);
 -- our own price list: the big stores' category pages read on a schedule (app/catalog.py). Latest row per product page,
 -- every price change also goes to `prices`, which keeps the history.
 CREATE TABLE IF NOT EXISTS catalog (
@@ -411,6 +423,52 @@ def known_product(url: str) -> dict | None:
     rows = _db.run("SELECT store, title, price FROM prices WHERE url = ? ORDER BY seen_at DESC LIMIT 1", (url,)) or \
         _db.run("SELECT store, title, price FROM catalog WHERE url = ? LIMIT 1", (url,))
     return {"store": rows[0][0], "title": rows[0][1], "price": rows[0][2]} if rows else None
+
+
+NOON_COLS = ("market", "file", "head", "sku", "slug", "img")
+
+
+def noon_replace_file(market: str, file: int, rows: list[tuple]) -> None:
+    """The products of one noon sitemap file, in place of what that file had before (rows: head, sku, slug, img)."""
+    full = [(market, file, *r) for r in rows]
+
+    def work(conn):
+        if _db.pg:
+            with conn.transaction():
+                conn.execute("DELETE FROM noon_index WHERE market = %s AND file = %s", (market, file))
+                with conn.cursor().copy(f"COPY noon_index ({', '.join(NOON_COLS)}) FROM STDIN") as cp:
+                    for r in full:
+                        cp.write_row(r)
+        else:
+            conn.execute("BEGIN")
+            conn.execute("DELETE FROM noon_index WHERE market = ? AND file = ?", (market, file))
+            conn.executemany(f"INSERT INTO noon_index ({', '.join(NOON_COLS)}) VALUES (?, ?, ?, ?, ?, ?)", full)
+            conn.execute("COMMIT")
+    _db._do(work)
+
+
+def noon_find(market: str, head: str, words: list[str], limit: int = 400) -> list[dict]:
+    """noon products whose name starts with `head` and has every one of `words` as a whole word of the name."""
+    likes = " ".join("AND ('-' || slug || '-') LIKE ?" for _ in words)
+    return _rows(f"SELECT sku, slug, img FROM noon_index WHERE market = ? AND head = ? {likes} LIMIT ?",
+                 (market, head, *(f"%-{w}-%" for w in words), limit), "sku slug img")
+
+
+def noon_known(market: str, head: str, sku: str, slug: str) -> bool:
+    return bool(_db.run("SELECT 1 FROM noon_index WHERE market = ? AND head = ? AND sku = ? AND slug = ? LIMIT 1",
+                        (market, head, sku, slug)))
+
+
+def noon_count(market: str) -> int:
+    return _db.run("SELECT COUNT(*) FROM noon_index WHERE market = ?", (market,))[0][0]
+
+
+def size_mb() -> float | None:
+    """How big the database is (Postgres only: the free plan has a size limit)."""
+    _db.run("SELECT 1")  # connected, so we know which database it is
+    if not _db.pg:
+        return None
+    return round(_db.run("SELECT pg_database_size(current_database())")[0][0] / 1e6, 1)
 
 
 def add_price_context(results: list[dict]) -> None:

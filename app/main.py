@@ -924,7 +924,7 @@ async def go(request: Request, u: str = Query(..., max_length=2000), rank: int |
     page that names where it leads, so nobody can use our address to send people to a site of their choosing."""
     if not u.startswith(("https://", "http://")):
         raise HTTPException(422, "not a web address")
-    known = await _db(db.known_product, u)
+    known = await _db(db.known_product, u) or await _db(noon_index.known, u)
     if not known:
         from html import escape as e
         host = e(urlparse(u).hostname or "")
@@ -1340,6 +1340,16 @@ async def refresh_coupons(request: Request):
         return await coupons.refresh()
     finally:
         agent.llm.background_end(token)
+
+
+@app.post("/api/cron/noon-index")
+async def noon_index_build(request: Request, first: int = Query(0, ge=0, le=500), last: int = Query(19, ge=0, le=500)):
+    """Reads noon's public product sitemap files first..last into the index of names and addresses (no prices) that
+    searches show as "see it on noon" links (app/noon_index.py). Run weekly by noon-index.yml, 20 files per call."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    return await noon_index.build(first, last, market.current().code)
 
 
 @app.post("/api/cron/noon-probe")
