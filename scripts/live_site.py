@@ -63,6 +63,10 @@ def report(text: str, got: dict) -> str:
              f"  store errors: {d.get('store_errors') or '-'}"]
     for p in (d.get("results") or [])[:8]:
         lines.append(f"    {p.get('price')} | {p.get('store')} | {(p.get('title') or '')[:70]}")
+    noon = d.get("noon") or []
+    lines.append(f"  noon links (no price): {len(noon)}")
+    for n in noon:
+        lines.append(f"    noon | {(n.get('title') or '')[:70]}")
     return "\n".join(lines)
 
 
