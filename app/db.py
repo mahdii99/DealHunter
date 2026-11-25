@@ -19,6 +19,8 @@ import threading
 import time
 from pathlib import Path
 
+from . import pricechart
+
 log = logging.getLogger("uvicorn.error")
 DB_PATH = Path(os.getenv("PRICE_DB", Path(__file__).resolve().parent.parent / "data" / "prices.db"))
 # {ID} and {FLOAT} differ between SQLite and Postgres; everything else is the same SQL on both
@@ -384,20 +386,50 @@ def history(url: str, limit: int = 200) -> list[dict]:
     return [{"price": p, "in_stock": None if s is None else bool(s), "seen_at": t} for p, s, t in reversed(rows)]
 
 
+def histories(urls: list[str], since: float) -> dict[str, list[dict]]:
+    """{url: history points since `since`, oldest first, plus the last one before it (the price that held then)},
+    asked in chunks: one page of deals or a product page with several stores costs a few queries, not one each."""
+    out: dict[str, list[dict]] = {}
+    urls = list(dict.fromkeys(u for u in urls if u))
+    for i in range(0, len(urls), 400):
+        part = urls[i:i + 400]
+        marks = ", ".join("?" * len(part))
+        held = _db.run(f"SELECT p.url, p.price, p.in_stock, p.seen_at FROM prices p JOIN (SELECT url, MAX(seen_at) AS at "
+                       f"FROM prices WHERE url IN ({marks}) AND seen_at < ? GROUP BY url) m "
+                       "ON p.url = m.url AND p.seen_at = m.at", (*part, since))
+        rows = _db.run(f"SELECT url, price, in_stock, seen_at FROM prices WHERE url IN ({marks}) AND seen_at >= ? "
+                       "ORDER BY seen_at", (*part, since))
+        for url, price, stock, at in list(held) + list(rows):
+            out.setdefault(url, []).append({"price": price, "in_stock": None if stock is None else bool(stock),
+                                            "seen_at": at})
+    return out
+
+
+def known_product(url: str) -> dict | None:
+    """The store, title and latest price of a product page we showed or listed (our prices or price list), or None:
+    our /go link only sends shoppers to pages like these (never anywhere a link someone made up points to)."""
+    rows = _db.run("SELECT store, title, price FROM prices WHERE url = ? ORDER BY seen_at DESC LIMIT 1", (url,)) or \
+        _db.run("SELECT store, title, price FROM catalog WHERE url = ? LIMIT 1", (url,))
+    return {"store": rows[0][0], "title": rows[0][1], "price": rows[0][2]} if rows else None
+
+
 def add_price_context(results: list[dict]) -> None:
-    """Adds to each result what we saw before: lowest_seen and previous_price (to say 'dropped from X')."""
+    """Adds to each result what we saw before: lowest_seen, previous_price (to say 'dropped from X') and
+    price_verdict (app/pricechart.verdict: is its discount real, judged on the last 30 days of this page)."""
     urls = list({r["url"] for r in results if r.get("url")})
     if not urls:
         return
     lowest = dict(_db.run(f"SELECT url, MIN(price) FROM prices WHERE url IN ({', '.join('?' * len(urls))}) "
                           "GROUP BY url", tuple(urls)))
     last = _last_prices(urls)
+    past = histories(urls, time.time() - (pricechart.DAYS + 1) * 86400)
     for r in results:
         if not r.get("url"):
             continue
         prev = last.get(r["url"])
         r["lowest_seen"] = lowest.get(r["url"])
         r["previous_price"] = prev[0] if prev and prev[0] != r.get("price") else None
+        r["price_verdict"] = pricechart.verdict(past.get(r["url"], []), r.get("price"), r.get("old_price"))
 
 
 FOUND = "found"  # catalog category of offers a search found on the web and checked on their own page
@@ -535,17 +567,6 @@ def catalog_since(market: str, since: float) -> list[dict]:
     rows = _db.run(f"SELECT {', '.join(_CATALOG_COLS)} FROM catalog "
                    "WHERE market = ? AND seen_at > ? AND category <> 'found'", (market, since))
     return [dict(zip(_CATALOG_COLS, r)) for r in rows]
-
-
-def prices_between(urls: list[str], start: float, end: float) -> dict[str, list[float]]:
-    """{url: [prices saved between start and end]}, asked in chunks (a long IN list is slow on some databases)."""
-    out: dict[str, list[float]] = {}
-    for i in range(0, len(urls), 300):
-        part = urls[i:i + 300]
-        for url, price in _db.run(f"SELECT url, price FROM prices WHERE url IN ({', '.join('?' * len(part))}) "
-                                  "AND seen_at >= ? AND seen_at < ?", (*part, start, end)):
-            out.setdefault(url, []).append(price)
-    return out
 
 
 def catalog_stats(market: str, since: float) -> list[dict]:

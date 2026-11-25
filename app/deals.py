@@ -3,7 +3,8 @@ store page just before they're listed.
 
 A shopper trusts a deal only when it's real. Stores often show a high "old price" that the product never sold at, so
 what counts most here is our own history: a price below what the same store page asked for it in the last 30 days.
-A store's own discount is listed after those, and says it's the store's number, not ours.
+A store's own discount is listed after those, and says it's the store's number, not ours; one from a "before" price
+the page never asked in our 30 days of history is left out (app/pricechart.verdict says "fake").
 
 Prices on the page are never older than their check: every deal was opened on its store page (the same check as a
 search result, agent.checked_only) when the list was made, and the page shows when that was. The list is made
@@ -12,7 +13,7 @@ after each price list run (.github/workflows/scrape-prices.yml) and stops being 
 import logging
 import time
 
-from . import agent, catalog, db, market
+from . import agent, catalog, db, market, pricechart
 from .models import Product
 
 log = logging.getLogger("uvicorn.error")
@@ -36,18 +37,23 @@ def candidates(now: float | None = None) -> list[dict]:
     if not rows:
         return []
     rows = _accessories_apart(rows)
-    past = db.prices_between([r["url"] for r in rows], now - HISTORY_DAYS * 86400, now - 20 * 3600)
+    hist = db.histories([r["url"] for r in rows], now - HISTORY_DAYS * 86400)
     out = []
     for r in rows:
-        before = past.get(r["url"]) or []
+        points = hist.get(r["url"]) or []
+        before = [p["price"] for p in points if now - HISTORY_DAYS * 86400 <= p["seen_at"] < now - 20 * 3600]
         low = min(before) if before else None
         drop = round((low - r["price"]) / low * 100) if low and low > r["price"] else 0
         off = (round((r["old_price"] - r["price"]) / r["old_price"] * 100)
                if r.get("old_price") and r["old_price"] > r["price"] else 0)
+        judged = pricechart.verdict(points, r["price"], r.get("old_price"), now)
+        trail = [[round(p["seen_at"]), p["price"]] for p in points]  # for the card's small chart
         if drop >= MIN_DROP and drop <= 70:
-            out.append({**r, "kind": "drop", "was": low, "pct": drop})
-        elif MIN_STORE_DISCOUNT <= off <= 70:
-            out.append({**r, "kind": "store", "was": r["old_price"], "pct": off})
+            out.append({**r, "kind": "drop", "was": low, "pct": drop, "hist": trail})
+        elif MIN_STORE_DISCOUNT <= off <= 70 and not (judged and judged["kind"] == "fake"):
+            # a "before" price this page never asked in 30 days is no deal (stores inflate it)
+            out.append({**r, "kind": "store", "was": r["old_price"], "pct": off, "hist": trail,
+                        "real": bool(judged and judged["kind"] == "real")})
     out.sort(key=lambda d: (d["kind"] != "drop", -d["pct"], -(d["was"] - d["price"])))
     picked, per_cat, per_store = [], {}, {}
     for d in out:
@@ -96,7 +102,8 @@ async def build() -> dict:
         was = d["was"]
         deals.append({"title": p.title, "store": p.store, "url": p.url, "image": p.image or d["image"] or None,
                       "price": p.price, "was": was, "pct": round((was - p.price) / was * 100), "kind": d["kind"],
-                      "category": d["category"]})
+                      "category": d["category"], "checked_at": p.checked_at, "hist": d.get("hist") or [],
+                      "real": d["kind"] == "drop" or bool(d.get("real"))})
     deals.sort(key=lambda d: (d["kind"] != "drop", -d["pct"]))
     payload = {"checked_at": time.time(), "deals": deals, "candidates": len(found), "sold_out": gone,
                "unchecked": len(unchecked)}
