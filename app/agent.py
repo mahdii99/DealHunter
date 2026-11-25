@@ -1480,6 +1480,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     """Search for one request. `plan` comes from plan_turn() when the chat already planned it;
     `budget_text` is what the shopper actually wrote (all their messages), used to check a budget is real."""
     TIMES.clear()
+    more: dict | None = None  # what another search round in more stores needs, when the shopper may ask for one
     if plan is None:
         llm.reset_usage()  # (a chat turn resets it before planning, in main._chat_turn)
     t0 = time.monotonic()
@@ -1510,8 +1511,12 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     # what our own price list (the big stores' category pages, read every day) already has for this request. Its
     # titles are English: a request with no English word gets them from a light model first
     shelf = web_queries + queries
-    if not any(re.search(r"[a-z]", w) for w in _latin_words(codes + shelf)) and llm.available():  # numbers alone
-        # ("غسالة 7 كيلو") don't find a product among English titles
+    has_words = lambda texts: any(re.search(r"[a-z]", w) for w in _latin_words(texts))  # numbers alone
+    # ("غسالة 7 كيلو") don't find a product among English titles: the planner's English product fields first (no
+    # LLM call), a light model only when the planner wrote no English at all
+    if not has_words(codes + shelf):
+        shelf = shelf + _product_words(plan)
+    if not has_words(codes + shelf) and llm.available():
         shelf = shelf + await _catalog_queries(want)
     stocked = await asyncio.to_thread(_catalog_offers, shelf, codes)
     # the index's products with the attributes the shopper asked for: checked and shown in seconds, no LLM call
@@ -1565,7 +1570,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     if early:
         gone = early["gone"]
         picks = early["later"] + picks
-    if (picks or shown_first) and VERIFY_PICKS:
+    # (with nothing found at all, too: the round in other stores below is the shopper's only chance of an offer)
+    if (picks or shown_first or source == "web") and VERIFY_PICKS:
         if picks:
             _progress(f"بفتح صفحة كل نتيجة ({len(picks)}) وبتأكد إنها متوفرة وإن سعرها لسه زي ما هو...")
         tv = time.monotonic()
@@ -1576,25 +1582,26 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         unchecked += more_unchecked
         gone += more_gone
         first_picks = picks
-        if len(picks) < MIN_RESULTS and source == "web" and llm.available():
-            # a shopper who sees one offer leaves: look in other stores before answering
-            if picks:  # meanwhile the shopper sees the offers checked so far (the widening takes a minute or more)
-                so_far = _ordered(list(picks), options)
-                _partial({"results": [p.to_dict() for p in so_far], "count": len(so_far),
-                          "request": plan.get("request") or raw, "understood": plan.get("understood", ""),
-                          "summary": _honest_summary("", so_far),
-                          "note": "دي العروض اللي اتأكدنا من سعرها لحد دلوقتي، ولسه بدور في متاجر تانية..."})
+        few = len(picks) < MIN_RESULTS and source == "web" and llm.available()
+        seen_urls = {_page_id(p.url) or p.url for p in pool}
+        if few and picks:
+            # some checked offers: the answer comes now, and the shopper decides whether another round in other
+            # stores (about a minute, 2-6 web searches and ~10 LLM calls) is worth waiting for: a button
+            more = {"plan": {k: v for k, v in plan.items() if k not in ("check_hits", "reply", "answer")},
+                    "raw": raw, "want": want, "options": options, "minp": minp, "maxp": maxp, "codes": codes,
+                    "seen": sorted(seen_urls)[:300], "found": [p.to_dict() for p in picks]}
+        if few and not picks:
+            # nothing at all to show: a shopper with an empty page leaves, so look in other stores before answering
             tw, times = time.monotonic(), dict(TIMES)
-            seen_urls = {_page_id(p.url) or p.url for p in pool}
             try:
-                more, more_unchecked, more_gone, judged = await _widen(plan, raw, picks, seen_urls, want, options,
-                                                                       minp, maxp, codes)
+                extra, more_unchecked, more_gone, judged = await _widen(plan, raw, picks, seen_urls, want, options,
+                                                                        minp, maxp, codes)
             except Exception as e:  # the first round's results still stand
                 log.warning("agent: widening failed: %s: %s", type(e).__name__, e)
-                more, more_unchecked, more_gone, judged = [], [], 0, 0
+                extra, more_unchecked, more_gone, judged = [], [], 0, 0
             TIMES.clear()
             TIMES.update(times, widen=round(time.monotonic() - tw, 1))
-            picks = picks + more
+            picks = picks + extra
             unchecked += more_unchecked
             gone += more_gone
             pool_size += judged
@@ -1614,6 +1621,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     used = llm.usage()
     return {
         "mode": "llm", "source": source, "timings": dict(TIMES),
+        "more_stores": bool(more),  # the page offers "search more stores" (main keeps `_more` for that, server side)
+        "_more": more,
         "llm_usage": {"calls": used["calls"], "tokens": used["tokens"], "by_step": dict(used["by_step"])},
         "first_results": len(shown_first),
         "understood": plan.get("understood", ""),
@@ -1680,6 +1689,30 @@ colors of the same product that also fit the request. Never change what the shop
 searches above.
 Reply JSON: {{"web_queries": ["...", "..."], "stores": ["2-6 domains of Egyptian stores likely to sell it that we may
 have missed"]}}"""
+
+
+async def more_stores(ctx: dict) -> dict:
+    """The shopper tapped "search more stores" under an answer with few offers: the round run() didn't start on its
+    own (`ctx` is the `_more` it returned). The new offers go through the same judge and page checks."""
+    TIMES.clear()
+    names = {f.name for f in fields(Product)}
+    found = [Product(**{k: v for k, v in r.items() if k in names}) for r in ctx.get("found") or []]
+    plan, options = ctx.get("plan") or {}, ctx.get("options") or ""
+    t = time.monotonic()
+    picks, unchecked, gone, judged = await _widen(plan, ctx.get("raw") or "", found, set(ctx.get("seen") or []),
+                                                  ctx.get("want") or "", options, ctx.get("minp"), ctx.get("maxp"),
+                                                  ctx.get("codes") or [])
+    TIMES["widen"] = round(time.monotonic() - t, 1)
+    _flag_price_outliers(found + picks)
+    picks = _ordered(picks, options)
+    used = llm.usage()
+    summary = (f"دورت في متاجر تانية ولقيت {len(picks)} عرض زيادة واتأكدت من سعره." if picks
+               else "دورت في متاجر تانية ومالقيتش عروض زيادة نقدر نتأكد من سعرها دلوقتي.")
+    if gone:
+        summary += f" (شلت {gone} عرض لقيته خلصان لما فتحت صفحته.)"
+    return {"results": [p.to_dict() for p in picks], "count": len(picks), "summary": summary,
+            "candidates_checked": judged, "sold_out_dropped": gone, "unchecked": unchecked, "timings": dict(TIMES),
+            "llm_usage": {"calls": used["calls"], "tokens": used["tokens"], "by_step": dict(used["by_step"])}}
 
 
 async def _widen(plan: dict, raw: str, found: list[Product], seen: set[str], want: str, options: str,
@@ -1916,6 +1949,14 @@ def _latin_words(texts: list[str]) -> list[str]:
             if w not in _SEARCH_NOISE and (len(w) >= 3 or any(c.isdigit() for c in w)) and w not in words:
                 words.append(w)
     return words
+
+
+def _product_words(plan: dict) -> list[str]:
+    """The planner's English description of the product ("Toshiba washing machine 8 kg"): words our price list's
+    English titles use, with no extra LLM call. [] when it gave none."""
+    want = plan.get("product") if isinstance(plan.get("product"), dict) else {}
+    text = " ".join(w for k in ("brand", "model", "kind", "size") if (w := str(want.get(k) or "").strip()))
+    return [text] if re.search(r"[a-zA-Z]", text) else []
 
 
 async def _catalog_queries(request: str) -> list[str]:

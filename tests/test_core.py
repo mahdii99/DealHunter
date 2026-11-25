@@ -2049,31 +2049,28 @@ def test_results_read_from_text_get_the_pages_picture(monkeypatch):
     assert shown[0].image == "https://shop.com/wp-content/uploads/af1-black.jpg"
 
 
-def test_too_few_offers_after_the_checks_means_another_search_round(monkeypatch):
-    """Live 23 Nov: "كوتشي نايكي مقاس 46" ended with one offer out of 30 checked. A shopper who sees one offer
-    leaves: when fewer than MIN_RESULTS survive, the LLM writes new searches and the new offers are judged and
-    checked the same way."""
+def _widen_setup(monkeypatch, first):
+    """A search whose first round finds `first`, and whose widening round (when it runs) finds two more offers."""
     from app import websearch
     from app.models import Product
-    first = [Product("A", "Nike Air Force 1", 2699, "https://a.com/p/nike-af1-black")]
     second = [Product("B", "Nike Court Vision", 2400, "https://b.com/p/nike-court-vision"),
               Product("C", "Nike Revolution 7", 2100, "https://c.com/p/nike-revolution-7"),
               Product("A", "Nike Air Force 1", 2699, "https://a.com/p/nike-af1-black")]  # already judged
-    rounds, prompts = [], []
+    rounds, steps = [], []
 
     async def fake_find(queries, seed=None, famous=None, want="", named=None):
         rounds.append(queries)
         return (first if len(rounds) == 1 else second), {}
 
     async def fake_ask(prompt, **kw):
-        prompts.append(kw.get("step"))
+        steps.append(kw.get("step"))
         if kw.get("step") == "widen":
-            assert "مقاس 46" in prompt and "Air Force" in prompt
+            assert "مقاس 46" in prompt
             return {"web_queries": ["كوتشي نايكي رجالي 46", "Nike men sneakers size 46 Egypt"], "stores": ["b.com"]}
         n = prompt.count("| Nike")
         return {"matches": [{"id": i, "sure": True} for i in range(n)], "summary": "s"}
 
-    async def checked(picks, options=""):
+    async def checked(picks, options="", **kw):
         return picks, [], 0
     monkeypatch.setattr(websearch, "available", lambda: True)
     monkeypatch.setattr(agent, "_web_find", fake_find)
@@ -2083,10 +2080,70 @@ def test_too_few_offers_after_the_checks_means_another_search_round(monkeypatch)
     monkeypatch.setattr(llm, "ask_json", fake_ask)
     plan = {"action": "search", "request": "كوتشي نايكي مقاس 46", "web_queries": ["كوتشي نايكي مقاس 46"],
             "pick_options": ["مقاس 46"], "simple": True}
+    return plan, rounds, steps
+
+
+def test_too_few_offers_means_a_search_more_stores_button(monkeypatch):
+    """Live 23 Nov: "كوتشي نايكي مقاس 46" ended with one offer out of 30 checked. Another round in other stores
+    took ~100 s, 2-6 web searches and ~10 LLM calls on every such search, before the shopper saw any answer. Now the
+    answer comes right away with a "search more stores" button; the round runs when the shopper taps it, and its
+    new offers are judged and checked the same way."""
+    import json as _json
+    from app.models import Product
+    plan, rounds, steps = _widen_setup(monkeypatch, [Product("A", "Nike Air Force 1", 2699, "https://a.com/p/nike-af1-black")])
     out = asyncio.run(agent.run("كوتشي نايكي مقاس 46", plan=plan))
+    assert len(rounds) == 1 and "widen" not in steps and "widen" not in out["timings"]
+    assert [r["store"] for r in out["results"]] == ["A"] and out["more_stores"] is True
+    ctx = _json.loads(_json.dumps(out["_more"], ensure_ascii=False))  # it is kept in the database as JSON
+    more = asyncio.run(agent.more_stores(ctx))
     assert rounds[1] == ["كوتشي نايكي رجالي 46", "Nike men sneakers size 46 Egypt"]
-    assert sorted(r["store"] for r in out["results"]) == ["A", "B", "C"] and out["candidates_checked"] == 3
-    assert "widen" in out["timings"] and "2 عرض زيادة" in out["summary"]
+    assert sorted(r["store"] for r in more["results"]) == ["B", "C"] and more["candidates_checked"] == 2
+    assert "2 عرض زيادة" in more["summary"] and "widen" in more["timings"]
+
+
+def test_no_offer_at_all_still_searches_other_stores_by_itself(monkeypatch):
+    """An empty page makes a shopper leave: with no checked offer, the round in other stores runs without a tap."""
+    plan, rounds, steps = _widen_setup(monkeypatch, [])
+    out = asyncio.run(agent.run("كوتشي نايكي مقاس 46", plan=plan))
+    assert len(rounds) == 2 and "widen" in steps and out["more_stores"] is False and out["_more"] is None
+    assert sorted(r["store"] for r in out["results"]) == ["A", "B", "C"]
+    assert "widen" in out["timings"] and "عرض زيادة" in out["summary"]
+
+
+def test_enough_offers_need_no_button(monkeypatch):
+    from app.models import Product
+    first = [Product(s, f"Nike Air {s}", 2000 + i, f"https://{s.lower()}.com/p/nike-{i}") for i, s in enumerate("DEFG")]
+    plan, rounds, _ = _widen_setup(monkeypatch, first)
+    out = asyncio.run(agent.run("كوتشي نايكي مقاس 46", plan=plan))
+    assert len(out["results"]) == 4 and out["more_stores"] is False and len(rounds) == 1
+
+
+def test_the_search_more_stores_button_runs_the_round_and_keeps_it_for_the_next_shopper(monkeypatch):
+    from app import db, main, market
+    from app.models import Product
+    plan, rounds, _ = _widen_setup(monkeypatch, [Product("A", "Nike Air Force 1", 2699, "https://a.com/p/nike-af1-black")])
+    monkeypatch.setattr(main, "DEMO", False)
+    client = TestClient(main.app)
+    d = asyncio.run(main._search("كوتشي نايكي مقاس 46", plan=plan))
+    assert d["more_stores"] is True and "_more" not in d
+    r = client.post("/api/more/stream", json={"request": "كوتشي نايكي مقاس 46"})
+    events = [json.loads(x) for x in r.text.splitlines() if x.strip()]
+    done = events[-1]
+    assert done["type"] == "done" and sorted(x["store"] for x in done["data"]["results"]) == ["B", "C"]
+    saved = db.cached_search(db.cache_key("كوتشي نايكي مقاس 46", market.current().code), 3600)
+    assert sorted(x["store"] for x in saved["results"]) == ["A", "B", "C"] and saved["more_stores"] is False
+    again = client.post("/api/more/stream", json={"request": "كوتشي نايكي مقاس 46"})  # a second tap: no new round
+    assert [json.loads(x) for x in again.text.splitlines() if x.strip()][-1]["type"] == "done" and len(rounds) == 2
+    gone = client.post("/api/more/stream", json={"request": "طلب مش موجود"})
+    assert [json.loads(x) for x in gone.text.splitlines() if x.strip()][-1]["data"]["results"] == []
+
+
+def test_the_planners_english_product_words_find_the_price_list_with_no_extra_call(monkeypatch):
+    """An Arabic-only request used to cost one more LLM call (catalog_words) for English words our price list's
+    titles use; the planner's own English product fields are enough."""
+    plan = {"product": {"kind": "washing machine", "brand": "Toshiba", "size": "8 kg", "model": None}}
+    assert agent._product_words(plan) == ["Toshiba washing machine 8 kg"]
+    assert agent._product_words({"product": {"kind": "غسالة"}}) == [] and agent._product_words({}) == []
 
 
 def test_a_new_request_is_checked_against_the_web_inside_the_planning_call(monkeypatch):

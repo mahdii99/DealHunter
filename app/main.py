@@ -191,6 +191,9 @@ async def _search(q: str, plan: dict | None = None, budget_text: str | None = No
         return {**await agent.recheck(hit), "cached": True}
     t = time.monotonic()
     payload = await agent.run(q, plan=plan, budget_text=budget_text)
+    more = payload.pop("_more", None)  # what "search more stores" needs: kept here, not sent to the page
+    if more and not DEMO:
+        await _db(db.save_search, MORE_PREFIX + key, mk, more)
     log.info("DONE in %.1fs: %d results (%s)", time.monotonic() - t, len(payload["results"]), payload.get("source"))
     log.info("=" * 70 + "\n")
     payload.update(query=q, count=len(payload["results"]), cached=False, demo=DEMO, market=mk)
@@ -202,6 +205,103 @@ async def _search(q: str, plan: dict | None = None, budget_text: str | None = No
         if payload["mode"] == "llm":
             await _db(db.save_search, key, mk, payload)
     return payload
+
+
+MORE_PREFIX = "__more__:"  # `searches` rows: what another round in more stores needs, per saved answer
+
+
+class MoreTurn(BaseModel):
+    request: str = Field(min_length=2, max_length=600)  # the answer's request (its saved search's key)
+
+
+@app.post("/api/more/stream")
+async def more_stream(turn: MoreTurn, request: Request):
+    """The "search more stores" button under an answer with few offers: one more search round in other stores
+    (web searches + LLM, so it counts as a search for the daily limit). NDJSON like /api/chat/stream: status lines,
+    then {"type": "done", "data": {"results": [the new checked offers], "summary": ...}}. The saved answer gets the
+    new offers too, so the next shopper asking the same thing sees them all with no new round."""
+    queue: asyncio.Queue = asyncio.Queue()
+    client = client_id(request)
+    user = await asyncio.to_thread(current_user, request)
+
+    async def work():
+        token = market.use(user and user["market"])
+        progress = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
+        try:
+            with agent.llm.live():
+                queue.put_nowait({"type": "done", "data": await _more_stores(turn.request, client, user)})
+        except HTTPException as e:
+            queue.put_nowait({"type": "error", "status": e.status_code})
+        except Exception as e:
+            log.exception("more stores failed")
+            problems.note("server_error", f"more stores: {type(e).__name__}: {e}"[:300], request=turn.request)
+            queue.put_nowait({"type": "error", "status": 500})
+        finally:
+            agent.PROGRESS.reset(progress)
+            market.reset(token)
+
+    async def lines():
+        task = asyncio.create_task(work())
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    yield '{"type": "ping"}\n'
+                    continue
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+                if event["type"] in ("done", "error"):
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache"})
+
+
+async def _more_stores(req: str, client: str | None, user: dict | None) -> dict:
+    mk = market.current().code
+    key = db.cache_key(req, mk)
+    ctx = None if DEMO else await _db(db.cached_search, MORE_PREFIX + key, CACHE_TTL)
+    if not ctx:  # an old answer (its search details are gone), or a demo
+        return {"results": [], "count": 0, "summary": "البحث ده قديم شوية، ابعت طلبك تاني عشان أدور من الأول."}
+    if ctx.get("done") is not None:  # tapped already (here or by another shopper): no second round
+        return ctx["done"]
+    if user:
+        client = client and _user_client(user)
+    limit = USER_DAILY_LIMIT if user and USER_DAILY_LIMIT else DAILY_LIMIT
+    if client and limit:
+        if await _db(db.searches_today, client, default=0) >= limit:
+            raise HTTPException(429, LIMIT_TEXT.format(n=limit))
+        await _db(db.count_search, client)
+    log.info("=" * 70)
+    log.info("MORE STORES: %s", req)
+    agent.llm.reset_usage()
+    t = time.monotonic()
+    d = await agent.more_stores(ctx)
+    log.info("more stores DONE in %.1fs: %d new results", time.monotonic() - t, len(d["results"]))
+    if d["results"]:
+        await _db(db.add_price_context, d["results"])
+        await _db(db.record_prices, d["results"], mk)
+        await _db(catalog.remember_found, d["results"])
+    if (saved := await _db(db.cached_search, key, CACHE_TTL)) is not None:
+        have = {r.get("url") for r in saved.get("results") or []}
+        saved["results"] = (saved.get("results") or []) + [r for r in d["results"] if r.get("url") not in have]
+        saved.update(count=len(saved["results"]), more_stores=False)
+        await _db(db.save_search, key, mk, saved)
+    public = {k: v for k, v in d.items() if k not in ("unchecked", "llm_usage", "timings")}
+    await _db(db.save_search, MORE_PREFIX + key, mk, {**ctx, "done": public})
+    used = d.get("llm_usage") or {}
+    if used.get("calls") and not DEMO:
+        await _db(db.add_event, "llm", client, action="turn", results=used["calls"], price=used.get("tokens") or 0,
+                  detail="more", request=req)
+        for step, s in (used.get("by_step") or {}).items():
+            await _db(db.add_event, "llm", client, action=step[:20], results=s.get("calls") or 0,
+                      price=s.get("tokens") or 0, detail=s.get("model") or "", request=req)
+    if user:
+        await asyncio.to_thread(_personalize, d, user)
+    log.info("=" * 70 + "\n")
+    return {**d, "request": req}
 
 
 class ChatMessage(BaseModel):
