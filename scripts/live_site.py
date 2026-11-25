@@ -57,6 +57,8 @@ def report(text: str, got: dict) -> str:
               f"checked {d.get('candidates_checked')} | error {s.get('error', '-')}"),
              f"  LLM calls {used.get('calls')}: " + ", ".join(
                  f"{k} {v.get('calls')}" for k, v in (used.get("by_step") or {}).items()),
+             "  failed models: " + ("; ".join(f"{k}: " + ", ".join(f"{m} x{n}" for m, n in v["fails"].items())
+                                          for k, v in (used.get("by_step") or {}).items() if v.get("fails")) or "-"),
              "  time per step: " + ", ".join(f"{k} {v}" for k, v in (d.get("timings") or {}).items()),
              f"  store errors: {d.get('store_errors') or '-'}"]
     for p in (d.get("results") or [])[:8]:
