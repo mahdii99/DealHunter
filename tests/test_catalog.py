@@ -91,9 +91,9 @@ def test_scrape_stops_at_a_403(monkeypatch):
         return True
     monkeypatch.setattr(catalog.fetchers, "robots_allows", allowed)
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(403, text="Just a moment...")))
-    report = asyncio.run(catalog.scrape(["noon.com"], client=client))
-    assert report["noon.com phones"] == {"products": 0, "seconds": report["noon.com phones"]["seconds"],
-                                         "error": "HTTP 403"}
+    report = asyncio.run(catalog.scrape(["jumia.com.eg"], ["phones"], client=client))
+    assert report["jumia.com.eg phones"] == {"products": 0, "seconds": report["jumia.com.eg phones"]["seconds"],
+                                             "error": "HTTP 403"}
 
 
 def test_scrape_endpoint_needs_the_cron_secret(monkeypatch):
