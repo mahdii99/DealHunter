@@ -106,10 +106,15 @@ def current_user(request: Request) -> dict | None:
         return None
 
 
+SHARE_SITE = "https://dealhunter-opk9.onrender.com"  # written in index.html's share tags; served as the real address
+
+
 @app.get("/")
-def index():
-    # no-cache: the browser always picks up the latest page after an update
-    return FileResponse(ROOT / "static" / "index.html", headers={"Cache-Control": "no-cache"})
+def index(request: Request):
+    # link previews (Facebook, WhatsApp, X) need full addresses: the page's share tags get this server's own, so a
+    # new domain needs no edit. no-cache: the browser always picks up the latest page after an update
+    page = (ROOT / "static" / "index.html").read_text(encoding="utf-8").replace(SHARE_SITE, _site(request))
+    return Response(page, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/logo.svg")
@@ -221,7 +226,7 @@ async def more_stream(turn: MoreTurn, request: Request):
     then {"type": "done", "data": {"results": [the new checked offers], "summary": ...}}. The saved answer gets the
     new offers too, so the next shopper asking the same thing sees them all with no new round."""
     queue: asyncio.Queue = asyncio.Queue()
-    client = client_id(request)
+    client = None if _from_cron(request) else client_id(request)
     user = await asyncio.to_thread(current_user, request)
 
     async def work():
@@ -342,9 +347,16 @@ async def chat(turn: ChatTurn, request: Request):
     """A chat turn: the newest message is read together with the earlier ones, so a follow-up like
     'سامسونج بس' narrows the previous request instead of starting a new search."""
     user = await asyncio.to_thread(current_user, request)
-    d = await _chat_turn(turn, client_id(request), user)
+    d = await _chat_turn(turn, None if _from_cron(request) else client_id(request), user)
     await _track_turn(request, turn.messages[-1].text, d)
     return d
+
+
+def _from_cron(request: Request) -> bool:
+    """Our own scheduled job (scripts/prewarm.py, with the CRON_SECRET header): no visitor's daily limit, and not
+    counted as a visitor."""
+    secret = os.getenv("CRON_SECRET", "")
+    return bool(secret) and hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret)
 
 
 KEEPALIVE_SECONDS = 8
@@ -367,7 +379,7 @@ async def chat_stream(turn: ChatTurn, request: Request):
     A search still going after SEARCH_CAP_SECONDS with checked offers already found answers with those right away:
     {"type": "done", "data": {..., "pending": true}}, then {"type": "update", "data": <the full answer>} at the end."""
     queue: asyncio.Queue = asyncio.Queue()
-    client = client_id(request)
+    client = None if _from_cron(request) else client_id(request)
     user = await asyncio.to_thread(current_user, request)
 
     async def work():
@@ -453,6 +465,8 @@ async def _chat_turn(turn: ChatTurn, client: str | None = None, user: dict | Non
 
 async def _track_turn(request: Request, message: str, d: dict) -> None:
     """Counts a chat message for the owner's /admin page: what was asked, what the agent did, how many results."""
+    if _from_cron(request):  # our own warm-up searches aren't visitors
+        return
     action = "limit" if d.get("limit") else d.get("action") or "search"
     results = d.get("results") or []
     await _track(request, "turn", detail=message, request=d.get("query") or d.get("request") or "", action=action,
@@ -530,6 +544,11 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
         log.info("chat: the same first message was planned today: reusing its plan")
         if plan.get("reply") and (live := agent.REPLY.get()):
             live(plan["reply"])
+    elif agent.llm.available() and ((wait := await agent.llm.free_in()) is None or wait > agent.OUTAGE_WAIT):
+        # every model rests for a while: no web search for the planner and no planner call (both would only cost
+        # time), the quick answer from our price list instead (agent.run_rules)
+        log.info("chat: every model is resting (free in %s s): no planner", None if wait is None else round(wait))
+        failed = agent.llm.LLMError(details="every model is resting")
     elif agent.llm.available():
         hits, words = [], ""
         if not turn.shown:  # a new request: the planner checks the product against the web in the same call
@@ -600,7 +619,13 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
                 "request": turn.request, "results": [], "demo": DEMO}
     if plan and plan.get("understood"):
         agent._progress(plan["understood"])
-    if failed:  # don't wait for the LLM a second time: simple rules for this turn
+    hit = None
+    if failed and not DEMO:  # someone asked exactly this a few hours ago: their answer (prices checked again)
+        hit = await _db(db.cached_search, db.cache_key(request, market.current().code), CACHE_TTL)
+    if hit:
+        log.info("chat: planner busy, the same request was answered earlier: serving it")
+        payload = {**await agent.recheck(hit), "cached": True}
+    elif failed:  # don't wait for the LLM a second time: simple rules for this turn
         payload = await agent.run_rules(request, note=agent.BUSY_NOTE)
         payload.update(query=request, count=len(payload["results"]), cached=False, demo=DEMO)
     else:
@@ -1310,8 +1335,12 @@ def _deals_html(got: dict, site: str) -> str:
         stores[dom] = coupons.store_name(dom) if dom in coupons.STORE_NAMES else d["store"]
         cats[d["category"]] = deals.category_name(d["category"])
         why = ("أرخص سعر ليه في 30 يوم" if d["kind"] == "drop" else "خصم المتجر نفسه")
-        img = (f'<img src="/img?u={quote(d["image"], safe="")}" alt="" loading="lazy" referrerpolicy="no-referrer">'
-               if d.get("image") else "")
+        # the store's own picture first (its image servers are fast, and a page of 200 cards through our one small
+        # server got many 429/503s: blank cards, live 2026-11-25); our copy only if the store's fails, then nothing
+        img = (f'<img src="{e(d["image"])}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" '
+               f'data-alt="/img?u={quote(d["image"], safe="")}" '
+               "onerror=\"if(this.dataset.alt){this.src=this.dataset.alt;this.dataset.alt=''}else{this.remove()}\">"
+               if str(d.get("image") or "").startswith("https://") else "")
         cards.append(
             f'<a class="deal" data-store="{e(dom)}" data-cat="{e(d["category"])}" href="{e(affiliate.link(d["url"]))}" '
             f'target="_blank" rel="noopener nofollow sponsored"><span class="pic">{img}'
@@ -1374,6 +1403,12 @@ DEALS_PAGE = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="ut
 <title>{TITLE}</title>
 <meta name="description" content="{DESC}">
 <link rel="canonical" href="{SITE}/{PAGE}"><link rel="icon" href="/logo.svg?v=2" type="image/svg+xml">
+<meta property="og:site_name" content="Easy Found"><meta property="og:type" content="website">
+<meta property="og:url" content="{SITE}/{PAGE}"><meta property="og:title" content="{TITLE}">
+<meta property="og:description" content="{DESC}"><meta property="og:image" content="{SITE}/logo-512.png?v=2">
+<meta property="og:locale" content="ar_EG"><meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{TITLE}"><meta name="twitter:description" content="{DESC}">
+<meta name="twitter:image" content="{SITE}/logo-512.png?v=2">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#F4F7F6;--card:#fff;--text:#13221F;--muted:#56665F;--border:#DCE4E1;--accent:#0F766E;--on:#fff;--deal:#B93A0A;--deal-bg:#C2410C;--soft:#DDF1EC;--ink:#0B5F58;--ok:#047857}

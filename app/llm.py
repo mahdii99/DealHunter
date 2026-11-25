@@ -588,6 +588,37 @@ def _text(provider: str, r: httpx.Response) -> str:
     return data["choices"][0]["message"]["content"]
 
 
+async def _attempts(client: httpx.AsyncClient) -> list[tuple]:
+    """Every (provider, model, caller) this server could ask, in no particular order."""
+    attempts = []
+    if os.getenv("GEMINI_API_KEY"):
+        listed = await _list_models(client, "gemini")
+        models = _pick(listed, GEMINI_PREFERRED, os.getenv("GEMINI_MODEL"), "gemini")
+        attempts += [("gemini", m, _gemini) for m in models[:3] + _gemma_models(listed)]
+    for provider, (_, key, preferred) in COMPAT.items():
+        if _configured(provider):
+            models = _pick(await _list_models(client, provider), preferred,
+                           os.getenv(f"{provider.upper()}_MODEL"), provider)
+            attempts += [(provider, m, _caller(provider)) for m in models]
+    return attempts
+
+
+async def free_in() -> float | None:
+    """Seconds until some model can answer a shopper again (0 = one can now); None = none today (every model is at
+    its free daily limit, retired, or there is no key). No model is asked: the cooldowns and daily counts we keep."""
+    if not available():
+        return None
+    async with httpx.AsyncClient(timeout=8) as client:
+        listed = await _attempts(client)
+    if not listed:  # the providers' model lists couldn't be read: unknown, so the normal search tries
+        return 0.0
+    attempts = [a for a in listed if not over_budget(a[0], a[1], False) and not _gone(a[1])]
+    if not attempts:
+        return None
+    now = time.time()
+    return max(0.0, min(_COOLDOWN.get(a[1], 0) - now for a in attempts))
+
+
 async def ask_json(prompt: str, timeout: float = 10, prefer: str | None = None, spread: int = 0,
                    budget: float | None = None, step: str = "other", on_text=None, temperature: float = 0) -> dict:
     """prefer="bulk": try the fast non-Gemini providers' smaller models first (bulk work like reading pages, so the
@@ -616,20 +647,10 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
                     on_text) -> dict:
     errors, start = [], time.monotonic()
     async with httpx.AsyncClient(timeout=timeout) as client:
-        attempts = []
-        if os.getenv("GEMINI_API_KEY"):
-            listed = await _list_models(client, "gemini")
-            models = _pick(listed, GEMINI_PREFERRED, os.getenv("GEMINI_MODEL"), "gemini")
-            attempts += [("gemini", m, _gemini) for m in models[:3] + _gemma_models(listed)]
-        for provider, (_, key, preferred) in COMPAT.items():
-            if _configured(provider):
-                models = _pick(await _list_models(client, provider), preferred,
-                               os.getenv(f"{provider.upper()}_MODEL"), provider)
-                attempts += [(provider, m, _caller(provider)) for m in models]
         # a model whose free daily requests are used up (or, for background work, all but the shoppers' share) is
         # not asked: a 429 would only cost time, and background work must leave the rest of the day to shoppers
         behind = _BACKGROUND.get()
-        attempts = [a for a in attempts if not over_budget(a[0], a[1], behind)]
+        attempts = [a for a in await _attempts(client) if not over_budget(a[0], a[1], behind)]
         if not attempts:
             _failed(step, "every model", "daily budget used")
             problems.note("llm_budget", f"step {step}: every model is at its daily "
