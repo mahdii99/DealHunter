@@ -556,7 +556,7 @@ const T = {
     rangeHint: 'هندورلك ونرشحلك في الرينج ده بس، لحد ما تغيّره.', upTo: n => 'لحد ' + n, from: n => 'من ' + n,
     overBudget: names => 'شلت ' + names.join(' و') + ' لأن سعرها النهارده فوق ميزانيتك.', about: 'حوالي', at: 'في',
     chatsTitle: 'محادثاتك', delChat: 'امسح المحادثة', voice: 'اتكلم بدل ما تكتب', listening: 'سامعك... اتكلم',
-    noMic: 'مقدرناش نسمعك، اسمح للموقع يستخدم المايك وجرب تاني.', searchNow: 'دوّرلي على طول', priceOf: 'شوف سعره',
+    noMic: 'مقدرناش نسمعك، اسمح للموقع يستخدم المايك وجرب تاني.', searchNow: 'دوّرلي على طول', priceOf: 'شوف سعره', moreStores: 'دوّر في متاجر أكتر', moreBusy: 'بدور في متاجر تانية...',
     findAll: 'دوّرلي على أسعارهم كلهم', findAllMsg: names => 'دوّرلي على أسعار ' + names.join(' و'), findOneMsg: n => 'دوّرلي على سعر ' + n,
     now: 'دلوقتي', minAgo: n => `من ${n} دقيقة`, hrAgo: n => `من ${n} ساعة`, dayAgo: n => n === 1 ? 'امبارح' : `من ${n} أيام` },
   en: { tagline: 'The lowest price across stores', tools: 'Site tools', newChat: 'New search', region: 'Region',
@@ -589,7 +589,7 @@ const T = {
     rangeHint: 'We’ll search and suggest only in this range until you change it.', upTo: n => 'Up to ' + n, from: n => 'From ' + n,
     overBudget: names => 'I left out ' + names.join(', ') + ': today it costs more than your budget.', about: 'About', at: 'at',
     chatsTitle: 'Your chats', delChat: 'Delete chat', voice: 'Speak instead of typing', listening: 'Listening... speak now',
-    noMic: 'We couldn’t hear you. Allow the microphone for this site and try again.', searchNow: 'Just search now', priceOf: 'See prices',
+    noMic: 'We couldn’t hear you. Allow the microphone for this site and try again.', searchNow: 'Just search now', priceOf: 'See prices', moreStores: 'Search more stores', moreBusy: 'Searching other stores...',
     findAll: 'Find prices for all of them', findAllMsg: names => 'Find prices for ' + names.join(', '), findOneMsg: n => 'Find the price of ' + n,
     now: 'Just now', minAgo: n => `${n} min ago`, hrAgo: n => `${n} h ago`, dayAgo: n => n === 1 ? 'Yesterday' : `${n} days ago` }
 };
@@ -810,6 +810,7 @@ function render(d, turn) {  // one assistant turn
     (errs.length ? `<div class="err">${L('صفحات مقدرناش نفتحها: ', 'Pages we couldn’t open: ')}${errs.map(k => esc(k) + ' (' + esc(d.store_errors[k]).slice(0, 60) + ')').join('، ')}</div>` : '') +
     (alt ? `<div class="err">${L('مالقيناش المطلوب بالظبط، ودي أقرب بدائل من متاجر حقيقية:', 'We didn’t find exactly that; these are the closest alternatives from real stores:')}</div>` : '') +
     `<div class="grid">${list.length ? list.map((x, rank) => card(x.p, x.i, rank, turn)).join('') : `<div class="hint-line">${d.results.length ? t('noDeals') : L('ملقيناش عرض نقدر نتأكد من سعره من صفحة المتجر دلوقتي. جرّب تكتب الطلب بشكل تاني.', 'No offer whose price we could confirm on the store page right now. Try wording it differently.')}</div>`}</div>` +
+    (d.more_stores && d.results.length && !d.pending ? `<div class="chips"><button class="chip more" type="button" data-more="1">${t('moreStores')}</button></div>` : '') +
     (d.suggestions && d.suggestions.length ? nexts(d.suggestions)
       : d.results.length ? `<div class="hint-line">${L('عايز تغيّر حاجة؟ اكتبها تحت، مثلاً: ماركة معينة، أرخص، لون تاني.', 'Want to change something? Type it below, e.g. a brand, cheaper, another color.')}</div>` : '');
 }
@@ -968,6 +969,45 @@ async function send(text) {
     } else a.innerHTML = `<div class="err">${t('error')}</div>`;
   } finally { clearInterval(timer); if (!interimShown) { b.disabled = false; q.focus(); } }
 }
+// "search more stores" under an answer with few offers: one more round in other stores (about a minute); the new
+// checked offers join that answer's list
+async function moreStores(btn) {
+  const a = btn.closest('.a'), idx = +a.dataset.turn, d = shown[idx];
+  if (!d || btn.disabled) return;
+  btn.disabled = true; btn.textContent = t('moreBusy');
+  const t0 = Date.now();
+  try {
+    const r = await fetch('/api/more/stream', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                               body: JSON.stringify({request: d.request || d.query || currentRequest})});
+    if (!r.ok || !r.body) throw new Error(r.status);
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = '', got = null;
+    while (!got) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === 'status') btn.textContent = ev.text + ' ' + Math.round((Date.now() - t0) / 1000) + ' ' + t('sec');
+        else if (ev.type === 'done') { got = ev.data; break; }
+        else if (ev.type === 'error') throw new Error(ev.status);
+      }
+    }
+    if (!got) throw new Error('no answer');
+    const have = new Set(d.results.map(p => p.url));
+    d.results = d.results.concat((got.results || []).filter(p => !have.has(p.url)));
+    d.count = d.results.length; d.more_stores = false;
+    d.candidates_checked = (d.candidates_checked || 0) + (got.candidates_checked || 0);
+    if (got.summary) d.summary = [d.summary, got.summary].filter(Boolean).join(' ');
+    const kept = turns.find(x => x.d === d || (x.d.request === d.request && x.d.action === 'search'));
+    if (kept) kept.d = {...d, pending: false};
+    saveChat();
+    a.innerHTML = render(d, idx);
+  } catch (e) { btn.disabled = false; btn.textContent = t('moreStores'); toast(t('error')); }
+}
 function newChat() {
   turns = []; chatId = newId(); saveChat(); setPrice(null, null);
   history = []; currentRequest = ''; shown.length = 0; chat.innerHTML = ''; hero.hidden = false; closeAll(); q.focus();
@@ -1075,6 +1115,7 @@ document.addEventListener('click', e => {
   if (el.dataset.again) { const text = el.dataset.again; newChat(); return send(text); }
   if (el.classList.contains('sug')) return send(el.textContent);
   if (el.dataset.say) return send(el.dataset.say);  // a recommended product's "see prices"
+  if (el.dataset.more) return moreStores(el);  // few offers: another round in other stores, when the shopper asks
   if (el.classList.contains('chip')) return send(el.textContent);  // quick answers of a question, next steps
   if (el.dataset.chat) return openChat(el.dataset.chat);
   if (el.dataset.delchat) {
