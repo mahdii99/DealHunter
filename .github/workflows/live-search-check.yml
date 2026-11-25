@@ -1,0 +1,26 @@
+# Times real searches on the live site, the way a shopper sees them (first offers, the 25-second answer, the full
+# answer, LLM calls and time per step). Run it by hand: Actions -> live search check -> Run workflow.
+# Uses the SITE_URL secret (the same one the price jobs use). Each search uses part of the free daily quotas.
+name: live search check
+on:
+  workflow_dispatch:
+    inputs:
+      requests:
+        description: "Searches to time, separated by |"
+        default: "ريلمي 12 برو|غسالة توشيبا 10 كيلو|شاشة سامسونج 55 بوصة"
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Time the searches
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          REQUESTS: ${{ inputs.requests }}
+        run: |
+          IFS='|' read -ra R <<< "$REQUESTS"
+          python -m scripts.live_site "${R[@]}"
