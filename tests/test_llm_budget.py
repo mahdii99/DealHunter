@@ -147,3 +147,17 @@ def test_a_search_keeps_which_models_failed_each_step(monkeypatch):
     used = asyncio.run(run())
     step = used["by_step"]["read_page"]
     assert step["fails"] == {"llama-3.1-8b-instant: 429": 1} and step["calls"] == 1
+
+
+def test_models_resting_past_the_call_are_not_asked_again(monkeypatch):
+    """Live 2026-11-25: with every model resting, a retired model (410) was asked 8 times in one search."""
+    used = _setup(monkeypatch, {"groq": ["llama-3.1-8b-instant", "openai/gpt-oss-120b"]})
+    for m in ("llama-3.1-8b-instant", "openai/gpt-oss-120b"):
+        llm._COOLDOWN[m] = time.time() + 3600
+    t = time.monotonic()
+    with pytest.raises(llm.LLMError):
+        asyncio.run(llm.ask_json("page", prefer="bulk", step="read_page"))
+    assert used == [] and time.monotonic() - t < 1
+    llm._COOLDOWN["llama-3.1-8b-instant"] = time.time() + 1  # free again within the call: it waits and asks it
+    asyncio.run(llm.ask_json("page", prefer="bulk", step="read_page"))
+    assert used == ["llama-3.1-8b-instant"]
