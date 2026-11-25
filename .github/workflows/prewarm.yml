@@ -1,0 +1,27 @@
+# Warms the live site's answer cache before a launch post or a busy evening: Actions -> prewarm -> Run workflow,
+# 1-3 hours before (answers are kept CACHE_HOURS, 6 h by default). Each new request uses part of the free daily
+# LLM and web-search quotas. Uses the SITE_URL and CRON_SECRET secrets (the same ones the price jobs use).
+name: prewarm
+on:
+  workflow_dispatch:
+    inputs:
+      requests:
+        description: "Requests to warm, separated by | (empty = the built-in list in scripts/prewarm.py)"
+        default: ""
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Warm the answers
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          REQUESTS: ${{ inputs.requests }}
+        run: |
+          IFS='|' read -ra R <<< "$REQUESTS"
+          python -m scripts.prewarm "${R[@]}"

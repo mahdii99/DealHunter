@@ -2282,6 +2282,10 @@ async def run_rules(raw: str, note: str) -> dict:
     one: the built-in store searches with simple word rules."""
     if websearch.available():
         q = plain_request([raw])
+        # every model is resting for a while: the web search's pages couldn't be judged either (live 2026-11-25:
+        # 50-80 s, then nothing). Answer in seconds from our own price list instead, each price checked on its page
+        if llm.available() and ((wait := await llm.free_in()) is None or wait > OUTAGE_WAIT):
+            return await _outage_answer(raw, q, wait, note)
         out = await run(q, plan={"action": "search", "request": q, "queries": [q], "web_queries": [q],
                                  "simple": True, "judge_budget": 20}, budget_text=raw)
         out["understood"] = note
@@ -2303,4 +2307,127 @@ async def run_rules(raw: str, note: str) -> dict:
         "results": [p.to_dict() for p in picks],
         "unchecked": unchecked,
         "store_errors": errors,
+    }
+
+
+OUTAGE_WAIT = 5  # seconds: a model free again within this is worth the normal search; later, the quick answer
+OUTAGE_MAX = 12  # offers of our price list checked on their pages when no model can help
+_AR_FOLD = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ة": "ه", "ى": "ي"})
+
+
+def _fold(text: str) -> str:
+    """Arabic spelling variants made one (أ/ا, ة/ه, ى/ي) and lower case, for matching words."""
+    return _DIACRITICS.sub("", (text or "").lower().translate(_AR_FOLD))
+
+
+def _stem(word: str) -> str:
+    """The part of an Arabic word its forms share ("السماعات" / "سماعة" -> "سماع"), so a title's keywords match."""
+    w = _fold(word)
+    if re.search(r"[\u0600-\u06ff]", w):
+        w = w[2:] if w.startswith("ال") and len(w) > 4 else w
+        for end in ("ات", "ه", "ين"):
+            if w.endswith(end) and len(w) - len(end) >= 3:
+                w = w[:-len(end)]
+                break
+    return w
+
+
+def _shelf_offers(raw: str, request: str) -> list[Product]:
+    """No model can understand the request: our price list's products whose title or keywords (English and Arabic,
+    from the indexing step) have most of the shopper's words, cheapest first. A model number they wrote must be
+    there. Each is still checked on its own page before it's shown."""
+    from .query import STOPWORDS, AR_VOCAB
+    parsed = parse_query(raw)
+    # each word of the request, with its English word when we know one ("سماعات" -> "earbuds")
+    text = re.sub(r"(?:تحت|اقل من|أقل من|فوق|اكتر من|أكثر من|لحد|under|below|over|above)\s*\d[\d,]*", " ", request)
+    groups: list[set[str]] = []
+    for w in text.split():
+        w = w.strip(".,!?؟،()").lower()
+        if not w or w in STOPWORDS or w in _SEARCH_NOISE or w in FILLER or (len(w) < 3 and not any(c.isdigit() for c in w)):
+            continue
+        if w.isdigit() and len(w) >= 4:  # "2000" with no unit is mostly a price, not a product word
+            continue
+        alts = {_stem(w)} | ({AR_VOCAB[w]} if w in AR_VOCAB else set())
+        if alts not in groups:
+            groups.append(alts)
+    if not groups:
+        return []
+    codes = [next(iter(g)) for g in groups if re.search(r"[a-z]", next(iter(g))) and re.search(r"\d", next(iter(g)))]
+    words = sorted({a for g in groups for a in g}, key=lambda w: (not any(c.isdigit() for c in w), -len(w)))
+    now = time.time()
+    rows = _db_safe(db.catalog_like, words[:8], market.current().code, now - catalog.FRESH_HOURS * 3600, 300,
+                    now - catalog.FOUND_DAYS * 86400) or []
+    need = max(1, -(-len(groups) * 6 // 10))  # most of the words (60%, rounded up)
+    scored = []
+    for r in rows:
+        hay = _fold(" ".join(str(r.get(k) or "") for k in ("title", "keywords", "attrs")))
+        hits = sum(any(a in hay for a in g) for g in groups)
+        if hits < need or any(c not in _squash_size(hay) for c in map(_squash_size, codes)):
+            continue
+        price = r.get("price")
+        if not isinstance(price, (int, float)) or price <= 0:
+            continue
+        if (parsed.max_price and price > parsed.max_price) or (parsed.min_price and price < parsed.min_price):
+            continue
+        try:
+            accessory = bool(json.loads(r.get("attrs") or "{}").get("accessory"))
+        except (ValueError, AttributeError):
+            accessory = False
+        p = Product(store=r["store"], title=r["title"], price=price, url=r["url"], image=r["image"] or None,
+                    old_price=r["old_price"])
+        if r.get("trust") is None and r.get("category") != db.FOUND:
+            p.trusted, p.trust_score, p.trust_signals = True, 100, ["متجر مشهور"]
+        else:
+            p.trusted, p.trust_score = trust.is_known(r["url"]), r.get("trust")
+            if not p.trusted and (p.trust_score or 0) < MIN_TRUST:
+                continue
+        scored.append((accessory, -hits, price, p))
+    if any(not a for a, *_ in scored):  # a phone's cases and screen guards share its words: the product itself first
+        scored = [x for x in scored if not x[0]]
+    scored.sort(key=lambda x: (x[1], x[2]))
+    picked, by_store = [], {}
+    for _, _, _, p in scored:
+        if p.url not in {q.url for q in picked} and by_store.get(p.store, 0) < 4:
+            by_store[p.store] = by_store.get(p.store, 0) + 1
+            picked.append(p)
+        if len(picked) >= OUTAGE_MAX:
+            break
+    return sorted(picked, key=_paid)
+
+
+def _wait_text(wait: float | None) -> str:
+    if wait is None or wait > 3 * 3600:
+        return "بعد شوية"
+    mins = max(1, round(wait / 60))
+    return "كمان دقيقة" if mins == 1 else f"كمان {mins} دقايق" if mins <= 10 else f"كمان {mins} دقيقة"
+
+
+async def _outage_answer(raw: str, request: str, wait: float | None, note: str) -> dict:
+    """Every free model is resting: an answer in seconds, not a minute of searching that ends empty. Our price list's
+    offers for the shopper's words, each opened on its store page just now and shown only if that page shows the
+    price (no model guesses anything), marked "check the model" since no model compared them to the request; with
+    none, an honest message and today's deals."""
+    t0 = time.monotonic()
+    _progress("الموديلات الذكية مشغولة دلوقتي، فبدورلك في فهرس الأسعار بتاعنا وبتأكد من كل سعر من صفحة المتجر...")
+    picks = await asyncio.to_thread(_shelf_offers, raw, request)
+    shown, unchecked, gone = await checked_only(picks, quick=True) if picks else ([], [], 0)
+    for p in shown:
+        p.unconfirmed = True
+    later = _wait_text(wait)
+    if shown:
+        summary = (f"الموديلات الذكية مشغولة دلوقتي، فدي عروض من فهرس الأسعار بتاعنا اتأكدنا من سعرها من صفحة المتجر "
+                   f"دلوقتي حالاً، بس اتأكد إن الموديل هو اللي عايزه. جرب تاني {later} لبحث أدق في كل المتاجر.")
+    else:
+        summary = (f"الموديلات الذكية مشغولة دلوقتي ومقدرتش أدور بدقة. جرب تاني {later}، "
+                   "ولحد ساعتها شوف عروض النهارده اللي اتأكدنا من أسعارها.")
+    TIMES.clear()
+    TIMES["outage"] = round(time.monotonic() - t0, 1)
+    log.info("agent: every model resting (free in %s s): %d of %d offers from our price list checked in %.1fs",
+             None if wait is None else round(wait), len(shown), len(picks), time.monotonic() - t0)
+    return {
+        "mode": "rules", "source": "catalog", "outage": True, "deals_link": True, "timings": dict(TIMES),
+        "understood": note, "request": raw, "suggested_products": [], "queries": [request], "requirements": [],
+        "max_price": None, "min_price": None, "summary": summary, "candidates_checked": len(picks),
+        "sold_out_dropped": gone, "results": [p.to_dict() for p in _ordered(shown, "")], "unchecked": unchecked,
+        "store_errors": {},
     }

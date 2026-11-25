@@ -414,7 +414,8 @@ def save_catalog(rows: list[dict], market: str, category: str, history: bool = T
     return len(rows)
 
 
-_CATALOG_COLS = ("url", "store", "title", "price", "old_price", "image", "category", "seen_at", "trust", "attrs")
+_CATALOG_COLS = ("url", "store", "title", "price", "old_price", "image", "category", "seen_at", "trust", "attrs",
+                 "keywords")
 
 
 def catalog_like(words: list[str], market: str, since: float, limit: int = 300, found_since: float | None = None) -> list[dict]:
