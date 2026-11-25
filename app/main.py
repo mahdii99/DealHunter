@@ -35,7 +35,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, admin, affiliate, agent, catalog, coupons, db, deals, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, affiliate, agent, catalog, coupons, db, deals, fetchers, market, pages, problems, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -139,8 +139,14 @@ def robots(request: Request):
 
 
 @app.get("/sitemap.xml")
-def sitemap(request: Request):
-    urls = "".join(f"<url><loc>{_site(request)}{p}</loc></url>" for p in ("/", "/deals", "/coupons", "/privacy"))
+async def sitemap(request: Request):
+    """The site's pages, and every product page with an offer checked recently (app/pages.py)."""
+    from time import gmtime, strftime
+    site = _site(request)
+    urls = "".join(f"<url><loc>{site}{p}</loc></url>" for p in ("/", "/deals", "/coupons", "/p", "/privacy"))
+    for p in await _db(pages.listed, default=[]) or []:
+        urls += (f"<url><loc>{site}/p/{p['slug']}</loc>"
+                 f"<lastmod>{strftime('%Y-%m-%d', gmtime(p['checked_at']))}</lastmod></url>")
     return Response('<?xml version="1.0" encoding="UTF-8"?>'
                     f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>',
                     media_type="application/xml")
@@ -1273,6 +1279,20 @@ async def build_deals(request: Request):
     return {k: v for k, v in got.items() if k != "deals"} | {"deals": len(got["deals"])}
 
 
+@app.post("/api/cron/pages")
+async def build_pages(request: Request, limit: int = Query(pages.MAX_PAGES, ge=1, le=300)):
+    """Makes the product pages (/p/<product>) from the price list, every offer opened on its store page first
+    (app/pages.py). Run by .github/workflows/scrape-prices.yml after the deals."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    token = agent.llm.background()  # waits for shoppers' searches
+    try:
+        return await pages.build(limit)
+    finally:
+        agent.llm.background_end(token)
+
+
 @app.post("/api/cron/coupons")
 async def refresh_coupons(request: Request):
     """Reads the affiliate networks' coupon feeds again (app/coupons.py). Run by scrape-prices.yml."""
@@ -1310,6 +1330,136 @@ async def deals_page(request: Request):
     got = await _db(deals.current, default={"checked_at": None, "deals": []})
     return Response(_deals_html(got, _site(request)), media_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=600"})
+
+
+@app.get("/p")
+async def products_page(request: Request):
+    """Every product page with checked offers, by section (people and search engines find the product pages here)."""
+    got = await _db(pages.listed, default=[]) or []
+    return Response(_products_html(got, _site(request)), media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=600"})
+
+
+@app.get("/p/{slug}")
+async def product_page(slug: str = UrlPart(..., max_length=100, pattern="^[a-z0-9-]+$"), request: Request = None):
+    """One product's checked prices in every store we read ("سعر X في مصر"), app/pages.py."""
+    page = await _db(pages.get, slug)
+    if not page:
+        raise HTTPException(404, "مفيش صفحة للمنتج ده")
+    return Response(_product_html(page, _site(request)), media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=600"})
+
+
+def _product_html(page: dict, site: str) -> str:
+    from html import escape as e
+    from urllib.parse import quote
+    name, offers = page["name"], pages.fresh_offers(page)
+    stores = {coupons.domain_of(o["url"]) for o in offers}
+
+    def shop(o: dict) -> str:
+        dom = coupons.domain_of(o["url"])
+        return coupons.store_name(dom) if dom in coupons.STORE_NAMES else o["store"]
+    rows = []
+    for i, o in enumerate(offers):
+        sname = shop(o)
+        img = (f'<img src="{e(o["image"])}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" '
+               f'data-alt="/img?u={quote(o["image"], safe="")}" '
+               "onerror=\"if(this.dataset.alt){this.src=this.dataset.alt;this.dataset.alt=''}else{this.remove()}\">"
+               if str(o.get("image") or "").startswith("https://") else "")
+        was = (f'<s title="السعر قبل الخصم زي ما المتجر كاتبه">{_money(o["old_price"])}</s>'
+               if o.get("old_price") and o["old_price"] > o["price"] else "")
+        rows.append(
+            f'<li class="offer{" best" if i == 0 else ""}"><span class="pic">{img}</span><div class="od">'
+            f'<span class="st">{e(sname)}{" · أرخص سعر" if i == 0 and len(offers) > 1 else ""}</span>'
+            f'<span class="t" dir="auto">{e(o["title"])}</span><span class="p">{_money(o["price"])} {was}</span>'
+            f'<span class="ok2">✓ السعر ده ظهر في صفحة المتجر <span data-ts="{o["checked_at"]:.0f}"></span></span></div>'
+            f'<div class="oa"><a class="go" href="{e(affiliate.link(o["url"]))}" target="_blank" '
+            f'rel="noopener nofollow sponsored">افتح في {e(sname)}</a>'
+            f'<button type="button" class="follow" data-url="{e(o["url"])}" data-title="{e(o["title"])}" '
+            f'data-store="{e(o["store"])}" data-image="{e(o.get("image") or "")}" data-price="{o["price"]}">'
+            '🔔 <span>تابع السعر</span></button></div></li>')
+    search = f'/?q={quote(name)}'
+    cat = pages.category_name(page["category"])
+    crumbs = (f'<nav class="crumbs" aria-label="مكانك"><a href="/">Easy Found</a> › <a href="/p">الأسعار</a> › '
+              f'<span>{e(cat)}</span></nav>')
+    if offers:
+        lo, hi = offers[0]["price"], offers[-1]["price"]
+        lead = (f"أرخص سعر اتأكدنا منه: {_money(lo)} في {e(shop(offers[0]))}"
+                + (f"، من {len(offers)} عروض في {len(stores)} متاجر." if len(offers) > 1 else "."))
+        body = (f'<ul class="offers">{"".join(rows)}</ul>'
+                '<p class="when">فتحنا صفحة كل عرض في المتجر وقرينا السعر منها. الأسعار بتتغير، فبص على السعر في صفحة '
+                'المتجر قبل ما تطلب. دوس "تابع السعر" ونقولك لما السعر ينزل.</p>')
+        ld = {"@context": "https://schema.org", "@type": "Product", "name": name,
+              **({"brand": {"@type": "Brand", "name": page["brand"]}} if page.get("brand") else {}),
+              **({"image": [o["image"] for o in offers if str(o.get("image") or "").startswith("https://")][:3]}
+                 if any(str(o.get("image") or "").startswith("https://") for o in offers) else {}),
+              "offers": {"@type": "AggregateOffer", "priceCurrency": "EGP", "lowPrice": lo, "highPrice": hi,
+                         "offerCount": len(offers),
+                         "offers": [{"@type": "Offer", "url": o["url"], "price": o["price"], "priceCurrency": "EGP",
+                                     "availability": "https://schema.org/InStock", "itemCondition":
+                                     "https://schema.org/NewCondition", "seller": {"@type": "Organization",
+                                                                                    "name": o["store"]}}
+                                    for o in offers]}}
+        head = ('<script type="application/ld+json">' + json.dumps(ld, ensure_ascii=False).replace("</", "<\\/")
+                + "</script>")
+        desc = (f"سعر {name} في مصر النهارده: من {_money(lo)}"
+                + (f" لحد {_money(hi)} في {len(stores)} متاجر" if len(offers) > 1 else f" في {shop(offers[0])}")
+                + ". أسعار اتأكدنا منها من صفحة كل متجر.")
+    else:
+        lead = "مفيش سعر اتأكدنا منه دلوقتي للمنتج ده."
+        body = (f'<p class="empty">بنراجع الأسعار من صفحات المتاجر مرتين في اليوم، ومش بنكتب سعر غير لما نشوفه في صفحة '
+                f'المتجر. ارجع كمان شوية أو <a href="{e(search)}">دوّر عليه دلوقتي في كل المتاجر</a>.</p>')
+        head = '<meta name="robots" content="noindex">'  # listed again once a check confirms an offer
+        desc = f"سعر {name} في مصر في أمازون وجوميا ونون وغيرهم."
+    body = (crumbs + body +
+            f'<a class="cta" href="{e(search)}">دوّر على {e(name)} في كل المتاجر دلوقتي ←</a>' + FOLLOW_JS)
+    return (_shell(f"p/{page['slug']}", site, head)
+            .replace("{TITLE}", e(f"سعر {name} في مصر النهارده | Easy Found"))
+            .replace("{DESC}", e(desc)).replace("{H1}", e(f"سعر {name} في مصر")).replace("{LEAD}", lead)
+            .replace("{BODY}", body))
+
+
+def _products_html(rows: list[dict], site: str) -> str:
+    from html import escape as e
+    by: dict[str, list[str]] = {}
+    for p in sorted(rows, key=lambda p: p["name"].lower()):
+        offers = pages.fresh_offers(p)
+        by.setdefault(p["category"], []).append(
+            f'<li><a href="/p/{e(p["slug"])}"><span dir="auto">{e(p["name"])}</span>'
+            f'<b>من {_money(min(o["price"] for o in offers))}</b></a></li>')
+    order = {c: i for i, c in enumerate(pages.CATEGORY_ORDER)}
+    body = "".join(f'<h2>{e(pages.category_name(c))}</h2><ul class="plist">{"".join(items)}</ul>'
+                   for c, items in sorted(by.items(), key=lambda x: (order.get(x[0], 99), x[0]))) or (
+        '<p class="empty">لسه بنجهز صفحات المنتجات. <a href="/">دوّر على اللي انت عايزه</a>.</p>')
+    return (_shell("p", site).replace("{TITLE}", "أسعار الموبايلات والأجهزة في مصر النهارده | Easy Found")
+            .replace("{DESC}", "أسعار موبايلات وشاشات وغسالات ولابتوبات في أمازون وجوميا وغيرهم، اتأكدنا من كل سعر في "
+                               "صفحة المتجر.")
+            .replace("{H1}", "أسعار النهارده").replace("{LEAD}", "كل منتج وأرخص سعر ليه اتأكدنا منه في صفحة المتجر.")
+            .replace("{BODY}", body))
+
+
+# "تابع السعر" on a product page: the same follow as on a search result (POST /api/watches); a visitor signs in with
+# Google first, right here
+FOLLOW_JS = """<p class="fmsg" id="fmsg" role="status" hidden></p><div id="gbtn"></div><script>
+(function(){var pend=null,msg=document.getElementById('fmsg');
+function say(t){msg.textContent=t;msg.hidden=!t;}
+function follow(b){var d=b.dataset;return fetch('/api/watches',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({url:d.url,title:d.title,store:d.store,image:d.image,price:+d.price})}).then(function(r){
+if(r.status===401){pend=b;return signIn();}
+return r.json().then(function(j){if(r.ok){b.classList.add('on');b.querySelector('span').textContent='بتتابعه ✓';
+say('هنقولك لما سعره ينزل. تقدر تشوف اللي بتتابعه من حسابك في الصفحة الرئيسية.');}
+else say(typeof j.detail==='string'?j.detail:'حصلت مشكلة، جرب تاني.');});}).catch(function(){say('حصلت مشكلة، جرب تاني.');});}
+function signIn(){return fetch('/api/config').then(function(r){return r.json();}).then(function(c){
+if(!c.google_client_id){say('المتابعة محتاجة تسجيل دخول، ومش متاح دلوقتي.');return;}
+say('سجّل دخولك بحساب جوجل عشان نقدر نبلغك لما السعر ينزل.');
+var s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.async=true;s.onload=function(){
+google.accounts.id.initialize({client_id:c.google_client_id,ux_mode:'popup',callback:function(res){
+fetch('/api/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:res.credential})})
+.then(function(r){if(r.ok&&pend){document.getElementById('gbtn').innerHTML='';follow(pend);}else say('مقدرناش ندخلك، جرب تاني.');});}});
+google.accounts.id.renderButton(document.getElementById('gbtn'),{theme:'outline',size:'large',text:'signin_with'});};
+document.head.appendChild(s);});}
+document.addEventListener('click',function(e){var b=e.target.closest('.follow');if(b&&!b.classList.contains('on'))follow(b);});})();
+</script>"""
 
 
 def _money(n: float) -> str:
@@ -1392,10 +1542,11 @@ def _coupons_html(rows: list[dict], site: str) -> str:
             .replace("{BODY}", note + _chips("store", "المتجر", sorted(stores.items(), key=lambda x: x[1])) + body))
 
 
-def _shell(page: str, site: str) -> str:
+def _shell(page: str, site: str, head: str = "") -> str:
     tabs = "".join(f'<a href="/{k}"{" aria-current=page" if k == page else ""}>{t}</a>'
-                   for k, t in (("deals", "🔥 العروض"), ("coupons", "🏷️ أكواد الخصم")))
-    return DEALS_PAGE.replace("{SITE}", site).replace("{PAGE}", page).replace("{TABS}", tabs)
+                   for k, t in (("deals", "🔥 العروض"), ("p", "📱 الأسعار"), ("coupons", "🏷️ أكواد الخصم")))
+    return (DEALS_PAGE.replace("{HEAD}", head).replace("{SITE}", site).replace("{PAGE}", page)
+            .replace("{TABS}", tabs))
 
 
 DEALS_PAGE = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
@@ -1408,7 +1559,7 @@ DEALS_PAGE = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="ut
 <meta property="og:description" content="{DESC}"><meta property="og:image" content="{SITE}/logo-512.png?v=2">
 <meta property="og:locale" content="ar_EG"><meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="{TITLE}"><meta name="twitter:description" content="{DESC}">
-<meta name="twitter:image" content="{SITE}/logo-512.png?v=2">
+<meta name="twitter:image" content="{SITE}/logo-512.png?v=2">{HEAD}
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#F4F7F6;--card:#fff;--text:#13221F;--muted:#56665F;--border:#DCE4E1;--accent:#0F766E;--on:#fff;--deal:#B93A0A;--deal-bg:#C2410C;--soft:#DDF1EC;--ink:#0B5F58;--ok:#047857}
@@ -1437,6 +1588,18 @@ h1{font-size:24px;margin:10px 0 2px}.lead,.when{color:var(--muted);margin:0 0 12
 .go{text-align:center;background:var(--accent);color:var(--on);padding:8px;border-radius:10px;text-decoration:none;font-weight:600}.src{font-size:12px;color:var(--muted)}
 .empty{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px}a{color:var(--accent)}[hidden]{display:none!important}
 .cta{display:inline-block;margin:16px 0 0;color:var(--accent);font-weight:600}
+.crumbs{font-size:13px;color:var(--muted);margin:0 0 10px}.crumbs a{color:var(--muted)}
+.offers{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.offer{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:10px;flex-wrap:wrap}
+.offer.best{border-color:var(--accent)}.offer .pic{width:84px;flex:none;margin:0}.od{flex:1 1 200px;min-width:0;display:flex;flex-direction:column;gap:2px}
+.od .p s{font-size:13px;color:var(--muted);font-weight:400;margin-inline-start:6px}.ok2{font-size:12px;color:var(--ok)}
+.oa{display:flex;gap:8px;flex:1 1 100%;flex-wrap:wrap}.oa .go{flex:1 1 140px}
+.follow{flex:1 1 120px;border:1px solid var(--accent);background:var(--card);color:var(--ink);border-radius:10px;padding:8px;font:inherit;font-weight:600;cursor:pointer}
+.follow.on{background:var(--soft)}.fmsg{background:var(--soft);color:var(--ink);border-radius:10px;padding:8px 12px;margin:10px 0 0}#gbtn{margin-top:8px}
+h2{font-size:18px;margin:18px 0 8px}.plist{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px}
+.plist a{display:flex;justify-content:space-between;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 12px;color:inherit;text-decoration:none}
+.plist a:hover{border-color:var(--accent)}.plist b{color:var(--ink);white-space:nowrap;font-size:14px}
+@media (min-width:640px){.oa{flex:0 0 auto;flex-direction:column;width:170px}.oa .go,.follow{flex:none}}
 </style></head><body><main>
 <header><a href="/"><img src="/logo.svg?v=2" width="32" height="32" alt="">Easy Found</a><nav class="tabs">{TABS}</nav></header>
 <h1>{H1}</h1><p class="lead">{LEAD}</p>

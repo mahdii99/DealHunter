@@ -1322,6 +1322,8 @@ function drawGoogle() {  // Google's own button: dark in dark mode, only its rou
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { themeState(); drawGoogle(); });
 $('#year').textContent = new Date().getFullYear();
 restoreChat(); applyLang(); themeState();
+{ const asked = new URLSearchParams(location.search).get('q');  // a product page's "search every store" link: /?q=<name>
+  if (asked && asked.trim().length >= 2) { window.history.replaceState(null, '', location.pathname); send(asked.slice(0, 200)); } }
 (function countVisit() {  // the site the visitor came from (its name only) and phone or computer
   let source = '';
   try { const r = new URL(document.referrer); if (r.hostname !== location.hostname) source = r.hostname; } catch (e) {}
