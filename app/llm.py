@@ -371,7 +371,9 @@ def _rest(model: str, r: httpx.Response | None = None, slow: bool = False) -> No
         "daily free allocation", "daily limit", "daily quota"))  # Cloudflare: "used up your daily free allocation"
     busy = r is not None and r.status_code in (429, 503)
     hint = retry_hint(r) if busy and not daily else None
-    refused = r is not None and r.status_code in (401, 403, 404)  # not available to us: skip it until tomorrow
+    # not available to us: skip it until tomorrow (402: the key has no active plan, e.g. Mistral before its free
+    # Experiment plan is turned on)
+    refused = r is not None and r.status_code in (401, 402, 403, 404)
     if r is not None and r.status_code == 410:  # the provider retired this model: don't try it again for a month
         _COOLDOWN[model] = time.time() + GONE_SECONDS
         log.warning("LLM %s was retired by its provider, using other models", model)
@@ -791,7 +793,7 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
                     errors.append(f"{model}: {r.status_code}")
                     _failed(step, model, str(r.status_code))
                     log.warning("LLM %s said: %s", model, r.text[:200].replace("\n", " "))
-                    if r.status_code in RETRY_STATUS or r.status_code in (401, 403, 404, 410):  # busy/quota/not allowed/gone
+                    if r.status_code in RETRY_STATUS or r.status_code in (401, 402, 403, 404, 410):  # busy/quota/not allowed/gone
                         _rest(model, r)
                         if r.status_code in (429, 503):
                             busy.add(model)
