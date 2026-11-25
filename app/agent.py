@@ -298,6 +298,11 @@ def _money(n) -> str:
     return f"{n:g}" if isinstance(n, (int, float)) else "?"
 
 
+_DISCOUNT_WORDS = {"real": "REAL deal: lowest price of this page in 30 days",
+                   "fake": "FAKE discount: the store's old price was never asked in 30 days, this is its usual price",
+                   "higher": "was cheaper at this store in the last 30 days", "usual": "its usual price lately"}
+
+
 def _shown_block(shown: list[dict]) -> str:
     """The results on screen, with what the shopper can't see at a glance: trust, stock check, price history."""
     lines = []
@@ -322,6 +327,8 @@ def _shown_block(shown: list[dict]) -> str:
             bits.append(f"lowest price we've seen {_money(r['lowest_seen'])}")
         if isinstance(r.get("previous_price"), (int, float)):
             bits.append(f"last time {_money(r['previous_price'])}")
+        if r.get("real_discount") in _DISCOUNT_WORDS:  # judged on this page's own last 30 days (app/pricechart.py)
+            bits.append(_DISCOUNT_WORDS[r["real_discount"]])
         if r.get("note"):
             bits.append(f"note: {str(r['note'])[:120]}")
         lines.append(" | ".join(bits))
@@ -2020,6 +2027,10 @@ async def checked_only(picks: list[Product], options: str = "", patient: bool = 
         return picks, [], 0
     picks, gone = await _verify_stock(picks, options, patient, quick, use_llm)
     unchecked = [{"store": p.store, "title": p.title, "url": p.url} for p in picks if not p.verified]
+    now = time.time()
+    for p in picks:
+        if p.verified:
+            p.checked_at = now
     return [p for p in picks if p.verified], unchecked, gone
 
 

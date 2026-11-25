@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as UrlPart
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +35,7 @@ def _load_env_file(path: Path):
 
 _load_env_file(ROOT / ".env")
 
-from . import accounts, admin, affiliate, agent, catalog, coupons, db, deals, fetchers, market, problems, trending  # noqa: E402  (after .env is loaded)
+from . import accounts, admin, affiliate, agent, catalog, coupons, db, deals, fetchers, market, pricechart, problems, trending  # noqa: E402  (after .env is loaded)
 from .stores import ALL_STORES  # noqa: E402
 from .stores.base import HEADERS  # noqa: E402
 
@@ -134,7 +134,7 @@ def _site(request: Request) -> str:
 @app.get("/robots.txt")
 def robots(request: Request):
     """Search engines may list the pages, not the API (search results are made per visitor)."""
-    return Response(f"User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /img\nDisallow: /admin\nSitemap: {_site(request)}/sitemap.xml\n",
+    return Response(f"User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /img\nDisallow: /go\nDisallow: /admin\nSitemap: {_site(request)}/sitemap.xml\n",
                     media_type="text/plain")
 
 
@@ -329,6 +329,7 @@ class ShownResult(BaseModel):
     lowest_seen: float | None = None
     previous_price: float | None = None
     note: str | None = Field(None, max_length=300)
+    real_discount: str | None = Field(None, pattern="^(real|fake|higher|usual)$")  # app/pricechart.verdict kind
 
 
 class ChatTurn(BaseModel):
@@ -898,10 +899,45 @@ async def image(u: str = Query(..., max_length=1000)):
 
 
 @app.get("/api/history")
-def price_history(url: str = Query(..., max_length=1000)):
-    """A product's saved prices, oldest first (for the price chart / 'is this discount real?')."""
-    points = db.history(url)
-    return {"url": url, "points": points, "lowest": min((p["price"] for p in points), default=None)}
+async def price_history(url: str = Query(..., max_length=1000), price: float | None = Query(None, gt=0),
+                        old: float | None = Query(None, gt=0)):
+    """A product's saved prices, oldest first, with the chart ready to put in the page (app/pricechart.py) and the
+    'is this discount real?' label for the price shown now (`price`, `old` = the store's own before price)."""
+    points = await _db(db.history, url, default=[])
+    now_price = price or (points[-1]["price"] if points else None)
+    return {"url": url, "points": points, "lowest": min((p["price"] for p in points), default=None),
+            "svg": pricechart.svg(points), "verdict": pricechart.verdict(points, now_price, old)}
+
+
+@app.get("/go")
+async def go(request: Request, u: str = Query(..., max_length=2000), rank: int | None = Query(None, ge=0, le=1000),
+             q: str = Query("", max_length=600), src: str = Query("", max_length=20)):
+    """Every store link on the site goes through here: the click is counted for the owner's /admin page (on our
+    server, so an ad blocker that drops the page's counting can't lose it) and our affiliate code is added
+    (app/affiliate.py). Only product pages we showed or listed are opened straight away; any other address gets a
+    page that names where it leads, so nobody can use our address to send people to a site of their choosing."""
+    if not u.startswith(("https://", "http://")):
+        raise HTTPException(422, "not a web address")
+    known = await _db(db.known_product, u)
+    if not known:
+        from html import escape as e
+        host = e(urlparse(u).hostname or "")
+        return Response(GO_PAGE.replace("{HOST}", host).replace("{URL}", e(u)), media_type="text/html; charset=utf-8",
+                        headers=NO_INDEX)
+    if not _too_many("event", client_id(request)):
+        await _track(request, "click", detail=u, store=known["store"] or urlparse(u).hostname or "",
+                     title=known["title"], price=known["price"], request=q or src, results=rank)
+    return RedirectResponse(affiliate.link(u), status_code=302,
+                            headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"})
+
+
+GO_PAGE = """<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>هتخرج من Easy Found</title><body style="font-family:system-ui,sans-serif;max-width:560px;margin:40px auto;
+padding:0 16px;line-height:1.7"><h1 style="font-size:20px">اللينك ده بيودّي على {HOST}</h1>
+<p>ده مش منتج احنا عرضناه، فمش متأكدين منه. لو انت عارف الموقع ده افتحه:</p>
+<p><a href="{URL}" rel="noopener nofollow" style="word-break:break-all">{URL}</a></p>
+<p><a href="/">ارجع لـ Easy Found</a></p></body></html>"""
 
 
 # ---------- accounts: Google sign-in, preferences, followed products, notifications ----------
@@ -1334,7 +1370,11 @@ def _deals_html(got: dict, site: str) -> str:
         dom = coupons.domain_of(d["url"])
         stores[dom] = coupons.store_name(dom) if dom in coupons.STORE_NAMES else d["store"]
         cats[d["category"]] = deals.category_name(d["category"])
-        why = ("أرخص سعر ليه في 30 يوم" if d["kind"] == "drop" else "خصم المتجر نفسه")
+        why = ("أرخص سعر ليه في 30 يوم" if d["kind"] == "drop" else
+               "خصم حقيقي: أقل من سعره في آخر 30 يوم" if d.get("real") else "خصم المتجر نفسه")
+        trail = [{"price": p, "seen_at": t} for t, p in d.get("hist") or []]
+        spark = pricechart.svg(trail, days=30, width=160, height=36, compact=True, style=False) if len(trail) >= 3 else ""
+        checked = (f'<span class="chk" data-ago="{d["checked_at"]:.0f}"></span>' if d.get("checked_at") else "")
         # the store's own picture first (its image servers are fast, and a page of 200 cards through our one small
         # server got many 429/503s: blank cards, live 2026-11-25); our copy only if the store's fails, then nothing
         img = (f'<img src="{e(d["image"])}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" '
@@ -1342,12 +1382,14 @@ def _deals_html(got: dict, site: str) -> str:
                "onerror=\"if(this.dataset.alt){this.src=this.dataset.alt;this.dataset.alt=''}else{this.remove()}\">"
                if str(d.get("image") or "").startswith("https://") else "")
         cards.append(
-            f'<a class="deal" data-store="{e(dom)}" data-cat="{e(d["category"])}" href="{e(affiliate.link(d["url"]))}" '
+            f'<a class="deal" data-store="{e(dom)}" data-cat="{e(d["category"])}" '
+            f'href="/go?src=deals&amp;u={quote(d["url"], safe="")}" '
             f'target="_blank" rel="noopener nofollow sponsored"><span class="pic">{img}'
             f'<b class="pct">-{d["pct"]}%</b><span class="ok">✓ السعر متأكد منه</span></span>'
             f'<span class="t" dir="auto">{e(d["title"])}</span>'
-            f'<span class="p">{_money(d["price"])}</span><s>{_money(d["was"])}</s>'
-            f'<span class="why{" real" if d["kind"] == "drop" else ""}">{e(why)}</span>'
+            f'<span class="p">{_money(d["price"])}</span><s>{_money(d["was"])}</s>{checked}'
+            f'<span class="why{" real" if d.get("real") or d["kind"] == "drop" else ""}">{e(why)}</span>'
+            f'{f"<span class=spark>{spark}</span>" if spark else ""}'
             f'<span class="st">{e(stores[dom])}</span></a>')
     when = got.get("checked_at")
     body = (f'<div class="grid">{"".join(cards)}</div>' if cards else
@@ -1395,7 +1437,8 @@ def _coupons_html(rows: list[dict], site: str) -> str:
 def _shell(page: str, site: str) -> str:
     tabs = "".join(f'<a href="/{k}"{" aria-current=page" if k == page else ""}>{t}</a>'
                    for k, t in (("deals", "🔥 العروض"), ("coupons", "🏷️ أكواد الخصم")))
-    return DEALS_PAGE.replace("{SITE}", site).replace("{PAGE}", page).replace("{TABS}", tabs)
+    return (DEALS_PAGE.replace("{SITE}", site).replace("{PAGE}", page).replace("{TABS}", tabs)
+            .replace("{CHART_STYLE}", pricechart.STYLE if page == "deals" else ""))
 
 
 DEALS_PAGE = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
@@ -1437,7 +1480,9 @@ h1{font-size:24px;margin:10px 0 2px}.lead,.when{color:var(--muted);margin:0 0 12
 .go{text-align:center;background:var(--accent);color:var(--on);padding:8px;border-radius:10px;text-decoration:none;font-weight:600}.src{font-size:12px;color:var(--muted)}
 .empty{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px}a{color:var(--accent)}[hidden]{display:none!important}
 .cta{display:inline-block;margin:16px 0 0;color:var(--accent);font-weight:600}
-</style></head><body><main>
+.chk{font-size:12px;color:var(--ok)}.spark{display:block;margin-top:2px}
+@media (prefers-color-scheme:dark){.chk{color:#34D399}}
+</style>{CHART_STYLE}</head><body><main>
 <header><a href="/"><img src="/logo.svg?v=2" width="32" height="32" alt="">Easy Found</a><nav class="tabs">{TABS}</nav></header>
 <h1>{H1}</h1><p class="lead">{LEAD}</p>
 {BODY}
@@ -1447,6 +1492,8 @@ document.querySelectorAll('[data-ts]').forEach(function(el){var d=new Date(el.da
 el.textContent='الساعة '+d.toLocaleTimeString('ar-EG',{hour:'numeric',minute:'2-digit'})+' يوم '+d.toLocaleDateString('ar-EG',{weekday:'long'});});
 document.querySelectorAll('[data-day]').forEach(function(el){var d=new Date(el.dataset.day*1000-1);
 el.textContent='لحد '+d.toLocaleDateString('ar-EG',{day:'numeric',month:'long',timeZone:'Africa/Cairo'});});
+document.querySelectorAll('[data-ago]').forEach(function(el){var m=Math.max(0,Math.round((Date.now()/1000-el.dataset.ago)/60)),h=Math.round(m/60);
+el.textContent='✓ اتشيّك '+(m<60?(m<2?'من دقيقة':'من '+m+' دقيقة'):h<24?(h<2?'من ساعة':'من '+h+' ساعة'):'من '+Math.round(h/24)+' يوم');});
 var picked={};
 document.querySelectorAll('.chips').forEach(function(row){row.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;
 row.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false');});picked[row.dataset.f]=b.dataset.v;

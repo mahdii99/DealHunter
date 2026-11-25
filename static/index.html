@@ -195,6 +195,11 @@
   .coupon { font-size:13px; color:var(--deal); }
   .hist { font-size:12.5px; color:var(--muted); }
   .hist.down { color:var(--deal); font-weight:600; }
+  .hist.fake { color:var(--warn); font-weight:600; }
+  .chk { font-size:12px; color:var(--muted); }
+  .chart-box { padding:10px 2px 2px; color:var(--muted); font-size:13px; }
+  .chart-box .chart-cap { margin:2px 0 6px; }
+  .chart-box svg { max-width:420px; }
   .note { font-size:13px; color:var(--muted); }
   .badges { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
   .badge { display:inline-block; font-size:12px; font-weight:500; padding:2px 10px; border-radius:20px; border:1px solid var(--border); color:var(--muted); }
@@ -615,22 +620,11 @@ let history = [], currentRequest = '';  // the chat so far + the standalone requ
 let markets = [{code: 'EG', name_ar: 'مصر', name_en: 'Egypt', currency_ar: 'ج.م', currency: 'EGP', enabled: true}], marketCode = 'EG';
 const cur = () => markets.find(m => m.code === marketCode) || markets[0];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let affiliate = {};  // {store domain: {params: {k: v}} or {template: 'https://network/...{url}'}} from AFFILIATE_TAGS (app/affiliate.py)
-const untagged = new Map();  // our link -> the store's own address, so clicks are counted under the store, not the network
-function tagged(u) {
-  try {
-    const url = new URL(u), host = url.hostname.toLowerCase().replace(/^www\./, '');
-    const d = Object.keys(affiliate).filter(k => host === k || host.endsWith('.' + k)).sort((a, b) => b.length - a.length)[0];
-    if (!d) return url.href;
-    const r = affiliate[d];
-    let out;
-    if (r.template) out = r.template.split('{url}').join(encodeURIComponent(u));
-    else { for (const [k, v] of Object.entries(r.params || {})) url.searchParams.set(k, v); out = url.href; }
-    if (out !== u) untagged.set(new URL(out).href, u);
-    return out;
-  } catch (e) { return u; }
-}
-const link = u => /^https?:\/\//i.test(u || '') ? esc(tagged(u)) : '#';  // only web addresses become links (never javascript:)
+let affiliate = {};  // AFFILIATE_TAGS rules (app/affiliate.py): only to say whether links carry our code
+// every store link goes through our /go: the click is counted on our server and the store's affiliate code is added
+// there (app/main.go), so the page never builds a network's tracking link itself
+const goUrl = (u, extra = {}) => '/go?' + new URLSearchParams({u, ...Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== null && v !== undefined && v !== ''))});
+const link = u => /^https?:\/\//i.test(u || '') ? esc(goUrl(u)) : '#';  // only web addresses become links (never javascript:)
 function beacon(data) {  // usage counting for the site owner (no cookies, nothing personal): never slows the page
   try {
     const body = new Blob([JSON.stringify(data)], {type: 'application/json'});
@@ -723,6 +717,10 @@ function trustBadge(p) {
 const COND = {used: ['مستعمل', 'Used'], refurbished: ['مجدد', 'Refurbished'], 'open box': ['أوبن بوكس', 'Open box']};
 const L = (ar, en) => lang === 'ar' ? ar : en;
 function histLine(p) {  // what this store's price was before (our own price list + earlier searches)
+  const v = p.price_verdict;  // app/pricechart.verdict: judged on this page's last 30 days
+  if (v && v.kind === 'real') return `<span class="hist down">✓ ${L(`خصم حقيقي: أرخص سعر ليه في آخر ${v.days} يوم`, `Real deal: lowest in ${v.days} days`)}</span>`;
+  if (v && v.kind === 'fake') return `<span class="hist fake">⚠ ${L(`الخصم مش حقيقي: ده سعره العادي آخر ${v.days} يوم`, `Not a real discount: its usual price for ${v.days} days`)}</span>`;
+  if (v && v.kind === 'higher') return `<span class="hist">${L(`كان أرخص: ${fmt(v.low)} في آخر ${v.days} يوم`, `Was cheaper: ${fmt(v.low)} in the last ${v.days} days`)}</span>`;
   if (p.previous_price && p.previous_price > p.price) return `<span class="hist down">${L(`نزل من ${fmt(p.previous_price)} آخر مرة شفناه`, `Down from ${fmt(p.previous_price)} last time we saw it`)}</span>`;
   if (p.lowest_seen && p.lowest_seen < p.price - 1) return `<span class="hist">${L(`أقل سعر شفناه في المتجر ده: ${fmt(p.lowest_seen)}`, `Lowest we saw at this store: ${fmt(p.lowest_seen)}`)}</span>`;
   if (p.previous_price && p.previous_price < p.price) return `<span class="hist">${L(`كان ${fmt(p.previous_price)} آخر مرة شفناه`, `Was ${fmt(p.previous_price)} last time we saw it`)}</span>`;
@@ -739,6 +737,7 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
           ${p.note ? `<span class="note">${esc(p.note)}</span>` : ''}
           <span class="p">${fmt(p.price)}${p.old_price && p.old_price > p.price ? `<span class="old" title="${L('السعر قبل الخصم', 'Price before the discount')}">${fmt(p.old_price)}</span>` : ''}</span>
           ${p.old_price && p.old_price > p.price ? `<span class="save">${L(`وفّر ${fmt(p.old_price - p.price)}`, `Save ${fmt(p.old_price - p.price)}`)}${p.discount_pct ? ` · ${L('خصم ' + pct(p.discount_pct), pct(p.discount_pct) + ' off')}` : ''}</span>` : ''}
+          ${p.checked_at ? `<span class="chk">✓ ${L('اتشيّك', 'Checked')} ${ago(p.checked_at * 1000)}</span>` : ''}
           ${histLine(p)}
           ${p.coupon_price ? `<span class="coupon">${L(`${fmt(p.coupon_price)} بعد كوبون ${fmt(p.price - p.coupon_price)} عند الدفع`, `${fmt(p.coupon_price)} after a ${fmt(p.price - p.coupon_price)} coupon at checkout`)}</span>` : ''}
           <span class="badges">
@@ -763,6 +762,8 @@ function card(p, i, rank, turn) {  // i = position in the agent's list (0 = chea
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg><span>${sv ? t('savedOne') : t('save')}</span></button>
         <button class="act watch ${p.watched ? 'on' : ''}" type="button" title="${L('هنبلغك أول ما سعره ينزل', 'We’ll tell you when the price drops')}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 16v-5a6 6 0 0 0-12 0v5l-2 2h16z"/><path d="M10 21h4"/></svg><span>${p.watched ? t('following') : t('follow')}</span></button>
+        <button class="act chart" type="button" aria-expanded="false">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19h16M5 15l4-5 4 3 6-7"/></svg>${L('تاريخ السعر', 'Price history')}</button>
         <button class="act share" type="button">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4"/></svg>${t('share')}</button>
         <button class="act report" type="button" title="${L('لو النتيجة دي غلط قولّنا عشان نصلحها', 'Tell us if this result is wrong so we can fix it')}">
@@ -891,7 +892,8 @@ function lastResults() {  // the results on screen now, so a question about them
   const d = [...shown].reverse().find(x => x.action === 'search' && x.results && x.results.length);
   return d ? d.results.slice(0, 12).map(p => ({title: p.title, price: p.price, old_price: p.old_price ?? null, discount_pct: p.discount_pct ?? null,
     store: p.store || '', trusted: !!p.trusted, trust_score: p.trust_score ?? null, verified: p.verified ?? null, condition: p.condition || null,
-    unconfirmed: !!p.unconfirmed, option: p.option || null, option_ok: p.option_ok ?? null, lowest_seen: p.lowest_seen ?? null, previous_price: p.previous_price ?? null, note: p.note || null})) : [];
+    unconfirmed: !!p.unconfirmed, option: p.option || null, option_ok: p.option_ok ?? null, lowest_seen: p.lowest_seen ?? null, previous_price: p.previous_price ?? null, note: p.note || null,
+    real_discount: p.price_verdict ? p.price_verdict.kind : null})) : [];
 }
 async function send(text) {
   text = text.trim(); if (text.length < 2 || b.disabled) return;
@@ -1142,7 +1144,7 @@ document.addEventListener('click', e => {
   const w = el.closest('.wrap');
   if (!w) {  // a store link elsewhere (saved products, followed products, notifications): counted too
     if (el.tagName === 'A' && /^https?:/i.test(el.href) && new URL(el.href).host !== location.host) {
-      const u = untagged.get(el.href) || el.href;
+      const u = el.href;
       beacon({kind: 'click', url: u, store: new URL(u).hostname.replace(/^www\./, ''), title: (el.querySelector('[dir=auto]') || el).textContent.trim().slice(0, 300)});
     }
     return;
@@ -1153,7 +1155,28 @@ document.addEventListener('click', e => {
     beacon({kind, url: p.url, store: p.store || '', title: (p.title || '').slice(0, 300), price: p.price ?? null,
             request: (d.request || d.query || '').slice(0, 600), rank: rank >= 0 ? rank : null});
   };
-  if (el.tagName === 'A') return about('click');  // the store link: counted, then the browser opens it as usual
+  if (el.tagName === 'A') {  // the store link: /go counts it (with where it was in the list), then opens the store
+    const rank = [...w.parentNode.querySelectorAll('.wrap')].indexOf(w);
+    el.href = goUrl(p.url, {rank: rank >= 0 ? rank : null, q: (d.request || d.query || '').slice(0, 300)});
+    return;
+  }
+  if (el.classList.contains('chart')) {  // the price over time, drawn by the server (app/pricechart.py)
+    const open = w.querySelector('.chart-box');
+    if (open) { open.remove(); el.setAttribute('aria-expanded', 'false'); return; }
+    el.setAttribute('aria-expanded', 'true');
+    w.insertAdjacentHTML('beforeend', `<div class="chart-box">${L('بنجيب تاريخ السعر…', 'Loading price history…')}</div>`);
+    const box = w.querySelector('.chart-box');
+    fetch(goUrl(p.url, {price: p.price, old: p.old_price > p.price ? p.old_price : null}).replace('/go?', '/api/history?').replace('u=', 'url='))
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(h => {
+        const n = (h.points || []).length;
+        box.innerHTML = h.svg ? `<div class="chart-cap">${L(`سعره في ${esc(p.store)} آخر 90 يوم (${n} قراية)`, `Its price at ${esc(p.store)}, last 90 days (${n} readings)`)}</div>${h.svg}` +
+            (h.verdict ? `<div class="chart-cap">${esc(h.verdict.text)}</div>` : '')
+          : `<div class="chart-cap">${L('لسه بنجمع تاريخ سعره: أول ما نشوفه كذا مرة هيظهر هنا.', 'We’re still collecting its price history: it shows here once we’ve seen it a few times.')}</div>`;
+      })
+      .catch(() => { box.textContent = t('error'); });
+    return;
+  }
   if (el.classList.contains('save') && !isSaved(p.url)) about('save');
   if (el.classList.contains('share')) about('share');
   if (el.classList.contains('save')) {

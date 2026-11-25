@@ -27,6 +27,7 @@ class Product:
     coupon_price: Optional[float] = None  # lower price after a store coupon applied at checkout
     option: Optional[str] = None  # the option the shopper asked for and the price is for, e.g. "مقاس 46"
     option_ok: Optional[bool] = None  # True = its page says that option is in stock; None = the page doesn't say
+    checked_at: Optional[float] = None  # when its own page last showed this price (unix time), shown as "checked X ago"
 
     def to_dict(self):
         return asdict(self)
