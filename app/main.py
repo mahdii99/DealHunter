@@ -1392,11 +1392,13 @@ async def product_page(slug: str = UrlPart(..., max_length=100, pattern="^[a-z0-
     page = await _db(pages.get, slug)
     if not page:
         raise HTTPException(404, "مفيش صفحة للمنتج ده")
-    return Response(_product_html(page, _site(request)), media_type="text/html; charset=utf-8",
+    urls = [o["url"] for o in pages.fresh_offers(page)]
+    hist = await _db(db.histories, urls, time.time() - 90 * 86400, default={}) if urls else {}
+    return Response(_product_html(page, _site(request), hist or {}), media_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=600"})
 
 
-def _product_html(page: dict, site: str) -> str:
+def _product_html(page: dict, site: str, hist: dict | None = None) -> str:
     from html import escape as e
     from urllib.parse import quote
     name, offers = page["name"], pages.fresh_offers(page)
@@ -1414,16 +1416,21 @@ def _product_html(page: dict, site: str) -> str:
                if str(o.get("image") or "").startswith("https://") else "")
         was = (f'<s title="السعر قبل الخصم زي ما المتجر كاتبه">{_money(o["old_price"])}</s>'
                if o.get("old_price") and o["old_price"] > o["price"] else "")
+        points = (hist or {}).get(o["url"]) or []
+        v = pricechart.verdict(points, o["price"], o.get("old_price"))
+        label = (f'<span class="why{" real" if v["kind"] == "real" else ""}">{e(v["text"])}</span>' if v else "")
+        chart = pricechart.svg(points, height=90, title=f"تاريخ سعر {sname}", style=False)
+        chart = f'<div class="hist">{chart}</div>' if chart else ""
         rows.append(
             f'<li class="offer{" best" if i == 0 else ""}"><span class="pic">{img}</span><div class="od">'
             f'<span class="st">{e(sname)}{" · أرخص سعر" if i == 0 and len(offers) > 1 else ""}</span>'
-            f'<span class="t" dir="auto">{e(o["title"])}</span><span class="p">{_money(o["price"])} {was}</span>'
+            f'<span class="t" dir="auto">{e(o["title"])}</span><span class="p">{_money(o["price"])} {was}</span>{label}'
             f'<span class="ok2">✓ السعر ده ظهر في صفحة المتجر <span data-ts="{o["checked_at"]:.0f}"></span></span></div>'
-            f'<div class="oa"><a class="go" href="{e(affiliate.link(o["url"]))}" target="_blank" '
+            f'<div class="oa"><a class="go" href="/go?src=p&amp;u={quote(o["url"], safe="")}" target="_blank" '
             f'rel="noopener nofollow sponsored">افتح في {e(sname)}</a>'
             f'<button type="button" class="follow" data-url="{e(o["url"])}" data-title="{e(o["title"])}" '
             f'data-store="{e(o["store"])}" data-image="{e(o.get("image") or "")}" data-price="{o["price"]}">'
-            '🔔 <span>تابع السعر</span></button></div></li>')
+            f'🔔 <span>تابع السعر</span></button></div>{chart}</li>')
     search = f'/?q={quote(name)}'
     cat = pages.category_name(page["category"])
     crumbs = (f'<nav class="crumbs" aria-label="مكانك"><a href="/">Easy Found</a> › <a href="/p">الأسعار</a> › '
@@ -1647,7 +1654,7 @@ h1{font-size:24px;margin:10px 0 2px}.lead,.when{color:var(--muted);margin:0 0 12
 .od .p s{font-size:13px;color:var(--muted);font-weight:400;margin-inline-start:6px}.ok2{font-size:12px;color:var(--ok)}
 .oa{display:flex;gap:8px;flex:1 1 100%;flex-wrap:wrap}.oa .go{flex:1 1 140px}
 .follow{flex:1 1 120px;border:1px solid var(--accent);background:var(--card);color:var(--ink);border-radius:10px;padding:8px;font:inherit;font-weight:600;cursor:pointer}
-.follow.on{background:var(--soft)}.fmsg{background:var(--soft);color:var(--ink);border-radius:10px;padding:8px 12px;margin:10px 0 0}#gbtn{margin-top:8px}
+.follow.on{background:var(--soft)}.hist{flex:1 1 100%;min-width:0}.fmsg{background:var(--soft);color:var(--ink);border-radius:10px;padding:8px 12px;margin:10px 0 0}#gbtn{margin-top:8px}
 h2{font-size:18px;margin:18px 0 8px}.plist{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px}
 .plist a{display:flex;justify-content:space-between;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 12px;color:inherit;text-decoration:none}
 .plist a:hover{border-color:var(--accent)}.plist b{color:var(--ink);white-space:nowrap;font-size:14px}

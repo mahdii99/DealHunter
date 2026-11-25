@@ -108,3 +108,16 @@ def test_pages_cron_needs_the_secret(monkeypatch):
         return [], [], 0
     monkeypatch.setattr(agent, "checked_only", none)
     assert c.post("/api/cron/pages", headers={"X-Cron-Secret": "s3"}).json()["products"] == 0
+
+
+def test_product_page_shows_price_history_and_links_through_go():
+    now = time.time()
+    url = "https://www.jumia.com.eg/a56"
+    for price, days in ((26000, 20), (25500, 10), (23100, 0)):
+        db.record_prices([{"url": url, "store": "Jumia", "title": "Galaxy A56", "price": price}], "EG")
+        db._db.run("UPDATE prices SET seen_at = ? WHERE url = ? AND price = ?", (now - days * 86400, url, price))
+    _page([{"title": "Samsung Galaxy A56 256GB", "store": "Jumia", "url": url, "price": 23100, "old_price": None,
+            "image": "", "checked_at": now}])
+    html = TestClient(main.app).get("/p/samsung-galaxy-a56-256gb").text
+    assert '<div class="hist"><svg' in html
+    assert "/go?src=p&amp;u=https%3A%2F%2Fwww.jumia.com.eg%2Fa56" in html
