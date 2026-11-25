@@ -159,6 +159,23 @@ async def _sitemap_files(client: httpx.AsyncClient, country: str) -> list[int]:
     return sorted({int(n) for n in re.findall(rf"sitemap-{country[:2]}-pdp-(\d+)\.xml", r.text)})
 
 
+async def _read_file(client: httpx.AsyncClient, address: str, country: str) -> list[tuple[str, str, str, str]]:
+    """One sitemap file (~16 MB) read piece by piece as it downloads: the free server has little memory, so the whole
+    file is never held at once, only its products' short rows."""
+    rows: list[tuple[str, str, str, str]] = []
+    rest = ""
+    async with client.stream("GET", address, headers=BOT_HEADERS, timeout=120) as r:
+        r.raise_for_status()
+        async for chunk in r.aiter_text():
+            rest += chunk
+            cut = rest.rfind("</url>")
+            if cut >= 0:
+                rows += read_sitemap(rest[:cut + 6], country)
+                rest = rest[cut + 6:]
+            await asyncio.sleep(0)  # other visitors' requests go on meanwhile
+    return rows + read_sitemap(rest, country)
+
+
 async def build(first: int = 0, last: int = PDP_FILES - 1, mk: str = "eg", client: httpx.AsyncClient | None = None) -> dict:
     """Reads sitemap files first..last (one at a time) into the index, each in place of what it had before."""
     mk = mk.lower()  # our market codes are "EG", "SA", ...
@@ -177,10 +194,7 @@ async def build(first: int = 0, last: int = PDP_FILES - 1, mk: str = "eg", clien
                 report["stopped"] = f"database is {size} MB (limit {DB_MAX_MB:.0f} MB)"
                 break
             try:
-                r = await client.get(f"{SITEMAP_HOST}sitemap-{country[:2]}-pdp-{n}.xml", headers=BOT_HEADERS, timeout=120)
-                r.raise_for_status()
-                rows = read_sitemap(r.text, country)
-                del r
+                rows = await _read_file(client, f"{SITEMAP_HOST}sitemap-{country[:2]}-pdp-{n}.xml", country)
             except Exception as e:  # the next run reads it again; what the file had stays meanwhile
                 report["files"][n] = f"{type(e).__name__}: {e}"[:120]
                 continue
