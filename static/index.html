@@ -802,7 +802,8 @@ function render(d, turn) {  // one assistant turn
     (d.region_note ? `<div class="err">${esc(d.region_note)}</div>` : '') +
     (d.understood ? `<div class="und">${esc(d.understood)}</div>` : '') +
     (d.suggested_products && d.suggested_products.length ? `<div class="sugg">${L('حاجات تناسب طلبك دوّرت عليها: ', 'Things that fit your request I searched for: ')}${d.suggested_products.map(esc).join('، ')}</div>` : '') +
-    `<div class="meta">${L(`راجعنا ${d.candidates_checked} منتج ولقينا ${d.count} مناسب`, `Checked ${d.candidates_checked} products, ${d.count} match`)}` + (d.max_price ? ` · ${L('تحت', 'under')} ${fmt(d.max_price)}` : '') + '</div>' +
+    `<div class="meta">${L(`راجعنا ${d.candidates_checked} منتج ولقينا ${d.count} مناسب`, `Checked ${d.candidates_checked} products, ${d.count} match`)}` + (d.min_price && d.max_price ? ` · ${L('من', 'from')} ${fmt(d.min_price)} ${L('لحد', 'to')} ${fmt(d.max_price)}`
+      : d.max_price ? ` · ${L('تحت', 'under')} ${fmt(d.max_price)}` : d.min_price ? ` · ${L('فوق', 'over')} ${fmt(d.min_price)}` : '') + '</div>' +
     (d.results.length > 1 ? `<div class="sorts" role="group" aria-label="${t('sortLabel')}">${['cheap', 'trust', 'deals'].map(k =>
       `<button class="sort" type="button" data-sort="${k}" aria-pressed="${sort === k}">${t(k)}</button>`).join('')}</div>` : '') +
     (d.summary ? `<div class="sum">${SPARK}<span>${esc(d.summary)}</span></div>` : '') +
@@ -873,6 +874,10 @@ async function openChat(id) {
     chatId = c.id; closeAll(); showTurns(c.data); saveChat(true);  // opening it doesn't make it newer
   } catch (e) { toast(t('error')); }
 }
+function lastBudget() {  // the budget the agent applied on the last turn: it carries on until the shopper changes it
+  const d = [...shown].reverse().find(x => x && ('max_price' in x || 'min_price' in x));
+  return d ? {budget_min: d.min_price || null, budget_max: d.max_price || null} : {};
+}
 function lastResults() {  // the results on screen now, so a question about them ("أنهي أحسن؟") gets a real answer
   const d = [...shown].reverse().find(x => x.action === 'search' && x.results && x.results.length);
   return d ? d.results.slice(0, 12).map(p => ({title: p.title, price: p.price, old_price: p.old_price ?? null, discount_pct: p.discount_pct ?? null,
@@ -921,7 +926,7 @@ async function send(text) {
     // progress arrives line by line (what the agent is doing now, and its reply while it's written),
     // the whole answer comes in the last line
     const body = JSON.stringify({messages: history.slice(-12), request: currentRequest, shown: lastResults(),
-                                 price_min: price.min, price_max: price.max});
+                                 price_min: price.min, price_max: price.max, ...lastBudget()});
     const once = async () => {
       const r = await fetch('/api/chat/stream', {method: 'POST', headers: {'Content-Type': 'application/json'}, body});
       if (!r.ok || !r.body) throw Object.assign(new Error(r.status), {status: r.status});
