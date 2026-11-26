@@ -1001,7 +1001,9 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
         text += "\nVARIANTS: " + "; ".join(
             f"{label}: {'in stock' if ok else 'OUT OF STOCK'}" + (f" ({price:g})" if price else "")
             for label, ok, price in variants)[:1500]
-    _count_read(True, f"{trust.domain(url)} check" + ("" if "<" in html[:2000] else " (text copy)") + (" (option)" if wanted else ""))
+    why = "" if "<" in html[:2000] or wanted else read_why(html, title)
+    _count_read(True, f"{trust.domain(url)} check" + ("" if "<" in html[:2000] else " (text copy)")
+                + (" (option)" if wanted else "") + (f": {why}" if why else ""))
     data = await llm.ask_json(FOLLOWED_PAGE_PROMPT.format(title=title or url, wanted=wanted or "none", text=text),
                               prefer="bulk", spread=spread, step="read_price")
     if data.get("same_product") is not True:
@@ -1062,6 +1064,16 @@ def _same_name(title: str, name: str) -> bool:
     words = {normalize(w) for w in re.split(r"\W+", title) if len(w) > 2}
     named = {normalize(w) for w in re.split(r"\W+", name) if len(w) > 2}
     return bool(words) and len(words & named) >= max(2, 0.6 * min(len(words), len(named)))
+
+
+def read_why(text: str, title: str) -> str:
+    """Why a text copy of the followed product's page wasn't read without the LLM (shown by the live check)."""
+    got, why = extract_mod.read_text_copy(text, title)
+    if why:
+        return why
+    if got[2] is None:
+        return "no buy button or sold-out mark"
+    return "another product's name" if not _same_name(title, got[0]) else "its price isn't shown"
 
 
 def _by_text(url: str, text: str, title: str) -> Product | None:
@@ -1278,6 +1290,7 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         picked: dict[str, list[str]] = {"named": [], "famous": [], "other": []}
         crawled: dict[str, str] = {}  # page text the search service already has: used when we can't open the page
         hit_titles: dict[str, str] = {}  # the search service's title of each page (a product page: its product)
+        text_why: dict[str, str] = {}  # why a text copy needed the LLM (shown by the live check)
         jobs, found = [("check", None)] + jobs, [seed or []] + list(found)  # the plan-check search's hits count too
         for (group, _), res in zip(jobs, found):
             if isinstance(res, Exception):
@@ -1363,7 +1376,7 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
 
         async def read_one(u, h):
             _count_read(True, f"{trust.domain(u)} {'product' if _page_id(u) else 'listing'}"
-                        + ("" if "<" in h[:2000] else " (text copy)"))
+                        + ("" if "<" in h[:2000] else " (text copy)") + (f": {text_why[u]}" if text_why.get(u) else ""))
             async with llm_sem:
                 n_read[0] += 1  # each page goes to a different model first: each has its own per-minute limit
                 return await _llm_read_page(u, h, want, spread=n_read[0], focus=focus)
@@ -1422,8 +1435,9 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         # 2B, Raya...). Its price is checked on the live page before it's shown, like any other
         unclear = []
         for u, text in later:
-            got = extract_mod.main_product_text(text, hit_titles.get(u, "")) if _page_id(u) else None
+            got, why = extract_mod.read_text_copy(text, hit_titles.get(u, "")) if _page_id(u) else (None, "")
             if not got:
+                text_why[u] = why
                 unclear.append((u, text))
                 continue
             _count_read(False)

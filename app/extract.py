@@ -480,6 +480,19 @@ TEXT_WINDOW = 1200  # after a product's name in a text copy: its own price is th
 
 
 def main_product_text(text: str, title: str = "") -> tuple[str, float, bool | None] | None:
+    return read_text_copy(text, title)[0]
+
+
+def read_text_copy(text: str, title: str = "") -> tuple[tuple[str, float, bool | None] | None, str]:
+    """main_product_text, with why the copy wasn't clear ("" when it was): shown by the live check."""
+    got, why = None, "no product name found in it"
+    for got, why in _text_reads(text, title):
+        if got:
+            return got, ""
+    return None, why
+
+
+def _text_reads(text: str, title: str):
     """A product page's text copy (a search service's or a reader's: no tags left) read with no LLM call:
     (its product's name, its price, False when it says sold out, True when it has a buy button, else None), or None when it isn't clear.
     `title` is the search service's title for the page; else the copy's own "Title:" or first heading names it.
@@ -500,6 +513,7 @@ def main_product_text(text: str, title: str = "") -> tuple[str, float, bool | No
             words = probe.split()[:4]
             i = low.find(" ".join(words)) if len(words) >= 3 else -1
         if i == -1:
+            yield None, "its name isn't in the text"
             continue
         window = text[i + len(probe):i + len(probe) + TEXT_WINDOW].translate(_ARABIC_NUMS)
         if m := _RELATED.search(window):
@@ -513,8 +527,9 @@ def main_product_text(text: str, title: str = "") -> tuple[str, float, bool | No
         elif len(prices) == 2 and _DISCOUNT.search(window[:found[-1][0] + 40]) and max(prices) <= min(prices) * 3:
             price = min(prices)
         else:
-            return None
+            yield None, f"{len(prices)} prices after its name" + (f" ({', '.join(f'{x:g}' for x in prices[:4])})" if prices else "")
+            return
         near = window[:600].lower()
         stock = False if any(w in near for w in OOS_WORDS) else True if _TEXT_BUY.search(near) else None
-        return name, price, stock
-    return None
+        yield (name, price, stock), ""
+        return
