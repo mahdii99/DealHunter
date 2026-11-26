@@ -52,6 +52,11 @@ if DEMO:  # offline demo: stores read saved sample pages instead of the internet
 
 @asynccontextmanager
 async def _lifespan(app):
+    try:  # models / search services a provider said were used up before this restart stay skipped
+        await asyncio.to_thread(agent.llm.load_reported)
+        await asyncio.to_thread(websearch.load_out)
+    except Exception:
+        log.exception("loading the providers' used-up limits failed")
     try:  # a database that's down must not stop the site from starting
         if n := await asyncio.to_thread(accounts.drop_loose_price_alerts):
             log.info("removed %d old price-drop alerts", n)
@@ -789,8 +794,9 @@ async def admin_stats(request: Request, days: int = Query(7, ge=1, le=db.EVENTS_
         stats["llm_limits"] = await asyncio.to_thread(agent.llm.quota_report)
     except Exception:
         log.exception("admin: LLM use today failed")
-    try:  # this month's searches per web search service, with its free monthly searches
-        stats["search_limits"] = await asyncio.to_thread(websearch.quota_report)
+    try:  # this month's searches per web search service, as the service says where it can, else our count
+        live = await websearch.provider_usage()
+        stats["search_limits"] = await asyncio.to_thread(websearch.quota_report, live)
     except Exception:
         log.exception("admin: search use failed")
     for row in stats.get("stores", []):  # which stores can pay us for these clicks (AFFILIATE_TAGS)

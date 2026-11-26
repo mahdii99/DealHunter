@@ -130,6 +130,7 @@ def _count(provider: str, r: httpx.Response, step: str, model: str = "") -> None
     if model:
         s["model"] = model  # which model answered this step last (e.g. who judged)
         _tally(provider, model, step, int(u or 0))
+        _note_reported(provider, model, r)
 
 
 def last_model() -> str:
@@ -286,11 +287,27 @@ def calls_today(provider: str, model: str) -> tuple[int, int | None]:
 
 def over_budget(provider: str, model: str, background: bool) -> bool:
     """True when this call should skip the model: its free daily requests are used up, or (background work) the
-    share kept for shoppers is all that's left."""
-    used, rpd = calls_today(provider, model)
+    share kept for shoppers is all that's left. What the provider itself said wins over our own count."""
+    used, rpd = real_use(provider, model)
+    if used is None:
+        return True  # the provider said it's used up
     if rpd is None:
         return False
     return used >= (rpd * BACKGROUND_SHARE if background else rpd)
+
+
+def real_use(provider: str, model: str) -> tuple[int | None, int | None]:
+    """(requests used today, the daily limit) by our count, or by the provider's word when it said more. None used =
+    the provider said it's used up (until its renewal)."""
+    load_reported()
+    used, rpd = calls_today(provider, model)
+    if got := reported(provider, model):
+        if (got.get("out_until") or 0) > time.time():
+            return None, got.get("lim") or rpd
+        rpd = got.get("lim") or rpd
+        if rpd is not None and got.get("remaining") is not None:
+            used = max(used, rpd - got["remaining"])
+    return used, rpd
 
 
 def _tally(provider: str, model: str, step: str, tokens: int) -> None:
@@ -347,7 +364,9 @@ def today_report() -> list[dict]:
 def quota_report() -> list[dict]:
     """Each free daily limit, for the owner's /admin page: what it counts, used today of its limit, left, when it
     renews, and whether we skip the model now. Known limits of a configured provider show up even unused; a model
-    with no known daily limit shows up only once it was used today."""
+    with no known daily limit shows up only once it was used today. Where the provider itself said how much is left
+    (or that it's used up), that wins over our own count (source 'provider')."""
+    load_reported()
     now, rows = time.time(), {}
     for r in today_report():
         lim = daily_limit(r["provider"], r["model"])
@@ -357,6 +376,11 @@ def quota_report() -> list[dict]:
         row["used"] = r["used_of_limit"] if lim else row["used"] + r["calls"]
         if r["resting_until"] and (row["resting_until"] or 0) < r["resting_until"]:
             row["resting_until"] = r["resting_until"]
+    for key, got in list(_REPORTED.items()):  # models the provider spoke about that we haven't used today
+        if key not in rows and (got.get("reset_at") or 0) > now:
+            lim = daily_limit(got.get("provider", ""), key)
+            rows[key] = {"name": key, "provider": got.get("provider", ""), "used": 0, "limit": lim[1] if lim else None,
+                         "resting_until": None}
     for provider, part, rpd in DAILY_LIMITS:
         configured = bool(os.getenv("GEMINI_API_KEY")) if provider == "gemini" else _configured(provider)
         if not configured:
@@ -366,12 +390,24 @@ def quota_report() -> list[dict]:
             name = f"{provider}:*" if part == "*" else f"{provider} {part or 'other models'}"
             rows[name] = {"name": name, "provider": provider, "used": 0, "limit": rpd, "resting_until": None}
     for row in rows.values():
-        row["left"] = None if row["limit"] is None else max(0, row["limit"] - row["used"])
         row["resets_at"] = _daily_quota_reset(row["name"].startswith("@cf/"))
+        row["source"] = "ours"
+        got = _REPORTED.get(row["name"])
+        if got and (got.get("reset_at") or 0) > now:
+            row["limit"] = got.get("lim") or row["limit"]
+            row["resets_at"] = got.get("reset_at") or row["resets_at"]
+            if (got.get("out_until") or 0) > now:
+                row["used"], row["out_until"], row["source"] = row["limit"] or row["used"], got["out_until"], "provider"
+                row["resets_at"] = got["out_until"]
+            elif row["limit"] is not None and got.get("remaining") is not None:
+                row["used"], row["source"] = max(row["used"], row["limit"] - got["remaining"]), "provider"
+        row["left"] = None if row["limit"] is None else max(0, row["limit"] - row["used"])
+        if row.get("out_until"):
+            row["left"] = 0
         if row["resting_until"] and row["resting_until"] <= now:
             row["resting_until"] = None
-    return sorted(rows.values(), key=lambda r: (r["limit"] is None, -(r["used"] / r["limit"] if r["limit"] else 0),
-                                                -r["used"], r["name"]))
+    return sorted(rows.values(), key=lambda r: (not r.get("out_until"), r["limit"] is None,
+                                                -(r["used"] / r["limit"] if r["limit"] else 0), -r["used"], r["name"]))
 
 
 def _daily_quota_reset(utc_midnight: bool = False) -> float:
@@ -399,14 +435,114 @@ def retry_hint(r: httpx.Response) -> float | None:
     return None
 
 
+def _daily_429(r: httpx.Response | None) -> bool:
+    """The provider said a DAILY limit is used up (not just its per-minute one)."""
+    body = r.text.lower() if r is not None else ""
+    return r is not None and r.status_code == 429 and any(x in body for x in (
+        "perday", "per day", "per-day", "(rpd)", "(tpd)",
+        "daily free allocation", "daily limit", "daily quota"))  # Cloudflare: "used up your daily free allocation"
+
+
+# ---------- what the providers themselves say about their limits ----------
+# Our own count misses calls made with the same key elsewhere (the owner's computer, another copy of the site), so
+# whatever a provider tells us wins: the daily request headers (Groq, Cerebras), the limit in a daily 429 (Gemini's
+# quotaValue, OpenRouter's X-RateLimit-* on its free-models-per-day 429), and "used up" itself. Kept in the database
+# (quota_state), so a restart doesn't forget a used-up model and ask it again all day.
+_REPORTED: dict[str, dict] = {}   # what a limit counts (daily_limit name, else the model) -> what the provider said
+_reported_loaded = [False]
+_last_saved: dict[str, float] = {}
+SAVE_REPORTED_EVERY = 120         # seconds: the same model's header numbers are saved at most this often
+
+
+def _int(v) -> int | None:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _limit_key(provider: str, model: str) -> str:
+    lim = daily_limit(provider, model)
+    return lim[0] if lim else model
+
+
+def _note_reported(provider: str, model: str, r: httpx.Response) -> None:
+    """Keep what this reply says about the model's daily limit."""
+    h, now = r.headers, time.time()
+    key = _limit_key(provider, model)
+    got = dict(_REPORTED.get(key) or {})
+    lim = remaining = reset = None
+    if provider in ("groq", "cerebras"):  # daily requests: Groq's x-ratelimit-*-requests, Cerebras' *-requests-day
+        lim = _int(h.get("x-ratelimit-limit-requests-day") or h.get("x-ratelimit-limit-requests"))
+        remaining = _int(h.get("x-ratelimit-remaining-requests-day") or h.get("x-ratelimit-remaining-requests"))
+        # (their reset header is when the next request frees up, a rolling window: the numbers hold for today)
+    daily = _daily_429(r)
+    if daily and provider == "gemini":  # "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"
+        if m := re.search(r'PerDay[^"]*"[^}]*?"quotaValue"\s*:\s*"?(\d+)', r.text):
+            lim = int(m.group(1))
+    if daily and provider == "openrouter":
+        lim = _int(h.get("x-ratelimit-limit"))
+        if (ms := _int(h.get("x-ratelimit-reset"))) and ms > now * 1000:
+            reset = ms / 1000
+    if lim is None and remaining is None and not daily:
+        return
+    if lim is not None:
+        got["lim"] = lim
+    if remaining is not None:
+        got["remaining"] = remaining
+    if daily:
+        got["remaining"] = 0
+        got["out_until"] = reset or _daily_quota_reset(utc_midnight=model.startswith("@cf/"))
+    got["reset_at"] = reset or _daily_quota_reset(utc_midnight=model.startswith("@cf/"))
+    got.update(provider=provider, at=now)
+    _REPORTED[key] = got
+    if PERSIST and (daily or now - _last_saved.get(key, 0) >= SAVE_REPORTED_EVERY):
+        _last_saved[key] = now
+        threading.Thread(target=_save_reported, args=([key],), daemon=True).start()
+
+
+def _save_reported(keys: list[str]) -> None:
+    rows = [(k, v.get("provider", ""), v.get("lim"), v.get("remaining"), v.get("reset_at"), v.get("out_until"),
+             v.get("at", time.time())) for k in keys if (v := _REPORTED.get(k))]
+    try:
+        from . import db
+        db.save_quota_state(rows)
+    except Exception as e:
+        log.warning("llm limits: could not save: %s", e)
+
+
+def load_reported() -> None:
+    """What the providers said before a restart: used-up models stay skipped until they renew."""
+    if _reported_loaded[0] or not PERSIST:
+        return
+    _reported_loaded[0] = True
+    try:
+        from . import db
+        rows = db.quota_states()
+    except Exception as e:
+        log.warning("llm limits: could not load: %s", e)
+        return
+    now = time.time()
+    for row in rows:
+        if row["name"].startswith("search:") or (row["reset_at"] or 0) <= now:
+            continue  # renewed since
+        _REPORTED.setdefault(row["name"], {k: row[k] for k in ("provider", "lim", "remaining", "reset_at",
+                                                               "out_until", "at")})
+        if (until := row["out_until"] or 0) > now and not row["name"].endswith(":*"):
+            _COOLDOWN[row["name"]] = max(_COOLDOWN.get(row["name"], 0), until)
+
+
+def reported(provider: str, model: str) -> dict | None:
+    """What the provider last said about this model's daily limit, while it's still today's."""
+    got = _REPORTED.get(_limit_key(provider, model))
+    return got if got and (got.get("reset_at") or 0) > time.time() else None
+
+
 def _rest(model: str, r: httpx.Response | None = None, slow: bool = False) -> None:
     """Skip a model for a while: until tomorrow if its daily quota is gone, else a few minutes (or as long as the
     provider says, when it says). slow=True: it timed out with its full time; each time in a row it rests twice
     as long, so a model that is always too slow on the free tier stops taking time from every request."""
-    body = r.text.lower() if r is not None else ""
-    daily = r is not None and r.status_code == 429 and any(x in body for x in (
-        "perday", "per day", "per-day", "(rpd)", "(tpd)",
-        "daily free allocation", "daily limit", "daily quota"))  # Cloudflare: "used up your daily free allocation"
+    daily = _daily_429(r)
     busy = r is not None and r.status_code in (429, 503)
     hint = retry_hint(r) if busy and not daily else None
     refused = r is not None and r.status_code in (401, 403, 404)  # not available to us: skip it until tomorrow
@@ -855,6 +991,7 @@ async def _ask_json(prompt: str, timeout: float, prefer: str | None, spread: int
                     _failed(step, model, str(r.status_code))
                     log.warning("LLM %s said: %s", model, r.text[:200].replace("\n", " "))
                     if r.status_code in RETRY_STATUS or r.status_code in (401, 402, 403, 404, 410):  # busy/quota/not allowed/gone
+                        _note_reported(provider, model, r)
                         _rest(model, r)
                         if r.status_code in (429, 503):
                             busy.add(model)
