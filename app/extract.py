@@ -558,9 +558,17 @@ def _text_reads(text: str, title: str):
         if m := _RELATED.search(window):
             window = window[:m.start()]
         found = sorted(((m.start(), n) for pattern in (_CURRENCY_FIRST, _CURRENCY_AFTER) for m in pattern.finditer(window)
-                        if (n := _num(m.group(1))) and not _MONTHLY.match(window[m.end():m.end() + 15])),
+                        if (n := _num(m.group(1))) and not _MONTHLY.match(window[m.end():m.end() + 15])
+                        and not window[m.end():m.end() + 3].lstrip().startswith("%")),  # "-54%" is a discount
                        key=lambda x: x[0])
-        prices = list(dict.fromkeys(n for _, n in found))
+        prices = []
+        for _, n in found:
+            # the same price written twice ("EGP 1,172.10" and "1,172") is one price
+            if not any(abs(n - p) < 1 for p in prices):
+                prices.append(n)
+        # a later number a tenth of the first one or less (a shipping fee, a count, a rating) isn't this product's
+        # price (the first one is always kept: a cheap product's price comes before a "free shipping over ..." line)
+        prices = prices[:1] + [n for n in prices[1:] if n * 10 > prices[0]]
         if len(prices) == 1:
             price = prices[0]
         elif len(prices) == 2 and _DISCOUNT.search(window[:found[-1][0] + 40]) and max(prices) <= min(prices) * 3:
