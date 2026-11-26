@@ -982,6 +982,9 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
     if variants and all(not ok for _, ok, _ in variants):  # every option sold out: the product is
         return Product(store=trust.store_name(url), title=title or url, price=0.0, url=url, trusted=trust.is_known(url),
                        in_stock=False, option=wanted or None, option_ok=False if wanted else None)
+    if not wanted and "<" not in html[:2000] and (got := _by_text(url, html, title)):
+        _count_read(False)  # the reader service's live copy of the page names it, one price and its buy button
+        return got
     if (not wanted or _size_option_shown(wanted, title, html)) and (got := _by_buybox(url, html, title)):
         _count_read(False)
         return got if not wanted else got.model_copy(update={"option": wanted, "option_ok": got.in_stock})
@@ -1055,15 +1058,30 @@ def _by_variant(url: str, html: str, title: str, wanted: str, variants: list) ->
                    in_stock=True, option=wanted, option_ok=True)
 
 
+def _same_name(title: str, name: str) -> bool:
+    words = {normalize(w) for w in re.split(r"\W+", title) if len(w) > 2}
+    named = {normalize(w) for w in re.split(r"\W+", name) if len(w) > 2}
+    return bool(words) and len(words & named) >= max(2, 0.6 * min(len(words), len(named)))
+
+
+def _by_text(url: str, text: str, title: str) -> Product | None:
+    """The followed product's page as the reader service opened it just now (text, no tags), read with no LLM call
+    (extract.main_product_text): it names this product, shows one clear price and a buy button or a sold-out mark."""
+    if not (got := extract_mod.main_product_text(text, title)) or got[2] is None or not _same_name(title, got[0]):
+        return None
+    if not shows(_shown_numbers(text), got[1]):
+        return None
+    return Product(store=trust.store_name(url), title=title or got[0], price=float(got[1]), url=url,
+                   trusted=trust.is_known(url), in_stock=got[2])
+
+
 def _by_buybox(url: str, html: str, title: str) -> Product | None:
     """The followed product's page read by its buy box (app/buybox.py), no LLM call: only when the page names this
     product, shows one clear price and says whether it can be bought."""
     if "<" not in html[:2000] or not (got := buybox.read(html, url)) or got[2] is None:
         return None
     name, price, stock = got
-    words = {normalize(w) for w in re.split(r"\W+", title) if len(w) > 2}
-    named = {normalize(w) for w in re.split(r"\W+", name) if len(w) > 2}
-    if not words or len(words & named) < max(2, 0.6 * min(len(words), len(named))):
+    if not _same_name(title, name):
         return None  # the page's name isn't the followed product's
     if not shows(_shown_numbers(html), price):
         return None
@@ -2342,15 +2360,19 @@ def _settled_without_llm(p: Product, page: str, sold: set[int], options: str, ne
 def _size_option_shown(options: str, title: str, page: str) -> bool:
     """The options the shopper must pick are all sizes ("256 جيجا", "55 بوصة", "10 كيلو"), the product's own name
     shows each of them, and the page offers no choices of its own (sizes or colors with their own stock or price):
-    the page sells exactly that size, no LLM read needed. A color, a clothing size ("مقاس 46") or a page with
-    choices still goes to the LLM, which reads the page for that option."""
-    sizes = []
+    the page sells exactly that size, no LLM read needed. Another option ("4K", a color) counts the same way when
+    both the product's name and the page's own name say it. A page with choices still goes to the LLM, which reads
+    the page for that option."""
+    sizes, features = [], []
     for part in options.split("،"):
         eng = english_words(part)
         got = wanted_sizes(eng)
-        if not got or eng.strip() != " ".join(f"{n} {u}" for n, u in got):
-            return False  # (a word that isn't a size: a color, a fit...)
-        sizes += got
+        if got and eng.strip() == " ".join(f"{n} {u}" for n, u in got):
+            sizes += got
+        elif words := (eng.split() or normalize(part).split()):
+            features.append(words)  # not a size ("4K", "Black", "اسود"): its words must name the product
+        else:
+            return False
     if not all(shows_size(title, n, u) for n, u in sizes):
         return False
     if extract_mod.variant_stock(page):
@@ -2360,6 +2382,11 @@ def _size_option_shown(options: str, title: str, page: str) -> bool:
     name = " ".join(unescape(re.sub(r"<[^>]+>", " ", h1.group(1))).split()) if h1 else ""
     if not name or not all(shows_size(name, n, u) for n, u in sizes):
         return False
+    for words in features:  # "4K", a color: both our listing's name and the page's own name say it
+        for text in (title, name):
+            have = set(re.split(r"\W+", english_words(text).lower())) | set(re.split(r"\W+", _fold(normalize(text))))
+            if not all(_fold(w) in have for w in words):
+                return False
     # where the page shows its product (name, price, choices), another size of the same kind its name doesn't have
     # ("128GB | 256GB" buttons) means the shopper picks the size there: the LLM reads that
     top = normalize(_page_text(page, name.split(), NEAR_TITLE_CHARS, base_url="", top=True))
