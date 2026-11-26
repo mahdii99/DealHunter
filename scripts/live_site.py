@@ -60,7 +60,8 @@ def report(text: str, got: dict) -> str:
              "  failed models: " + ("; ".join(f"{k}: " + ", ".join(f"{m} x{n}" for m, n in v["fails"].items())
                                           for k, v in (used.get("by_step") or {}).items() if v.get("fails")) or "-"),
              "  time per step: " + ", ".join(f"{k} {v}" for k, v in (d.get("timings") or {}).items()),
-             f"  store errors: {d.get('store_errors') or '-'}"]
+             f"  store errors: {d.get('store_errors') or '-'}",
+             "  pages the LLM read: " + (", ".join(d.get("llm_pages") or []) or "-")]
     for p in (d.get("results") or [])[:8]:
         lines.append(f"    {p.get('price')} | {p.get('store')} | {(p.get('title') or '')[:70]}")
     noon = d.get("noon") or []

@@ -806,6 +806,16 @@ TIMES = _Times()
 def new_search() -> None:
     """A shopper's request starts: its own stage times, not another request's."""
     _TIMES.set({})
+    _LLM_PAGES.set([])
+
+
+# the store pages the LLM read for this search ("domain listing" / "domain product"), shown by the live check, so
+# the pages that still cost an LLM call can be found and read without one
+_LLM_PAGES: contextvars.ContextVar[list | None] = contextvars.ContextVar("llm_pages", default=None)
+
+
+def llm_pages() -> list[str]:
+    return list(_LLM_PAGES.get() or [])
 
 
 PAGE_CHARS = 3000  # page text sent to the LLM: the part with the products (most of a page is menus and footers)
@@ -1223,6 +1233,13 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                                          image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
                                          in_stock=False if extract_mod._page_says_sold_out(
                                              html, extract_mod._visible_text(html), main[0]) else None)]
+            if not page_products and _page_id(url) and (got := recipes.read(url, html)) \
+                    and (name := extract_mod.page_title(html)):
+                # a product page of a store whose layout the LLM already learned (app/recipes.py): its recipe reads
+                # the main product's price, no LLM call (the price is checked again before it's shown)
+                page_products = [Product(store=trust.store_name(url), title=name, price=got[0], url=url,
+                                         image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
+                                         in_stock=got[1])]
             if not page_products and (listed := _listed_products(html, url, f"{want} {focus}")):
                 # a listing page whose product cards show their own name, link and price: read with no LLM call
                 # (each offer's price is still checked on its own page before it's shown)
@@ -1245,6 +1262,9 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         n_read = [0]
 
         async def read_one(u, h):
+            if (pages := _LLM_PAGES.get()) is not None and len(pages) < 40:
+                pages.append(f"{trust.domain(u)} {'product' if _page_id(u) else 'listing'}"
+                             + ("" if "<" in h[:2000] else " (text copy)"))
             async with llm_sem:
                 n_read[0] += 1  # each page goes to a different model first: each has its own per-minute limit
                 return await _llm_read_page(u, h, want, spread=n_read[0], focus=focus)
@@ -1897,6 +1917,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "more_stores": bool(more),  # the page offers "search more stores" (main keeps `_more` for that, server side)
         "_more": more,
         "llm_usage": {"calls": used["calls"], "tokens": used["tokens"], "by_step": dict(used["by_step"])},
+        "llm_pages": llm_pages(),
         "first_results": len(shown_first),
         "understood": plan.get("understood", ""),
         "request": plan.get("request") or raw,

@@ -427,17 +427,23 @@ _OLD_PRICE = re.compile(r"<(span|div|p|del)\b[^>]*class=[\"'][^\"']*\b(?:old|was
 MAIN_WINDOW = 1200  # where a product page names its product: its own price is shown there, before related items
 
 
-def main_product(html: str) -> tuple[str, float] | None:
-    """A single product page read with no LLM call: (its product's name, its price), or None when the page isn't
-    clear (the LLM reads it then). Clear means the page names one product (its <h1>, or og:title) and right after
-    that name shows exactly one price written with the currency. Two prices there (old and new, installments, a
-    size's price) or a size/color to choose with prices of their own: not clear."""
+def page_title(html: str) -> str:
+    """The product page's name for its product: its <h1>, else its og:title ('' when neither names one)."""
     h1 = re.search(r"<h1\b[^>]*>(.*?)</h1>", html, re.S | re.I)
     title = " ".join(unescape(re.sub(r"<[^>]+>", " ", h1.group(1))).split()) if h1 else ""
     if len(title.split()) < 2:
         og = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.I)
         title = " ".join(unescape(og.group(1)).split()) if og else ""
-    if len(title.split()) < 2 or len(title) > 300:
+    return title if 2 <= len(title.split()) and len(title) <= 300 else ""
+
+
+def main_product(html: str) -> tuple[str, float] | None:
+    """A single product page read with no LLM call: (its product's name, its price), or None when the page isn't
+    clear (the LLM reads it then). Clear means the page names one product (its <h1>, or og:title) and right after
+    that name shows exactly one price written with the currency. Two prices there (old and new, installments, a
+    size's price) or a size/color to choose with prices of their own: not clear."""
+    title = page_title(html)
+    if not title:
         return None
     variants = variant_stock(html)
     if len({p for _, _, p in variants if p}) > 1:
