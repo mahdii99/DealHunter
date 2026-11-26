@@ -499,6 +499,33 @@ def read_text_copy(text: str, title: str = "") -> tuple[tuple[str, float, bool |
     return None, why
 
 
+def _words(t: str) -> list[str]:
+    return re.sub(r"[^\w\s]", " ", unescape(t).lower().replace("\\", "")).split()
+
+
+def _swapped(name_words, line_words) -> bool:
+    """The line writes another number where the name has one ("256GB" on a line, "128GB" in the name): another
+    product, a sibling model or size. A line leaving some of the name's numbers out is fine."""
+    nums = lambda ws: {w for w in ws if any(c.isdigit() for c in w)}
+    return bool(nums(name_words) - nums(line_words)) and bool(nums(line_words) - nums(name_words))
+
+
+def _name_line_end(text: str, name: str) -> int:
+    """Where the line naming the product ends, when the copy writes its name another way than the title does
+    ("Buy ...", other punctuation, "\\-" escapes, its words in another order): the first short line holding nearly
+    all the name's words (4 of 5) and no other number in place of one of its own. -1: no such line."""
+    want = set(_words(name))
+    if len(want) < 3:
+        return -1
+    pos = 0
+    for line in text.splitlines(keepends=True):
+        got = _words(line)
+        if got and len(got) <= 2 * len(want) + 3 and len(want & set(got)) >= 0.8 * len(want) and not _swapped(want, got):
+            return pos + len(line)
+        pos += len(line)
+    return -1
+
+
 def _text_reads(text: str, title: str):
     """A product page's text copy (a search service's or a reader's: no tags left) read with no LLM call:
     (its product's name, its price, False when it says sold out, True when it has a buy button, else None), or None when it isn't clear.
@@ -519,10 +546,13 @@ def _text_reads(text: str, title: str):
         if i == -1:
             words = probe.split()[:4]
             i = low.find(" ".join(words)) if len(words) >= 3 else -1
-        if i == -1:
+            if i != -1 and _swapped(_words(name), _words(text[i:].split("\n", 1)[0])):
+                i = -1  # the line found names a sibling model or size
+        start = i + len(probe) if i != -1 else _name_line_end(text, name)
+        if start == -1:
             yield None, "its name isn't in the text"
             continue
-        window = text[i + len(probe):i + len(probe) + TEXT_WINDOW].translate(_ARABIC_NUMS)
+        window = text[start:start + TEXT_WINDOW].translate(_ARABIC_NUMS)
         if m := _RELATED.search(window):
             window = window[:m.start()]
         found = sorted(((m.start(), n) for pattern in (_CURRENCY_FIRST, _CURRENCY_AFTER) for m in pattern.finditer(window)

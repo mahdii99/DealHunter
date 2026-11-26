@@ -1067,7 +1067,9 @@ def _by_variant(url: str, html: str, title: str, wanted: str, variants: list) ->
 def _same_name(title: str, name: str) -> bool:
     words = {normalize(w) for w in re.split(r"\W+", title) if len(w) > 2}
     named = {normalize(w) for w in re.split(r"\W+", name) if len(w) > 2}
-    return bool(words) and len(words & named) >= max(2, 0.6 * min(len(words), len(named)))
+    # (another number in place of one of its own, "256GB" for "128GB": a sibling model or size, not this one)
+    return (bool(words) and len(words & named) >= max(2, 0.6 * min(len(words), len(named)))
+            and not extract_mod._swapped(extract_mod._words(title), extract_mod._words(name)))
 
 
 def read_why(text: str, title: str) -> str:

@@ -118,3 +118,13 @@ def test_a_copy_without_any_price_costs_no_llm_read(monkeypatch):
         raise AssertionError("no price written in the copy: nothing to read")
     monkeypatch.setattr(llm, "ask_json", ask_must_not_run)
     assert asyncio.run(agent._read_main_price("https://2b.com.eg/sony-wh-ch520", copy, "Sony WH-CH520 Wireless Headphones")) is None
+
+
+def test_a_copy_writing_the_name_another_way_is_read_but_not_a_sibling_model():
+    from app import extract
+    copy = "Title: B.TECH Egypt\n\nHome\n# Galaxy A55 5G \\- Samsung, 256GB Awesome Navy\nEGP 21,999\nAdd to cart\n"
+    got, _ = extract.read_text_copy(copy, "Samsung Galaxy A55 5G 256GB Awesome Navy")
+    assert got and got[1:] == (21999.0, True)
+    # the 128GB isn't the page's product: its name with another number is never matched to it
+    assert not agent._same_name("Samsung Galaxy A55 5G 128GB Awesome Navy", "Samsung Galaxy A55 5G 256GB Awesome Navy")
+    assert agent._same_name("Samsung Galaxy A55 5G 256GB Awesome Navy", "Samsung Galaxy A55 5G Awesome Navy")
