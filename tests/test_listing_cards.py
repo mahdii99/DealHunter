@@ -142,3 +142,25 @@ def test_a_size_option_the_product_name_shows_needs_no_llm_read():
     sold: set[int] = set()
     assert agent._settled_without_llm(p, page, sold, "256 جيجا")
     assert p.verified and p.option_ok and p.option == "256 جيجا"
+
+
+def test_a_product_page_of_a_store_with_a_learned_recipe_needs_no_llm_read(monkeypatch):
+    from app import recipes, websearch
+
+    async def fake_search(client, query, max_results=8, exclude_domains=None, include_domains=None):
+        return [{"url": "https://shop.example.com/p/sharp-washer-9kg-es-tn09", "title": "", "snippet": ""}]
+    page = ("<html><h1>Sharp Washing Machine 9 Kg ES-TN09</h1><div class='a'>EGP 15,999</div>"
+            "<div class='b'>EGP 1,333 / month</div>" + "<p>details</p>" * 300 + "</html>")
+
+    async def fetch(client, sem, url):
+        return [], page
+
+    async def ask_must_not_run(*a, **k):
+        raise AssertionError("the store's recipe reads this page")
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(agent, "_fetch_page", fetch)
+    monkeypatch.setattr(recipes, "read", lambda url, html: (15999.0, True))
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", ask_must_not_run)
+    products, _ = asyncio.run(agent._web_find(["Sharp washer 9 kg"], famous=["amazon.eg"]))
+    assert [(p.title, p.price, p.in_stock) for p in products] == [("Sharp Washing Machine 9 Kg ES-TN09", 15999.0, True)]
