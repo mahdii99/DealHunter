@@ -109,3 +109,12 @@ def test_an_option_the_names_say_needs_no_llm_read():
     assert not agent._size_option_shown("55 بوصة، 8K", "Samsung 55 Inch Crystal UHD TV 4K", page_html)
     assert agent._size_option_shown("اسود", "ايفون 15 اسود", "<h1>ايفون 15 أسود</h1>")
     assert not agent._size_option_shown("اسود", "ايفون 15 ازرق", "<h1>ايفون 15 ازرق</h1>")
+
+
+def test_a_copy_without_any_price_costs_no_llm_read(monkeypatch):
+    copy = "Title: Sony WH-CH520 Wireless Headphones\n# Sony WH-CH520 Wireless Headphones\nColor: Black\nBattery 50 hours\n" * 20
+
+    async def ask_must_not_run(*a, **k):
+        raise AssertionError("no price written in the copy: nothing to read")
+    monkeypatch.setattr(llm, "ask_json", ask_must_not_run)
+    assert asyncio.run(agent._read_main_price("https://2b.com.eg/sony-wh-ch520", copy, "Sony WH-CH520 Wireless Headphones")) is None

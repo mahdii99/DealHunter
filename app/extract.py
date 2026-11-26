@@ -479,6 +479,13 @@ _TEXT_BUY = re.compile(r"add to (?:cart|bag|basket)|buy now|[أا]ضف (?:[اإ]
 TEXT_WINDOW = 1200  # after a product's name in a text copy: its own price is there, before related items
 
 
+def text_prices_anywhere(text: str) -> bool:
+    """A text copy writes at least one price with the currency ("EGP 1,299", "1,299 ج.م")."""
+    from .cards import _CURRENCY_AFTER, _CURRENCY_FIRST
+    text = (text or "").translate(_ARABIC_NUMS)
+    return bool(_CURRENCY_FIRST.search(text) or _CURRENCY_AFTER.search(text))
+
+
 def main_product_text(text: str, title: str = "") -> tuple[str, float, bool | None] | None:
     return read_text_copy(text, title)[0]
 
