@@ -128,3 +128,11 @@ def test_a_copy_writing_the_name_another_way_is_read_but_not_a_sibling_model():
     # the 128GB isn't the page's product: its name with another number is never matched to it
     assert not agent._same_name("Samsung Galaxy A55 5G 128GB Awesome Navy", "Samsung Galaxy A55 5G 256GB Awesome Navy")
     assert agent._same_name("Samsung Galaxy A55 5G 256GB Awesome Navy", "Samsung Galaxy A55 5G Awesome Navy")
+
+
+def test_a_copy_with_its_buy_button_below_the_specs_is_read():
+    from app import extract
+    copy = ("# Dell Inspiron 3520 Laptop Core i5\nEGP 28,888\n" + "Screen 15.6 inch. RAM 8 GB. " * 30 + "\nAdd to Cart\n")
+    assert extract.read_text_copy(copy, "Dell Inspiron 3520 Laptop Core i5")[0][2] is True
+    # a sold-out mark and a buy button far down: not clear
+    assert extract.read_text_copy(copy + "Out of stock", "Dell Inspiron 3520 Laptop Core i5")[0][2] is None
