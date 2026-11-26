@@ -216,6 +216,12 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     calls INTEGER NOT NULL,
     tokens INTEGER NOT NULL,
     PRIMARY KEY (day, model, step)
+);
+CREATE TABLE IF NOT EXISTS search_usage (
+    day TEXT NOT NULL,                  -- UTC day, the free searches are counted per month (app/websearch.py)
+    service TEXT NOT NULL,              -- tavily / exa / firecrawl / brave
+    calls INTEGER NOT NULL,
+    PRIMARY KEY (day, service)
 )
 """
 # columns added after a table first went live (CREATE TABLE IF NOT EXISTS doesn't add them to an existing table)
@@ -680,6 +686,17 @@ def add_llm_usage(rows: list[tuple]) -> None:
 def llm_usage_day(day: str) -> list[dict]:
     rows = _db.run("SELECT model, step, provider, calls, tokens FROM llm_usage WHERE day = ?", (day,))
     return [dict(zip(("model", "step", "provider", "calls", "tokens"), r)) for r in rows]
+
+
+def add_search_usage(rows: list[tuple]) -> None:
+    """rows: (day, service, searches) to add to that day's counts."""
+    _db.run_many("INSERT INTO search_usage (day, service, calls) VALUES (?, ?, ?) "
+                 "ON CONFLICT (day, service) DO UPDATE SET calls = search_usage.calls + excluded.calls", rows)
+
+
+def search_usage_month(month: str) -> list[dict]:
+    rows = _db.run("SELECT day, service, calls FROM search_usage WHERE day LIKE ?", (month + "-%",))
+    return [dict(zip(("day", "service", "calls"), r)) for r in rows]
 
 
 def searches_today(client: str) -> int:

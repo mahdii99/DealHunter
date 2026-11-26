@@ -9,7 +9,9 @@ free searches per month), and when one is out of quota or fails, the next one an
 """
 import logging
 import os
+import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -22,7 +24,83 @@ QUOTA_REST = 6 * 3600   # out of quota / bad key: skip it for a while
 BUSY_REST = 60          # rate limited / server error
 CONTENT_CHARS = 12000   # page text the search service already crawled: read it when we can't open the page
 _REST: dict[str, float] = {}
+_QUOTA_OUT: dict[str, float] = {}  # service -> until when we skip it because its free quota looked used up
 _turn = [0]
+# Free searches a month per service (one search = 1 Tavily/Exa credit, 2 Firecrawl credits). The services' own
+# dashboards have the exact count: these are for the owner's /admin page. Change with SEARCH_MONTHLY_LIMITS
+# ("tavily=1000, firecrawl=500").
+MONTHLY_LIMITS = {"tavily": 1000, "exa": 1000, "firecrawl": 500, "brave": 2000}
+PERSIST = True     # save the month's counts in the database (off in tests)
+FLUSH_EVERY = 30   # seconds between saves
+_MONTH: dict[tuple[str, str], int] = {}     # (day, service) -> searches, this month's (and the db's)
+_UNSAVED: dict[tuple[str, str], int] = {}
+_loaded_months: set[str] = set()
+_last_flush = [0.0]
+
+
+def monthly_limits() -> dict[str, int]:
+    out = dict(MONTHLY_LIMITS)
+    for part in os.getenv("SEARCH_MONTHLY_LIMITS", "").split(","):
+        name, _, n = part.partition("=")
+        if name.strip() in out and n.strip().isdigit():
+            out[name.strip()] = int(n)
+    return out
+
+
+def _load_month(month: str) -> None:
+    """This month's counts saved before a restart."""
+    if month in _loaded_months or not PERSIST:
+        return
+    _loaded_months.add(month)
+    try:
+        from . import db
+        for row in db.search_usage_month(month):
+            key = (row["day"], row["service"])
+            _MONTH[key] = _MONTH.get(key, 0) + row["calls"]
+    except Exception as e:  # database down: count from zero
+        log.warning("search usage: could not load %s: %s", month, e)
+
+
+def _count(service: str) -> None:
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _load_month(day[:7])
+    for book in (_MONTH, _UNSAVED):
+        book[(day, service)] = book.get((day, service), 0) + 1
+    if PERSIST and time.time() - _last_flush[0] >= FLUSH_EVERY:
+        _last_flush[0] = time.time()
+        threading.Thread(target=flush_usage, daemon=True).start()
+
+
+def flush_usage() -> None:
+    """Adds the searches counted since the last save to the database."""
+    if not PERSIST or not _UNSAVED:
+        return
+    rows = [(d, s, n) for (d, s), n in list(_UNSAVED.items())]
+    _UNSAVED.clear()
+    try:
+        from . import db
+        db.add_search_usage(rows)
+    except Exception as e:  # kept in memory: saved with the next one
+        log.warning("search usage: could not save: %s", e)
+        for d, s, n in rows:
+            _UNSAVED[(d, s)] = _UNSAVED.get((d, s), 0) + n
+
+
+def quota_report() -> list[dict]:
+    """Each configured search service this month, for the owner's /admin page: used of its free monthly searches,
+    left, and whether it's skipped now (quota used up or key refused, or busy)."""
+    now = datetime.now(timezone.utc)
+    month = now.strftime("%Y-%m")
+    _load_month(month)
+    nxt = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) + timedelta(days=32)).replace(day=1)
+    limits, out = monthly_limits(), []
+    for p in configured():
+        used = sum(n for (d, s), n in _MONTH.items() if s == p and d.startswith(month))
+        lim = limits.get(p)
+        out.append({"name": p, "used": used, "limit": lim, "left": None if lim is None else max(0, lim - used),
+                    "resets_at": nxt.timestamp(), "quota_out_until": _QUOTA_OUT.get(p) if _QUOTA_OUT.get(p, 0) > time.time() else None,
+                    "busy_until": _REST.get(p) if _REST.get(p, 0) > time.time() else None})
+    return out
 
 
 class SearchError(Exception):
@@ -110,6 +188,7 @@ async def search(client: httpx.AsyncClient, query: str, max_results: int = 8,
             _REST[p] = time.time() + BUSY_REST
             continue
         if r.status_code == 200:
+            _count(p)
             try:
                 return [{**x, "snippet": (x.get("snippet") or "")[:300], "content": (x.get("content") or "")[:CONTENT_CHARS]}
                         for x in parse(r.json()) if x.get("url")]
@@ -122,6 +201,7 @@ async def search(client: httpx.AsyncClient, query: str, max_results: int = 8,
         quota = r.status_code in (401, 402, 403, 432, 433)
         _REST[p] = time.time() + (QUOTA_REST if quota else BUSY_REST)
         if quota:
+            _QUOTA_OUT[p] = _REST[p]
             problems.note("search_error", f"{p} {r.status_code}: free quota used up or key refused")
     problems.note("search_error", "every search service failed: " + ", ".join(errors), request=query)
     raise SearchError("البحث فشل: " + ", ".join(errors))

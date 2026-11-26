@@ -58,6 +58,10 @@
   td.t { max-width:340px; overflow-wrap:anywhere; }
   .meter { height:6px; border-radius:3px; background:var(--card2); margin-top:4px; overflow:hidden; }
   .meter i { display:block; height:100%; background:var(--accent); border-radius:3px; }
+  .meter i.warn { background:var(--warn); } .meter i.bad { background:var(--bad); }
+  h3.sub { font-size:14px; margin:14px 0 2px; }
+  .pill.bad { background:var(--warn-soft); color:var(--bad); }
+  summary { cursor:pointer; }
   .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; background:var(--card2); color:var(--muted); white-space:nowrap; }
   .pill.search { background:var(--soft); color:var(--ink); }
   .pill.limit, .pill.warn { background:var(--warn-soft); color:var(--warn); }
@@ -109,8 +113,11 @@
     </section>
 
     <div class="grid">
-      <section class="card wide"><h2>مشاكل السيرفر</h2><p class="muted">ليميت الموديلات المجانية وخدمات البحث والأخطاء. الزوار مش بيشوفوا التفاصيل دي، بيشوفوا رسالة بسيطة بس.</p><div id="problems"></div><div class="scroll" id="problemLog" style="margin-top:10px"></div></section>
-      <section class="card wide"><h2>استهلاك الذكاء الاصطناعي</h2><p class="muted">كام طلب للموديلات المجانية في كل خطوة. الحصص اليومية المجانية محدودة، فكل ما الرقم ده يقل كل ما نقدر نخدم ناس أكتر في اليوم.</p><div id="llmTiles" class="llm-tiles"></div><div class="scroll" id="llmSteps"></div><div class="scroll" id="llmDaily" style="margin-top:10px"></div><h2 style="margin-top:16px">النهارده لكل موديل</h2><p class="muted">اليوم بيبدأ الساعة 10 الصبح بتوقيت القاهرة (نص الليل في أمريكا، لما الحصص المجانية بتتجدد). شغل الخلفية (العروض وفهم العناوين) بيقف عند <span id="llmShare">60</span>٪ من حصة كل موديل، والباقي للعملاء.</p><div class="scroll" id="llmModels"></div></section>
+      <section class="card wide"><h2>مشاكل السيرفر</h2><p class="muted">الحد المجاني لكل موديل ولخدمات البحث: اتصرف منه كام وفاضل كام. الزوار مش بيشوفوا الكلام ده.</p>
+        <h3 class="sub">الموديلات: الحد اليومي</h3><p class="muted" id="llmReset"></p><div class="scroll" id="llmLimits"></div>
+        <h3 class="sub">البحث: الحد الشهري</h3><p class="muted" id="searchReset"></p><div class="scroll" id="searchLimits"></div>
+        <details class="muted" style="margin-top:12px"><summary id="problemsSummary">تفاصيل الأخطاء</summary><div id="problems" style="margin-top:8px"></div><div class="scroll" id="problemLog" style="margin-top:10px"></div></details></section>
+      <section class="card wide"><h2>استهلاك الذكاء الاصطناعي</h2><p class="muted">كام طلب للموديلات المجانية في كل خطوة. الحصص اليومية المجانية محدودة، فكل ما الرقم ده يقل كل ما نقدر نخدم ناس أكتر في اليوم.</p><div id="llmTiles" class="llm-tiles"></div><div class="scroll" id="llmSteps"></div><div class="scroll" id="llmDaily" style="margin-top:10px"></div></section>
       <section class="card"><h2>أكتر حاجات اتدور عليها</h2><div class="scroll" id="searches"></div></section>
       <section class="card"><h2>المتاجر اللي الناس فتحت لينكاتها</h2><div class="scroll" id="stores"></div></section>
       <section class="card wide"><h2>المنتجات اللي اتفتحت أكتر</h2><div class="scroll" id="products"></div></section>
@@ -249,15 +256,40 @@ function drawLLM() {
     ['رسائل', r => `<td class="n">${num(r.turns)}</td>`],
     ['طلبات للموديلات', r => `<td class="n">${num(r.calls)}</td>`],
     ['توكن', r => `<td class="n">${num(r.tokens)}</td>`]]) : '';
-  const models = data.llm_today || [];
-  $('#llmShare').textContent = num(Math.round((data.llm_background_share ?? 0.6) * 100));
-  $('#llmModels').innerHTML = table(models, [
-    ['الموديل', r => `<td class="t">${esc(r.model)} <span class="muted">${esc(r.provider)}</span>${r.limit ? bar(r.used_of_limit, r.limit) : ''}</td>`],
-    ['طلبات', r => `<td class="n">${num(r.calls)}</td>`],
-    ['الحد اليومي', r => `<td class="n">${r.limit ? num(r.used_of_limit) + ' من ' + num(r.limit) : 'مش معروف'}</td>`],
-    ['في', r => `<td>${esc(Object.entries(r.steps).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${STEPS[k] || k} ${num(n)}`).join('، '))}</td>`],
-    ['حالته', r => `<td>${r.resting_until ? 'مستريح لحد ' + new Date(r.resting_until * 1000).toLocaleTimeString('ar-EG', {hour: 'numeric', minute: '2-digit'}) : 'شغال'}</td>`]],
-    'مفيش طلبات للموديلات النهارده لسه.');
+}
+
+const clock = at => new Date(at * 1000).toLocaleTimeString('ar-EG', {hour: 'numeric', minute: '2-digit'});
+const day = at => new Date(at * 1000).toLocaleDateString('ar-EG', {day: 'numeric', month: 'long'});
+function inHours(at) {  // "بعد ٣ ساعات" / "بعد ٢٠ دقيقة" / "بعد ٤ أيام"
+  const m = Math.max(1, Math.round((at - Date.now() / 1000) / 60));
+  return m < 60 ? `بعد ${num(m)} دقيقة` : m < 48 * 60 ? `بعد ${num(Math.round(m / 60))} ساعة` : `بعد ${num(Math.round(m / 1440))} يوم`;
+}
+const limitBar = r => {  // used of the limit, orange from 80٪, red when used up
+  const p = r.limit ? r.used / r.limit : 0;
+  return r.limit ? `<div class="meter"><i class="${p >= 1 ? 'bad' : p >= 0.8 ? 'warn' : ''}" style="width:${Math.min(100, Math.max(2, p * 100))}%"></i></div>` : '';
+};
+const modelName = n => n.endsWith(':*') ? `${esc(n.slice(0, -2))} <span class="muted" dir="rtl">كل موديلاته مع بعض</span>` : esc(n);
+function drawLimits() {
+  const llm = data.llm_limits || [], share = num(Math.round((data.llm_background_share ?? 0.6) * 100));
+  const reset = llm.find(r => !r.name.startsWith('@cf/'));
+  $('#llmReset').innerHTML = (reset ? `بيتجدد الساعة ${clock(reset.resets_at)} (${inHours(reset.resets_at)}). ` : '') +
+    `شغل الخلفية بيقف عند ${share}٪ من كل حد، والباقي للزوار.`;
+  $('#llmLimits').innerHTML = table(llm, [
+    ['الموديل', r => `<td class="t" dir="ltr" style="text-align:right">${modelName(r.name)}${limitBar(r)}</td>`],
+    ['اتصرف', r => `<td class="n">${r.limit ? `${num(r.used)} من ${num(r.limit)}` : num(r.used)}</td>`],
+    ['فاضل', r => `<td class="n">${r.limit ? num(r.left) : '<span class="muted">مفيش حد يومي معروف</span>'}</td>`],
+    ['الحالة', r => `<td>${r.limit && !r.left ? `<span class="pill bad">خلص · يرجع ${clock(r.resets_at)}</span>`
+      : r.resting_until ? `<span class="pill warn">مستريح لحد ${clock(r.resting_until)}</span>` : '<span class="pill search">شغال</span>'}</td>`]],
+    'مفيش مفتاح موديلات متظبط.');
+  const srch = data.search_limits || [];
+  $('#searchReset').textContent = srch.length ? `بيتجدد أول الشهر (${day(srch[0].resets_at)}). الرقم ده من عدّنا إحنا، والرقم الأدق في لوحة كل خدمة.` : '';
+  $('#searchLimits').innerHTML = table(srch, [
+    ['الخدمة', r => `<td class="t" dir="ltr" style="text-align:right">${esc(r.name)}${limitBar(r)}</td>`],
+    ['اتصرف', r => `<td class="n">${r.limit ? `${num(r.used)} من ${num(r.limit)}` : num(r.used)}</td>`],
+    ['فاضل', r => `<td class="n">${r.limit ? num(r.left) : ''}</td>`],
+    ['الحالة', r => `<td>${r.quota_out_until ? '<span class="pill bad">الحد خلص أو المفتاح اترفض</span>'
+      : r.busy_until ? `<span class="pill warn">مشغولة لحد ${clock(r.busy_until)}</span>` : '<span class="pill search">شغالة</span>'}</td>`]],
+    'مفيش مفتاح بحث متظبط.');
 }
 
 function draw() {
@@ -320,6 +352,7 @@ function draw() {
       ? `<td class="t" dir="auto"><a href="${safeUrl(r.detail)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.title || r.detail)}</a> <span class="muted">${money(r.price)}</span></td>`
       : `<td class="t" dir="auto">${esc(r.detail)}${r.request && r.request.toLowerCase() !== r.detail.toLowerCase() ? `<div class="muted">← ${esc(r.request)}</div>` : ''}${r.results != null ? ` <span class="muted">(${num(r.results)} نتيجة)</span>` : ''}</td>`]]);
   const probs = data.problems || [];
+  $('#problemsSummary').textContent = `تفاصيل الأخطاء (${num(probs.reduce((t, r) => t + r.n, 0))})`;
   $('#problems').innerHTML = probs.length ? share(probs, 'n', r => `<span class="pill warn">${esc(PROBLEMS[r.kind] || r.kind)}</span> <span class="muted">آخر مرة ${when(r.last)}</span>`)
     : '<p class="empty">مفيش مشاكل في المدة دي.</p>';
   $('#problemLog').innerHTML = probs.length ? table(data.problem_log || [], [
@@ -333,6 +366,7 @@ function draw() {
     ['', r => `<td class="n muted">${when(r.at)}<div><span class="pill warn">${esc(REASONS[r.reason] || r.reason)}</span></div></td>`],
     ['النتيجة', r => `<td class="t" dir="auto"><a href="${safeUrl(r.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.title)}</a> <span class="muted">${esc(r.store)} ${money(r.price)}</span><div class="muted">${esc(r.request)}</div></td>`]], 'مفيش بلاغات في المدة دي.');
   drawLLM();
+  drawLimits();
   $('#updated').textContent = '· اتحدثت ' + new Date().toLocaleTimeString('ar-EG', {hour: 'numeric', minute: '2-digit'});
 }
 
