@@ -164,3 +164,42 @@ def test_a_product_page_of_a_store_with_a_learned_recipe_needs_no_llm_read(monke
     monkeypatch.setattr(llm, "ask_json", ask_must_not_run)
     products, _ = asyncio.run(agent._web_find(["Sharp washer 9 kg"], famous=["amazon.eg"]))
     assert [(p.title, p.price, p.in_stock) for p in products] == [("Sharp Washing Machine 9 Kg ES-TN09", 15999.0, True)]
+
+
+def test_a_product_pages_text_copy_is_read_without_the_llm():
+    from app import extract
+    copy = ("Title: Samsung Galaxy A36 5G 8GB RAM 256GB Black | noon Egypt\nURL Source: https://www.noon.com/egypt-en/x\n"
+            "![pic](https://img/x.jpg)\n# Samsung Galaxy A36 5G 8GB RAM 256GB Black\n"
+            "Was EGP 24,999 Now EGP 21,199 15% Off\nPay EGP 1,767/month\nYou may also like\nGalaxy A16 EGP 8,999")
+    assert extract.main_product_text(copy) == ("Samsung Galaxy A36 5G 8GB RAM 256GB Black", 21199.0, None)
+    sold = "# Realme 12 Pro Plus 256GB\n21,999 ج.م\nغير متوفر حاليا"
+    assert extract.main_product_text(sold) == ("Realme 12 Pro Plus 256GB", 21999.0, False)
+    # two prices with no discount mark (two sellers, two sizes): not clear, the LLM reads it
+    assert extract.main_product_text("# Realme 12 Pro Plus 256GB\n21,999 ج.م أو 23,500 ج.م") is None
+    assert extract.main_product_text("# Realme 12 Pro Plus 256GB\nprice SAR 1,999") is None  # another currency
+    assert extract.main_product_text("Some page about phones EGP 9,999") is None  # no product name
+
+
+def test_web_text_copies_of_product_pages_skip_the_llm(monkeypatch):
+    from app import fetchers, websearch
+    copy = "# Sharp Washing Machine 9 Kg ES-TN09GSLP\nEGP 15,999\nAdd to cart\n" + "details " * 200
+
+    async def fake_search(client, query, max_results=8, exclude_domains=None, include_domains=None):
+        return [{"url": "https://www.noon.com/egypt-en/sharp-washer-9kg/N123/p/", "title": "Sharp Washing Machine 9 Kg "
+                 "ES-TN09GSLP | noon Egypt", "snippet": "", "content": copy}]
+
+    async def blocked(client, sem, url):
+        raise RuntimeError("403")
+
+    async def ask_must_not_run(*a, **k):
+        raise AssertionError("the copy names its product and one price")
+
+    async def no_reader(client, urls, deadline=12):
+        return {}, {}
+    monkeypatch.setattr(websearch, "search", fake_search)
+    monkeypatch.setattr(agent, "_fetch_page", blocked)
+    monkeypatch.setattr(fetchers, "read_pages", no_reader)
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "ask_json", ask_must_not_run)
+    products, _ = asyncio.run(agent._web_find(["Sharp washer 9 kg"], famous=["amazon.eg"]))
+    assert [(p.title, p.price) for p in products] == [("Sharp Washing Machine 9 Kg ES-TN09GSLP", 15999.0)]
