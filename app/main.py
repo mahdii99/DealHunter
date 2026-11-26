@@ -144,7 +144,7 @@ async def sitemap(request: Request):
     """The site's pages, and every product page with an offer checked recently (app/pages.py)."""
     from time import gmtime, strftime
     site = _site(request)
-    urls = "".join(f"<url><loc>{site}{p}</loc></url>" for p in ("/", "/deals", "/coupons", "/p", "/privacy"))
+    urls = "".join(f"<url><loc>{site}{p}</loc></url>" for p in ("/", "/deals", "/coupons", "/p", "/privacy", "/terms"))
     for p in await _db(pages.listed, default=[]) or []:
         urls += (f"<url><loc>{site}/p/{p['slug']}</loc>"
                  f"<lastmod>{strftime('%Y-%m-%d', gmtime(p['checked_at']))}</lastmod></url>")
@@ -167,6 +167,12 @@ def site_verification(name: str):
 def privacy():
     """Privacy policy: Google requires its link before sign-in can be opened to everyone."""
     return FileResponse(ROOT / "static" / "privacy.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/terms")
+def terms():
+    """Terms of use: what the site is (not a store), prices checked but final at the store, affiliate links."""
+    return FileResponse(ROOT / "static" / "terms.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/search")
@@ -237,6 +243,7 @@ async def more_stream(turn: MoreTurn, request: Request):
     user = await asyncio.to_thread(current_user, request)
 
     async def work():
+        agent.new_search()
         token = market.use(user and user["market"])
         progress = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
         try:
@@ -354,6 +361,7 @@ class ChatTurn(BaseModel):
 async def chat(turn: ChatTurn, request: Request):
     """A chat turn: the newest message is read together with the earlier ones, so a follow-up like
     'سامسونج بس' narrows the previous request instead of starting a new search."""
+    agent.new_search()
     user = await asyncio.to_thread(current_user, request)
     d = await _chat_turn(turn, None if _from_cron(request) else client_id(request), user)
     await _track_turn(request, turn.messages[-1].text, d)
@@ -391,6 +399,7 @@ async def chat_stream(turn: ChatTurn, request: Request):
     user = await asyncio.to_thread(current_user, request)
 
     async def work():
+        agent.new_search()
         token = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
         said = agent.REPLY.set(lambda text: queue.put_nowait({"type": "reply", "text": text}))  # typed as it comes
         early = agent.PARTIAL.set(lambda data: queue.put_nowait({"type": "partial", "data": data}))  # first results

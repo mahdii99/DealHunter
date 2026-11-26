@@ -222,7 +222,7 @@ DAILY_LIMITS = [
     ("groq", "llama-3.1-8b", 14400), ("groq", "", 1000),
     ("openrouter", "*", 50),
 ]
-BACKGROUND_SHARE = float(os.getenv("LLM_BACKGROUND_SHARE", "0.6"))  # the rest of each daily quota is kept for shoppers
+BACKGROUND_SHARE = float(os.getenv("LLM_BACKGROUND_SHARE", "0.4"))  # the rest of each daily quota is kept for shoppers
 PERSIST = True        # save the day's counts in the database (off in tests)
 FLUSH_EVERY = 30      # seconds between saves
 _DAY: dict[tuple[str, str, str], list[int]] = {}    # (day, model, step) -> [calls, tokens], today's (and the db's)

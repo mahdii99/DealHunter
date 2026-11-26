@@ -90,6 +90,7 @@ AR_WORDS = {
     "بوصة": "inch", "بوصه": "inch", "انش": "inch", "كيلو": "kg", "جيجا": "gb", "جيجابايت": "gb", "تيرا": "tb",
     "حصان": "hp", "لتر": "liter", "برو": "pro", "بلس": "plus", "ماكس": "max", "الترا": "ultra", "ألترا": "ultra",
     "لايت": "lite", "ميني": "mini", "نوت": "note", "نووت": "note", "اوتوماتيك": "automatic", "أوتوماتيك": "automatic", "اتوماتيك": "automatic",
+    "ساخن": "heat", "سخن": "heat", "بارد": "cool", "نوفروست": "no frost", "ديفروست": "defrost",
     "كريستال": "crystal", "سمارت": "smart", "انفرتر": "inverter", "ديجيتال": "digital", "وايرلس": "wireless",
 }
 _UNITS = {"inch", "kg", "gb", "tb", "hp", "liter"}
@@ -134,3 +135,78 @@ def english_words(text: str) -> str:
         if plus and "plus" not in out:
             out.append("plus")
     return " ".join(out)
+
+
+# The kinds of products a shopper names, with the words store titles use for each (English and Arabic, folded:
+# ة->ه, أ->ا). With no model to judge, an offer whose title names another kind and not the one asked for is not
+# what the shopper wants: a Sharp TV for "ثلاجة شارب", a fridge's "freezer" is fine since it says refrigerator too.
+KIND_WORDS = {
+    "tv": ("tv", "television", "شاشه", "تلفزيون", "تليفزيون"),
+    "refrigerator": ("refrigerator", "fridge", "ثلاجه", "تلاجه", "ثلاجات", "تلاجات"),
+    "washing machine": ("washing machine", "washer", "غساله"),
+    "air conditioner": ("air conditioner", "conditioner", "split", "تكييف", "مكيف"),
+    "microwave": ("microwave", "ميكروويف"),
+    "water heater": ("water heater", "heater", "سخان"),
+    "cooker": ("cooker", "gas stove", "بوتاجاز"),
+    "vacuum": ("vacuum", "مكنسه"),
+    "air fryer": ("air fryer", "fryer", "قلايه"),
+    "tablet": ("tablet", "ipad", "تابلت", "ايباد"),
+    "phone": ("phone", "smartphone", "mobile", "iphone", "ايفون", "موبايل", "تليفون", "هاتف"),
+    "laptop": ("laptop", "notebook", "macbook", "لابتوب", "لاب توب"),
+    "earbuds": ("earbuds", "earphones", "headphones", "headset", "سماعه", "سماعات"),
+    "watch": ("smart watch", "smartwatch", "watch", "ساعه"),
+    "freezer": ("freezer", "ديب", "فريزر"),
+    "fan": ("fan", "مروحه"),
+    "printer": ("printer", "طابعه"),
+    "router": ("router", "راوتر"),
+    "blender": ("blender", "خلاط"),
+    "iron": ("iron", "مكواه"),
+    "camera": ("camera", "كاميرا"),
+}
+_FOLD = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ة": "ه", "ى": "ي"})
+
+
+def _folded(text: str) -> str:
+    return (text or "").lower().translate(_FOLD)
+
+
+def _says(title: str, word: str) -> bool:
+    """The title has this word or phrase as a whole word (never inside another: "lg" is not in "50LG8070Q", "tv" not
+    in "ctv"). Arabic words may carry ال before them."""
+    w = re.escape(_folded(word))
+    return bool(re.search(rf"(?<![a-z0-9؀-ۿ])(?:ال)?{w}(?![a-z0-9؀-ۿ])", _folded(title)))
+
+
+def kinds_in(text: str) -> set[str]:
+    """The kinds of products a text names (by KIND_WORDS)."""
+    return {k for k, words in KIND_WORDS.items() if any(_says(text, w) for w in words)}
+
+
+def same_kind(title: str, wanted: set[str]) -> bool:
+    """With no model to judge: an offer is not another kind of product than the one the shopper named. A title that
+    names no kind at all ("Samsung Galaxy A36 256GB") is kept; one that names only other kinds is not."""
+    if not wanted:
+        return True
+    named = kinds_in(title)
+    # a fridge's "top freezer" and a phone's "watch face" don't make it another product while it names the one asked
+    return not named or bool(named & wanted)
+
+
+def names_brand(title: str, brand: str) -> bool:
+    """The title names this brand as a whole word, in English or in the Arabic shoppers write."""
+    return _says(title, brand) or any(_says(title, a) for a, e in AR_WORDS.items() if e == brand)
+
+
+# Features a title can say it does NOT have: with no model to judge, an offer that says it lacks what the shopper
+# asked for is left out (a "cool only" air conditioner for "بارد ساخن", a non-inverter one for "انفرتر").
+LACKS = {
+    "heat": r"cool(?:ing)?\s*only|بارد\s*فقط|تبريد\s*فقط|بارد\s*بس",
+    "inverter": r"non[\s-]*inverter|بدون\s*انفرتر",
+    "no frost": r"\bdefrost\b|ديفروست",
+}
+
+
+def lacks_wanted(title: str, eng: str) -> bool:
+    """The title says it lacks a feature the request (english_words output) asks for."""
+    t = _folded(title)
+    return any(re.search(pat, t) for feat, pat in LACKS.items() if re.search(rf"(?<![a-z]){feat}(?![a-z])", eng))

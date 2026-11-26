@@ -25,7 +25,7 @@ from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, we
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
-from .query import AR_WORDS, BRANDS, english_words, parse_query, shows_size, wanted_sizes
+from .query import AR_WORDS, BRANDS, english_words, kinds_in, lacks_wanted, names_brand, parse_query, same_kind, shows_size, wanted_sizes
 from .ranking import rank
 from .stores import ALL_STORES
 from .stores.amazon import parse_amazon_cards
@@ -515,6 +515,8 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
         plan["understood"] = shopper_text(str(plan.get("understood") or reply).strip(), shown)
     if hits and plan["action"] in ("search", "recommend"):
         plan["checked"], plan["check_hits"] = True, hits
+    said = " ".join(m.get("text", "") for m in messages if m.get("role") == "user")
+    plan["pick_options"] = [o for o in _strs(plan.get("pick_options"), 4, 60) if shopper_named(o, said)]
     log.info("agent: plan %s -> %r", plan["action"], reply if plan["action"] != "search" else plan["request"])
     return plan
 
@@ -739,7 +741,55 @@ def _partial(data: dict) -> None:
         show(data)
 
 
-TIMES: dict[str, float] = {}  # seconds per stage of the last search (log + benchmark report)
+_TIMES: contextvars.ContextVar = contextvars.ContextVar("times", default=None)
+
+
+class _Times:
+    """Seconds per stage of this search (log, /admin and the live check). One dict per shopper's request: searches
+    running at the same time used to share one, and one search clearing it made another fail with KeyError 'search'
+    (live 2026-11-26, a 500 for "ريلمي 12 برو بلس"). new_search() starts a request's own; tasks it starts share it."""
+
+    def _d(self) -> dict:
+        d = _TIMES.get()
+        if d is None:
+            d = {}
+            _TIMES.set(d)
+        return d
+
+    def __getitem__(self, k):
+        return self._d().get(k, 0.0)
+
+    def __setitem__(self, k, v):
+        self._d()[k] = v
+
+    def __iter__(self):
+        return iter(self._d())
+
+    def __len__(self):
+        return len(self._d())
+
+    def get(self, k, default=None):
+        return self._d().get(k, default)
+
+    def keys(self):
+        return self._d().keys()
+
+    def items(self):
+        return self._d().items()
+
+    def clear(self):
+        self._d().clear()
+
+    def update(self, *a, **kw):
+        self._d().update(*a, **kw)
+
+
+TIMES = _Times()
+
+
+def new_search() -> None:
+    """A shopper's request starts: its own stage times, not another request's."""
+    _TIMES.set({})
 
 
 PAGE_CHARS = 3000  # page text sent to the LLM: the part with the products (most of a page is menus and footers)
@@ -1676,7 +1726,8 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
     stocked = stocked + [p for p in indexed if p.url not in have]
     covered = {trust.domain(p.url) for p in stocked}
     judged: dict = {}
-    fast = asyncio.create_task(_index_first(indexed, options, raw, plan, judged)) if indexed and VERIFY_PICKS else None
+    quick = indexed or _shelf_firsts(stocked, raw, plan, minp, maxp)
+    fast = asyncio.create_task(_index_first(quick, options, raw, plan, judged)) if quick and VERIFY_PICKS else None
     # the big stores' own search pages, side by side with the web search: no LLM call, every product they sell
     # (not only the ones on our price list's category pages)
     direct = asyncio.create_task(_store_search(queries + web_queries)) if websearch.available() else None
@@ -2259,6 +2310,13 @@ def _index_offers(plan: dict, minp=None, maxp=None) -> list[Product]:
                 continue
         out.append(p)
     out = sorted({p.url: p for p in out}.values(), key=_paid)
+    # a need ("موبايل كويس للتصوير في حدود 12 ألف"): the products the planner picked for that need first, not the
+    # cheapest phones of the kind (live 2026-11-26: entry phones shown for a camera request)
+    fits = [p for p in out if _suggested(p.title, plan)] if plan.get("need_based") else []
+    if len(fits) >= 2:
+        out = fits
+    elif fits:
+        out = fits + [p for p in out if p not in fits]
     # several stores, not the 12 cheapest of one
     by_store: dict[str, int] = {}
     picked = []
@@ -2267,6 +2325,61 @@ def _index_offers(plan: dict, minp=None, maxp=None) -> list[Product]:
             by_store[p.store] = by_store.get(p.store, 0) + 1
             picked.append(p)
     return picked[:INDEX_MAX]
+
+
+_OPTION_WORDS = {"لون", "مقاس", "موديل", "سعه", "مساحه", "رام", "جيجا", "جيجابايت", "تيرا", "size", "color", "colour",
+                 "model", "storage", "gb", "tb", "ram"}
+
+
+def shopper_named(option: str, said: str) -> bool:
+    """A size/color option the planner read is something the shopper wrote ("لون أسود" when they said "اسود"), not
+    one it made up: live 2026-11-26 an AC search showed "check white, model AY-A12ZSE, ..." on every offer, words the
+    shopper never wrote. A word of the option (not "لون"/"مقاس"...) or its number must be in their messages."""
+    have = _fold(said)
+    words = [_fold(w) for w in re.split(r"[\s،,/]+", option or "") if w]
+    words = [w[2:] if w.startswith("ال") and len(w) > 4 else w for w in words if w not in _OPTION_WORDS]
+    for w in words:
+        if re.fullmatch(r"\d+(?:\.\d+)?", w):
+            if re.search(rf"(?<![\d.]){re.escape(w)}(?![\d.])", have):
+                return True
+        elif len(w) >= 2 and (w in have or _stem(w) in have):
+            return True
+    return False
+
+
+def _shelf_firsts(stocked: list[Product], raw: str, plan: dict, minp=None, maxp=None) -> list[Product]:
+    """When the index has nothing with the attributes asked for (most titles aren't read by a model yet), our price
+    list's offers that are clearly the brand, kind and size the shopper wrote: shown in seconds like the index's,
+    instead of after the whole first round (live 2026-11-26: first offers at 36-62 s). For a need ("good camera
+    phone") only the products the planner suggested for it, never just the cheapest of the kind."""
+    eng = english_words(raw)
+    if not eng or not stocked:
+        return []
+    out = [p for p in stocked if _matches_request(p, eng) and not _is_part(p.title)
+           and (maxp is None or p.price <= maxp) and (minp is None or p.price >= minp)]
+    if plan.get("need_based"):
+        out = [p for p in out if _suggested(p.title, plan)]
+    by_store: dict[str, int] = {}
+    picked = []
+    for p in sorted(out, key=_paid):
+        if by_store.get(p.store, 0) < PER_STORE_FIRST // 2:
+            by_store[p.store] = by_store.get(p.store, 0) + 1
+            picked.append(p)
+    return picked[:INDEX_MAX]
+
+
+def _suggested(title: str, plan: dict) -> bool:
+    """The title is one of the products the planner suggested for the shopper's need: most of that product's words
+    (70%, and every model number in it) are in the title."""
+    have = _squash_size(title)
+    for name in plan.get("suggested_products") or []:
+        words = [_squash_size(w) for w in re.split(r"[\s,/()+-]+", str(name).lower()) if _squash_size(w)]
+        if not words:
+            continue
+        codes = [w for w in words if re.search(r"\d", w)]
+        if all(c in have for c in codes) and sum(w in have for w in words) >= max(1, round(len(words) * 0.7)):
+            return True
+    return False
 
 
 async def _index_first(found: list[Product], options: str, raw: str, plan: dict, judged: dict) -> list[Product]:
@@ -2434,6 +2547,14 @@ def _stem(word: str) -> str:
     return w
 
 
+def _has_word(hay: str, word: str) -> bool:
+    """A number the shopper wrote is a whole number in the title ("16" is not in the TV code "FJ16EX"; "16 قدم" or
+    "16ft" is); any other word may be part of a longer one (Arabic stems, "galaxy" in "galaxy-a15")."""
+    if word.isdigit():
+        return bool(re.search(rf"(?<![a-z0-9.]){word}(?![0-9.])", hay))
+    return word in hay
+
+
 def _shelf_offers(raw: str, request: str) -> list[Product]:
     """No model can understand the request: our price list's products whose title or keywords (English and Arabic,
     from the indexing step) have most of the shopper's words, cheapest first. A model number they wrote must be
@@ -2449,7 +2570,7 @@ def _shelf_offers(raw: str, request: str) -> list[Product]:
             continue
         if w.isdigit() and len(w) >= 4:  # "2000" with no unit is mostly a price, not a product word
             continue
-        alts = {_stem(w)} | ({AR_VOCAB[w]} if w in AR_VOCAB else set())
+        alts = {_stem(w)} | ({AR_VOCAB[w]} if w in AR_VOCAB else set()) | ({AR_WORDS[w]} if w in AR_WORDS else set())
         if alts not in groups:
             groups.append(alts)
     if not groups:
@@ -2460,10 +2581,13 @@ def _shelf_offers(raw: str, request: str) -> list[Product]:
     rows = _db_safe(db.catalog_like, words[:8], market.current().code, now - catalog.FRESH_HOURS * 3600, 300,
                     now - catalog.FOUND_DAYS * 86400) or []
     need = max(1, -(-len(groups) * 6 // 10))  # most of the words (60%, rounded up)
+    kinds = kinds_in(english_words(request))
     scored = []
     for r in rows:
+        if not same_kind(r.get("title") or "", kinds):
+            continue  # a "Sharp fridge" request never fills its places with Sharp TVs
         hay = _fold(" ".join(str(r.get(k) or "") for k in ("title", "keywords", "attrs")))
-        hits = sum(any(a in hay for a in g) for g in groups)
+        hits = sum(any(_has_word(hay, a) for a in g) for g in groups)
         if hits < need or any(c not in _squash_size(hay) for c in map(_squash_size, codes)):
             continue
         price = r.get("price")
@@ -2498,14 +2622,15 @@ def _shelf_offers(raw: str, request: str) -> list[Product]:
 
 
 def _matches_request(p: Product, eng: str) -> bool:
-    """With no model to judge it, an offer must at least be the brand and the size the shopper wrote: a Samsung
-    55-inch TV request never shows a 32-inch monitor or a 43-inch TV, a Toshiba 10 kg washer never a Fresh 6 kg one.
-    The brand may be written in English or Arabic in the title."""
-    title = _fold(p.title)
-    for brand in {w for w in eng.split() if w in BRANDS}:
-        arabic = [_fold(a) for a, e in AR_WORDS.items() if e == brand]
-        if brand not in title and not any(a in title for a in arabic):
-            return False
+    """With no model to judge it, an offer must at least be the brand, the kind of product and the size the shopper
+    wrote: a Samsung 55-inch TV request never shows a 32-inch monitor or a 43-inch TV, a Toshiba 10 kg washer never a
+    Fresh 6 kg one, a Sharp fridge never a Sharp TV. The brand may be written in English or Arabic in the title."""
+    if not all(names_brand(p.title, brand) for brand in {w for w in eng.split() if w in BRANDS}):
+        return False  # as a whole word: an LG request never shows a Levon TV whose model code is "50LG8070Q"
+    if not same_kind(p.title, kinds_in(eng)):
+        return False  # a "Sharp fridge" request never shows Sharp TVs
+    if lacks_wanted(p.title, eng):
+        return False  # "بارد ساخن" never shows a "Cooling Only" air conditioner
     return all(shows_size(p.title, n, u) for n, u in wanted_sizes(eng))
 
 
