@@ -8,6 +8,10 @@ on:
       requests:
         description: "Searches to time, separated by |"
         default: "ريلمي 12 برو|غسالة توشيبا 10 كيلو|شاشة سامسونج 55 بوصة"
+      no_llm:
+        description: "Answer as if every AI model rested (the quick answer with no model)"
+        type: boolean
+        default: false
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -20,6 +24,8 @@ jobs:
       - name: Time the searches
         env:
           SITE_URL: ${{ secrets.SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          NO_LLM: ${{ inputs.no_llm && '1' || '0' }}
           REQUESTS: ${{ inputs.requests }}
         run: |
           IFS='|' read -ra R <<< "$REQUESTS"

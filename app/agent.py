@@ -27,7 +27,9 @@ from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, we
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
-from .query import AR_UNITS, AR_WORDS, BRANDS, english_words, kinds_in, lacks_wanted, names_brand, parse_query, same_kind, shows_size, wanted_sizes
+from .query import (AR_UNITS, AR_WORDS, BRANDS, english_words, is_accessory, kinds_in, lacks_wanted, misses_feature,
+                    names_brand, other_variant, parse_query, phrased, same_kind, shows_size,
+                    wanted_sizes, wants_accessory)
 from .ranking import rank
 from .stores import ALL_STORES
 from .stores.amazon import parse_amazon_cards
@@ -2624,7 +2626,7 @@ def _shelf_firsts(stocked: list[Product], raw: str, plan: dict, minp=None, maxp=
     eng = english_words(raw)
     if not eng or not stocked:
         return []
-    out = [p for p in stocked if _matches_request(p, eng) and not _is_part(p.title)
+    out = [p for p in stocked if _matches_request(p, eng) and (wants_accessory(eng) or not _is_part(p.title))
            and (maxp is None or p.price <= maxp) and (minp is None or p.price >= minp)]
     if plan.get("need_based"):
         out = [p for p in out if _suggested(p.title, plan)]
@@ -2746,7 +2748,7 @@ def plain_request(texts: list[str]) -> str:
     from .query import STOPWORDS
     seen, words = set(), []
     for text in texts:
-        for w in _DIACRITICS.sub("", text or "").split():
+        for w in phrased(_DIACRITICS.sub("", text or "")).split():  # "جي بي ال" kept as one word, "jbl"
             k = w.strip(".,!?؟،").lower()
             if k and k not in FILLER and k not in STOPWORDS and k not in seen:
                 seen.add(k)
@@ -2763,7 +2765,7 @@ async def run_rules(raw: str, note: str) -> dict:
         # every model is resting for a while: the web search's pages couldn't be judged either (live 2026-11-25:
         # 50-80 s, then nothing). Answer in seconds from our own price list instead, each price checked on its page
         wait = None
-        if llm.available() and ((wait := await llm.free_in()) is None or wait > OUTAGE_WAIT):
+        if NO_LLM.get() or llm.available() and ((wait := await llm.free_in()) is None or wait > OUTAGE_WAIT):
             return await _outage_answer(raw, q, wait, note)
         # no model could plan it, though some aren't resting: they're failing or slow now (live 2026-11-25: 141 s,
         # then nothing). The quick answer first; the slow search only when it found nothing
@@ -2794,6 +2796,8 @@ async def run_rules(raw: str, note: str) -> dict:
     }
 
 
+# our own live check (scripts/live_site.py with the CRON_SECRET header and x-no-llm) answers as if every model rested
+NO_LLM: contextvars.ContextVar[bool] = contextvars.ContextVar("no_llm", default=False)
 OUTAGE_WAIT = 5  # seconds: a model free again within this is worth the normal search; later, the quick answer
 OUTAGE_MAX = 12  # offers of our price list checked on their pages when no model can help
 _AR_FOLD = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ة": "ه", "ى": "ي"})
@@ -2824,6 +2828,15 @@ def _has_word(hay: str, word: str) -> bool:
     return word in hay
 
 
+_BUDGET_WORDS = re.compile(r"(?:تحت|اقل من|أقل من|فوق|اكتر من|أكثر من|لحد|في حدود|حوالي|under|below|over|above|around)"
+                           r"\s*\d[\d,.]*\s*(?:الف|ألف|k)?\s*(?:جنيه|جنية|ج|egp|le)?")
+
+
+def _without_budget(text: str) -> str:
+    """The request without its budget ("تحت 2000 جنيه"): a price is not a product word to search or match."""
+    return _BUDGET_WORDS.sub(" ", text or "")
+
+
 def _shelf_offers(raw: str, request: str) -> list[Product]:
     """No model can understand the request: our price list's products whose title or keywords (English and Arabic,
     from the indexing step) have most of the shopper's words, cheapest first. A model number they wrote must be
@@ -2831,7 +2844,7 @@ def _shelf_offers(raw: str, request: str) -> list[Product]:
     from .query import STOPWORDS, AR_VOCAB
     parsed = parse_query(raw)
     # each word of the request, with its English word when we know one ("سماعات" -> "earbuds")
-    text = re.sub(r"(?:تحت|اقل من|أقل من|فوق|اكتر من|أكثر من|لحد|under|below|over|above)\s*\d[\d,]*", " ", request)
+    text = phrased(_without_budget(request))  # "سماعة جي بي ال": the brand is one word, "jbl"
     groups: list[set[str]] = []
     for w in text.split():
         w = w.strip(".,!?؟،()").lower()
@@ -2877,8 +2890,8 @@ def _shelf_offers(raw: str, request: str) -> list[Product]:
             if not p.trusted and (p.trust_score or 0) < MIN_TRUST:
                 continue
         scored.append((accessory, -hits, price, p))
-    if any(not a for a, *_ in scored):  # a phone's cases and screen guards share its words: the product itself first
-        scored = [x for x in scored if not x[0]]
+    if not wants_accessory(english_words(request)):  # a phone's cases and screen guards share its words
+        scored = [x for x in scored if not x[0] and not is_accessory(x[3].title)]
     scored.sort(key=lambda x: (x[1], x[2]))
     picked, by_store = [], {}
     for _, _, _, p in scored:
@@ -2900,6 +2913,12 @@ def _matches_request(p: Product, eng: str) -> bool:
         return False  # a "Sharp fridge" request never shows Sharp TVs
     if lacks_wanted(p.title, eng):
         return False  # "بارد ساخن" never shows a "Cooling Only" air conditioner
+    if misses_feature(p.title, eng):
+        return False  # "لابتوب للالعاب" never shows a Celeron office laptop
+    if other_variant(p.title, eng):
+        return False  # "ريلمي 12 برو" never shows the 12 Pro+ or the plain 12
+    if not wants_accessory(eng) and is_accessory(p.title):
+        return False  # "سماعة" never shows an earbuds cleaning kit, "لابتوب" never a laptop stand or bag
     return all(shows_size(p.title, n, u) for n, u in wanted_sizes(eng))
 
 
@@ -2907,16 +2926,9 @@ async def _nothing() -> tuple[list, dict]:
     return [], {}
 
 
-# words that make a title an accessory or a part for the product the shopper named ("case cover compatible with
-# Xiaomi Redmi Note 14 Pro"): with no model to judge, those are never shown for a search of the product itself
-PART_WORDS = {"case", "cases", "cover", "covers", "protector", "tempered", "film", "skin",
-              "holder", "mount", "replacement", "compatible", "sticker", "stickers", "pouch", "sleeve", "spare",
-              "bracket", "tpu", "bumper", "shockproof"}
-
-
 def _is_part(title: str) -> bool:
-    words = set(re.split(r"[^a-z0-9\u0600-\u06ff]+", (title or "").lower()))
-    return bool(words & PART_WORDS)
+    """An accessory or a part (a case "compatible with" the phone, a laptop stand), not the product itself."""
+    return is_accessory(title)
 
 
 def _fitting(products: list[Product], eng: str) -> list[Product]:
@@ -2932,7 +2944,7 @@ def _fitting(products: list[Product], eng: str) -> list[Product]:
     # a model's own number (r50i, a55, 15irh10) names the product; a size or a chip (512gb, i5) doesn't
     names = [c for c in codes if len(c) >= 4 and not re.fullmatch(r"\d+(gb|tb|inch|kg|hp|mah|w|liter)", c)]
     need = max(1, -(-len(words) * 6 // 10))
-    want_part = bool(set(eng.lower().split()) & PART_WORDS)
+    want_part = wants_accessory(eng)
     out = []
     for p in products:
         title = _squash_size(p.title)
@@ -2960,14 +2972,20 @@ async def _outage_answer(raw: str, request: str, wait: float | None, note: str) 
     none, an honest message and today's deals."""
     t0 = time.monotonic()
     _progress("الموديلات الذكية مشغولة دلوقتي، فبدورلك في فهرس الأسعار بتاعنا وبتأكد من كل سعر من صفحة المتجر...")
-    eng = english_words(request)
+    eng = english_words(_without_budget(request))
+    parsed = parse_query(request)
     # our price list, and the big stores' own search pages for the request in English words (no model needed)
-    shelf, (found, _) = await asyncio.gather(asyncio.to_thread(_shelf_offers, raw, request),
-                                             _store_search([eng]) if eng else _nothing())
+    shelf, (found, errors) = await asyncio.gather(asyncio.to_thread(_shelf_offers, raw, request),
+                                                  _store_search([eng]) if eng else _nothing())
     have = {p.url for p in shelf}
-    picks = shelf + [p for p in _fitting(found, eng) if p.url not in have][:OUTAGE_MAX]
-    picks = [p for p in picks if _matches_request(p, eng)]
+    fitting = [p for p in _fitting(found, eng) if p.url not in have
+               and not (parsed.max_price and _paid(p) > parsed.max_price)
+               and not (parsed.min_price and _paid(p) < parsed.min_price)]
+    picks = [p for p in shelf + fitting[:OUTAGE_MAX] if _matches_request(p, eng)]
     shown, unchecked, gone = await checked_only(picks, quick=True) if picks else ([], [], 0)
+    # how many offers each step kept, for the live check: where a request with no model ends with too few
+    funnel = {"understood": eng, "price_list": len(shelf), "store_search": len(found), "store_fitting": len(fitting),
+              "matched": len(picks), "checked": len(shown), "sold_out": gone}
     for p in shown:
         p.unconfirmed = True
     later = _wait_text(wait)
@@ -2986,5 +3004,5 @@ async def _outage_answer(raw: str, request: str, wait: float | None, note: str) 
         "understood": note, "request": raw, "suggested_products": [], "queries": [request], "requirements": [],
         "max_price": None, "min_price": None, "summary": summary, "candidates_checked": len(picks),
         "sold_out_dropped": gone, "results": [p.to_dict() for p in _ordered(shown, "")], "unchecked": unchecked,
-        "store_errors": {},
+        "store_errors": errors or {}, "no_llm_funnel": funnel,
     }
