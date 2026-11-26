@@ -31,7 +31,7 @@ _CURRENCY = r"(?:EGP|E\.?G\.?P|L\.?E\.?|ج\.?\s?م\.?|جنيه(?:\s?مصري)?|�
 _PRICE_TEXT = re.compile(r"(?:" + _CURRENCY + r"\s*(\d[\d,]*(?:\.\d{1,2})?)|(\d[\d,]*(?:\.\d{1,2})?)\s*" + _CURRENCY
                          + r")(?![\w؀-ۿ])", re.I)
 _NUMBER = r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?"  # 1,299 / 1.299,00 / 1299.5
-_CURRENCY_FIRST = re.compile(_CURRENCY + r"\s*(" + _NUMBER + r")(?![\d.,]*\d)", re.I)
+_CURRENCY_FIRST = re.compile(r"(?<![A-Za-z\u0600-\u06ff])" + _CURRENCY + r"\s*(" + _NUMBER + r")(?![\d.,]*\d)", re.I)
 _CURRENCY_AFTER = re.compile(r"(?<![\d.,])(" + _NUMBER + r")\s*" + _CURRENCY + r"(?![\w\u0600-\u06ff])", re.I)
 _OLD_WORD = re.compile(r"old|was|before|regular|strike|crossed|compare|original|list|line-?through|del", re.I)
 

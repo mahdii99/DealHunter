@@ -2026,6 +2026,10 @@ def test_size_read_sees_the_variant_stock(monkeypatch):
     monkeypatch.setattr(llm, "ask_json", fake_ask)
     url = "https://shop.com/p/af1-black"
     p = asyncio.run(agent._read_main_price(url, WOO_SHOE.replace("{s44}", "true"), "Nike Air Force 1", wanted="مقاس 46"))
+    # the page's own options data names size 46 as sold out: read without asking the LLM
+    assert p.option_ok is False and p.in_stock is False and not seen
+    # a size the options data doesn't name: the LLM reads the page, with the options' stock
+    p = asyncio.run(agent._read_main_price(url, WOO_SHOE.replace("{s44}", "true"), "Nike Air Force 1", wanted="مقاس 47"))
     assert "46: OUT OF STOCK" in seen[0] and "44: in stock" in seen[0] and p.option_ok is False
     # every size sold out: the product is, without asking the LLM
     p = asyncio.run(agent._read_main_price(url, WOO_SHOE.replace("{s44}", "false"), "Nike Air Force 1"))

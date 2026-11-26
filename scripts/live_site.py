@@ -61,6 +61,8 @@ def report(text: str, got: dict) -> str:
                                           for k, v in (used.get("by_step") or {}).items() if v.get("fails")) or "-"),
              "  time per step: " + ", ".join(f"{k} {v}" for k, v in (d.get("timings") or {}).items()),
              f"  store errors: {d.get('store_errors') or '-'}",
+             "  store pages read: %s without the LLM, %s by the LLM" % (
+                 (d.get("page_reads") or {}).get("without_llm", "?"), (d.get("page_reads") or {}).get("llm", "?")),
              "  pages the LLM read: " + (", ".join(d.get("llm_pages") or []) or "-")]
     for p in (d.get("results") or [])[:8]:
         lines.append(f"    {p.get('price')} | {p.get('store')} | {(p.get('title') or '')[:70]}")

@@ -480,6 +480,7 @@ async def _chat_turn(turn: ChatTurn, client: str | None = None, user: dict | Non
     used = agent.llm.usage()  # this turn's own calls (a saved answer served again carries its first run's count)
     d["llm_usage"] = {"calls": used["calls"], "tokens": used["tokens"],
                       "by_step": {k: dict(v) for k, v in used["by_step"].items()}}
+    d["page_reads"] = agent.page_reads()
     d["llm_pages"] = agent.llm_pages()  # (the live check shows which store pages still needed an LLM read)
     if user:
         await asyncio.to_thread(_personalize, d, user)
