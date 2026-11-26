@@ -83,14 +83,16 @@ def _fresh_agent_memory():
 
 @pytest.fixture(autouse=True)
 def _llm_counts_in_memory():
-    """Each test counts its LLM calls from zero, and doesn't save them in the database (tests that check it do)."""
-    from app import llm
-    llm.PERSIST = False
-    for book in (llm._DAY, llm._UNSAVED, llm._PROVIDER):
+    """Each test counts its LLM calls and web searches from zero, and doesn't save them in the database (tests that
+    check it do)."""
+    from app import llm, websearch
+    llm.PERSIST = websearch.PERSIST = False
+    for book in (llm._DAY, llm._UNSAVED, llm._PROVIDER, websearch._MONTH, websearch._UNSAVED, websearch._QUOTA_OUT,
+                 websearch._loaded_months):
         book.clear()
     llm._loaded_days.clear()
     yield
-    llm.PERSIST = False
+    llm.PERSIST = websearch.PERSIST = False
 
 
 @pytest.fixture(autouse=True)

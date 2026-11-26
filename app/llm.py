@@ -238,13 +238,20 @@ def quota_day(model: str = "") -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=shift)).strftime("%Y-%m-%d")
 
 
-def daily_limit(provider: str, model: str) -> tuple[str, int] | None:
-    """(what is counted: the model or 'provider:*', its free requests a day), or None when not known."""
+def _limit_entry(provider: str, model: str) -> tuple[str, str, int] | None:
+    """The DAILY_LIMITS line this model counts on (the first that matches), or None."""
     name = model.lower()
     for prov, part, rpd in DAILY_LIMITS:
         if prov == provider and (part == "*" or part in name):
-            return (f"{provider}:*" if part == "*" else model), rpd
+            return prov, part, rpd
     return None
+
+
+def daily_limit(provider: str, model: str) -> tuple[str, int] | None:
+    """(what is counted: the model or 'provider:*', its free requests a day), or None when not known."""
+    if not (entry := _limit_entry(provider, model)):
+        return None
+    return (f"{provider}:*" if entry[1] == "*" else model), entry[2]
 
 
 def _load_day(day: str) -> None:
@@ -335,6 +342,36 @@ def today_report() -> list[dict]:
         row["used_of_limit"] = used
         row["resting_until"] = _COOLDOWN.get(row["model"]) if _COOLDOWN.get(row["model"], 0) > now else None
     return sorted(out.values(), key=lambda r: -r["calls"])
+
+
+def quota_report() -> list[dict]:
+    """Each free daily limit, for the owner's /admin page: what it counts, used today of its limit, left, when it
+    renews, and whether we skip the model now. Known limits of a configured provider show up even unused; a model
+    with no known daily limit shows up only once it was used today."""
+    now, rows = time.time(), {}
+    for r in today_report():
+        lim = daily_limit(r["provider"], r["model"])
+        key = lim[0] if lim else r["model"]
+        row = rows.setdefault(key, {"name": key, "provider": r["provider"], "used": 0, "limit": lim[1] if lim else None,
+                                    "resting_until": None})
+        row["used"] = r["used_of_limit"] if lim else row["used"] + r["calls"]
+        if r["resting_until"] and (row["resting_until"] or 0) < r["resting_until"]:
+            row["resting_until"] = r["resting_until"]
+    for provider, part, rpd in DAILY_LIMITS:
+        configured = bool(os.getenv("GEMINI_API_KEY")) if provider == "gemini" else _configured(provider)
+        if not configured:
+            continue
+        entry = (provider, part, rpd)
+        if not any(r["provider"] == provider and _limit_entry(provider, r["name"]) == entry for r in rows.values()):  # nothing used yet: still show the limit, named by what it covers
+            name = f"{provider}:*" if part == "*" else f"{provider} {part or 'other models'}"
+            rows[name] = {"name": name, "provider": provider, "used": 0, "limit": rpd, "resting_until": None}
+    for row in rows.values():
+        row["left"] = None if row["limit"] is None else max(0, row["limit"] - row["used"])
+        row["resets_at"] = _daily_quota_reset(row["name"].startswith("@cf/"))
+        if row["resting_until"] and row["resting_until"] <= now:
+            row["resting_until"] = None
+    return sorted(rows.values(), key=lambda r: (r["limit"] is None, -(r["used"] / r["limit"] if r["limit"] else 0),
+                                                -r["used"], r["name"]))
 
 
 def _daily_quota_reset(utc_midnight: bool = False) -> float:

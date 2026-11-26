@@ -177,3 +177,48 @@ def test_a_key_without_an_active_plan_rests_half_an_hour(monkeypatch):
     asyncio.run(llm.ask_json("page", prefer="bulk", step="read_page"))
     assert used.count("llama-3.1-8b-instant") == 1
     assert 1700 < llm._COOLDOWN["llama-3.1-8b-instant"] - time.time() <= 1800
+
+
+def test_admin_limits_show_each_daily_limit_used_and_left(monkeypatch):
+    """mahdy, 26 Nov: /admin shows each model's free daily limit (used, left, when it renews), not an error log."""
+    for k in ("GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "MISTRAL_API_KEY", "NVIDIA_API_KEY",
+              "CLOUDFLARE_API_KEY", "CEREBRAS_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    llm._COOLDOWN.clear()
+    for _ in range(20):
+        llm._tally("gemini", "gemini-flash-latest", "plan", 10)
+    llm._tally("gemini", "gemini-flash-lite-latest", "judge", 10)
+    llm._tally("nvidia", "meta/llama-3.3-70b-instruct", "judge", 10)
+    rows = {r["name"]: r for r in llm.quota_report()}
+    assert rows["gemini-flash-latest"]["used"] == 20 and rows["gemini-flash-latest"]["left"] == 0
+    assert rows["gemini-flash-lite-latest"]["limit"] == 500 and rows["gemini-flash-lite-latest"]["left"] == 499
+    assert rows["gemini gemma"]["used"] == 0 and rows["gemini gemma"]["limit"] == 14400   # unused, still shown
+    assert rows["groq llama-3.1-8b"]["limit"] == 14400 and rows["groq other models"]["limit"] == 1000
+    assert "openrouter:*" not in rows                                                      # no key
+    assert rows["meta/llama-3.3-70b-instruct"]["limit"] is None and rows["meta/llama-3.3-70b-instruct"]["used"] == 1
+    assert 0 < rows["gemini-flash-latest"]["resets_at"] - time.time() <= 86400
+    assert list(rows)[0] == "gemini-flash-latest"                                          # used up first
+
+
+def test_web_searches_are_counted_per_month_and_saved(monkeypatch, tmp_path):
+    from app import websearch
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "prices.db")
+    db.close()
+    for k in websearch.KEYS.values():
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    monkeypatch.setenv("SEARCH_MONTHLY_LIMITS", "tavily=300")
+    websearch.PERSIST = True
+    monkeypatch.setattr(websearch, "FLUSH_EVERY", 10 ** 9)
+    websearch._last_flush[0] = time.time()
+    for _ in range(3):
+        websearch._count("tavily")
+    websearch.flush_usage()
+    websearch._MONTH.clear(); websearch._loaded_months.clear()  # the server restarts
+    [row] = websearch.quota_report()
+    assert row["name"] == "tavily" and row["used"] == 3 and row["limit"] == 300 and row["left"] == 297
+    assert row["resets_at"] > time.time() and row["quota_out_until"] is None
+    db.close()
