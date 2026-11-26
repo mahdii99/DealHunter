@@ -21,6 +21,7 @@ from urllib.parse import quote_plus, unquote, urljoin, urlparse
 
 import httpx
 
+from . import buybox
 from . import cards as cards_mod
 from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, websearch
 from . import extract as extract_mod
@@ -807,6 +808,7 @@ def new_search() -> None:
     """A shopper's request starts: its own stage times, not another request's."""
     _TIMES.set({})
     _LLM_PAGES.set([])
+    _PAGE_READS.set([0, 0])
 
 
 # the store pages the LLM read for this search ("domain listing" / "domain product"), shown by the live check, so
@@ -816,6 +818,23 @@ _LLM_PAGES: contextvars.ContextVar[list | None] = contextvars.ContextVar("llm_pa
 
 def llm_pages() -> list[str]:
     return list(_LLM_PAGES.get() or [])
+
+
+# store pages read for this search: [read with no LLM call, read by the LLM]
+_PAGE_READS: contextvars.ContextVar[list | None] = contextvars.ContextVar("page_reads", default=None)
+
+
+def _count_read(by_llm: bool, label: str = "") -> None:
+    if (reads := _PAGE_READS.get()) is not None:
+        reads[1 if by_llm else 0] += 1
+    if label and (pages := _LLM_PAGES.get()) is not None and len(pages) < 40:
+        pages.append(label)
+
+
+def page_reads() -> dict:
+    """How this search's store pages were read: {"without_llm": n, "llm": m}."""
+    reads = _PAGE_READS.get() or [0, 0]
+    return {"without_llm": reads[0], "llm": reads[1]}
 
 
 PAGE_CHARS = 3000  # page text sent to the LLM: the part with the products (most of a page is menus and footers)
@@ -963,15 +982,23 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
     if variants and all(not ok for _, ok, _ in variants):  # every option sold out: the product is
         return Product(store=trust.store_name(url), title=title or url, price=0.0, url=url, trusted=trust.is_known(url),
                        in_stock=False, option=wanted or None, option_ok=False if wanted else None)
+    if (not wanted or _size_option_shown(wanted, title, html)) and (got := _by_buybox(url, html, title)):
+        _count_read(False)
+        return got if not wanted else got.model_copy(update={"option": wanted, "option_ok": got.in_stock})
     if not wanted and (by_recipe := await asyncio.to_thread(recipes.read, url, html)):
         price, stock = by_recipe  # the store's learned recipe read this page: no LLM call
         if shows(_shown_numbers(html), price):
+            _count_read(False)
             return Product(store=trust.store_name(url), title=title or url, price=float(price), url=url,
                            trusted=trust.is_known(url), in_stock=stock)
+    if variants and wanted and (got := _by_variant(url, html, title, wanted, variants)):
+        _count_read(False)
+        return got
     if variants and wanted:
         text += "\nVARIANTS: " + "; ".join(
             f"{label}: {'in stock' if ok else 'OUT OF STOCK'}" + (f" ({price:g})" if price else "")
             for label, ok, price in variants)[:1500]
+    _count_read(True, f"{trust.domain(url)} check" + ("" if "<" in html[:2000] else " (text copy)") + (" (option)" if wanted else ""))
     data = await llm.ask_json(FOLLOWED_PAGE_PROMPT.format(title=title or url, wanted=wanted or "none", text=text),
                               prefer="bulk", spread=spread, step="read_price")
     if data.get("same_product") is not True:
@@ -998,6 +1025,50 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
         _later(recipes.after_llm_read(url, html, title or url, float(price)))
     return Product(store=trust.store_name(url), title=title or url, price=float(price), url=url,
                    trusted=trust.is_known(url), in_stock=stock, option=wanted or None, option_ok=option_ok)
+
+
+_OPTION_WORDS = {"مقاس", "المقاس", "لون", "اللون", "سعة", "size", "color", "colour", "capacity"}
+
+
+def _by_variant(url: str, html: str, title: str, wanted: str, variants: list) -> Product | None:
+    """The shopper's option read from the page's own options data (extract.variant_stock), no LLM call: exactly one
+    option is named with every word of it ("46", "XL", "Black"); its stock, and its own price when the page shows it
+    (else the product's one price when no option has a price of its own)."""
+    words = {w for w in re.split(r"[\s،,/|:-]+", normalize(wanted)) if w and w not in _OPTION_WORDS}
+    if not words:
+        return None
+    hits = [(label, ok, pr) for label, ok, pr in variants
+            if words <= set(re.split(r"[\s،,/|:()-]+", normalize(label)))]
+    if len(hits) != 1:
+        return None
+    _, ok, own = hits[0]
+    store = trust.store_name(url)
+    if not ok:
+        return Product(store=store, title=title or url, price=0.0, url=url, trusted=trust.is_known(url),
+                       in_stock=False, option=wanted, option_ok=False)
+    price = own if own and shows(_shown_numbers(html), own) else None
+    if price is None and not any(pr for _, _, pr in variants) and (box := _by_buybox(url, html, title)):
+        price = box.price
+    if price is None:
+        return None
+    return Product(store=store, title=title or url, price=float(price), url=url, trusted=trust.is_known(url),
+                   in_stock=True, option=wanted, option_ok=True)
+
+
+def _by_buybox(url: str, html: str, title: str) -> Product | None:
+    """The followed product's page read by its buy box (app/buybox.py), no LLM call: only when the page names this
+    product, shows one clear price and says whether it can be bought."""
+    if "<" not in html[:2000] or not (got := buybox.read(html, url)) or got[2] is None:
+        return None
+    name, price, stock = got
+    words = {normalize(w) for w in re.split(r"\W+", title) if len(w) > 2}
+    named = {normalize(w) for w in re.split(r"\W+", name) if len(w) > 2}
+    if not words or len(words & named) < max(2, 0.6 * min(len(words), len(named))):
+        return None  # the page's name isn't the followed product's
+    if not shows(_shown_numbers(html), price):
+        return None
+    return Product(store=trust.store_name(url), title=title or name, price=float(price), url=url,
+                   trusted=trust.is_known(url), in_stock=stock)
 
 
 _BACKGROUND: set[asyncio.Task] = set()
@@ -1243,10 +1314,18 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                 page_products = [Product(store=trust.store_name(url), title=name, price=got[0], url=url,
                                          image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
                                          in_stock=got[1])]
+            if not page_products and _page_id(url) and (box := buybox.read(html, url)):
+                # a product page whose buy box (its <h1> and the one price beside it) is clear: no LLM read. The
+                # price is checked again on the live page before it's shown
+                page_products = [Product(store=trust.store_name(url), title=box[0], price=box[1], url=url,
+                                         image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
+                                         in_stock=box[2])]
             if not page_products and (listed := _listed_products(html, url, f"{want} {focus}")):
                 # a listing page whose product cards show their own name, link and price: read with no LLM call
                 # (each offer's price is still checked on its own page before it's shown)
                 page_products = listed
+            if page_products:
+                _count_read(False)
             if not page_products:
                 # Little visible text = a JavaScript-only page; a reader service renders it better.
                 if len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", html, flags=re.S))) < 1500:
@@ -1265,9 +1344,8 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         n_read = [0]
 
         async def read_one(u, h):
-            if (pages := _LLM_PAGES.get()) is not None and len(pages) < 40:
-                pages.append(f"{trust.domain(u)} {'product' if _page_id(u) else 'listing'}"
-                             + ("" if "<" in h[:2000] else " (text copy)"))
+            _count_read(True, f"{trust.domain(u)} {'product' if _page_id(u) else 'listing'}"
+                        + ("" if "<" in h[:2000] else " (text copy)"))
             async with llm_sem:
                 n_read[0] += 1  # each page goes to a different model first: each has its own per-minute limit
                 return await _llm_read_page(u, h, want, spread=n_read[0], focus=focus)
@@ -1330,6 +1408,7 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
             if not got:
                 unclear.append((u, text))
                 continue
+            _count_read(False)
             p = Product(store=trust.store_name(u), title=got[0], price=got[1], url=u, trusted=trust.is_known(u),
                         in_stock=got[2])
             p.trust_score, p.trust_signals = (100, ["متجر مشهور"]) if p.trusted else trust.page_signals(text, u, False)
@@ -1938,6 +2017,7 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
         "_more": more,
         "llm_usage": {"calls": used["calls"], "tokens": used["tokens"], "by_step": dict(used["by_step"])},
         "llm_pages": llm_pages(),
+        "page_reads": page_reads(),
         "first_results": len(shown_first),
         "understood": plan.get("understood", ""),
         "request": plan.get("request") or raw,
@@ -2122,6 +2202,7 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
             if not p.image:  # offers read from text (no picture there): the product page's own picture
                 p.image = next((q.image for q in same if q.image), None) or extract_mod.page_image(html, p.url)
             if same:
+                _count_read(False)
                 q = min(same, key=_paid)
                 if q.in_stock is False:
                     sold.add(id(p))
@@ -2222,6 +2303,7 @@ def _settled_without_llm(p: Product, page: str, sold: set[int], options: str, ne
         return False
     if got := recipes.read(p.url, page):
         price, stock = got
+        _count_read(False)
         if stock is False:
             sold.add(id(p))
             return True
@@ -2231,6 +2313,17 @@ def _settled_without_llm(p: Product, page: str, sold: set[int], options: str, ne
                 p.option, p.option_ok = options, True
             return True
         return False
+    if got := _by_buybox(p.url, page, p.title):
+        _count_read(False)
+        if got.in_stock is False:
+            sold.add(id(p))
+            return True
+        if abs(got.price - p.price) < 1:
+            p.verified, p.in_stock = True, True
+            if options:
+                p.option, p.option_ok = options, True
+            return True
+        return False  # its price moved: the next step reads it (and takes the page's price)
     if near_title:
         words = [w for w in re.split(r"\W+", p.title) if len(w) > 2]
         top = _page_text(page, words, NEAR_TITLE_CHARS, base_url=p.url, top=True)
@@ -2239,6 +2332,7 @@ def _settled_without_llm(p: Product, page: str, sold: set[int], options: str, ne
             return False
     elif not shows(_shown_numbers(page), p.price):
         return False
+    _count_read(False)
     p.verified, p.in_stock = True, True
     if options:
         p.option, p.option_ok = options, True

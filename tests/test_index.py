@@ -47,6 +47,7 @@ def _llm(monkeypatch, calls, price_reads):
 
 def test_a_store_recipe_is_learned_confirmed_then_replaces_the_llm(monkeypatch):
     monkeypatch.setattr(recipes, "ENABLED", True)
+    monkeypatch.setattr(agent.buybox, "read", lambda html, url: None)  # (this checks the recipes alone)
     calls = []
     prices = [15999, 15499, 14999, 13999, 16999]
     _llm(monkeypatch, calls, list(prices))
