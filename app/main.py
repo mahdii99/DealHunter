@@ -246,9 +246,12 @@ async def more_stream(turn: MoreTurn, request: Request):
     queue: asyncio.Queue = asyncio.Queue()
     client = None if _from_cron(request) else client_id(request)
     user = await asyncio.to_thread(current_user, request)
+    # our live check of the no-model answer (scripts/live_site.py --no-llm): only with the CRON_SECRET header
+    no_llm = _from_cron(request) and request.headers.get("x-no-llm") == "1"
 
     async def work():
         agent.new_search()
+        agent.NO_LLM.set(no_llm)
         token = market.use(user and user["market"])
         progress = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
         try:
@@ -402,9 +405,12 @@ async def chat_stream(turn: ChatTurn, request: Request):
     queue: asyncio.Queue = asyncio.Queue()
     client = None if _from_cron(request) else client_id(request)
     user = await asyncio.to_thread(current_user, request)
+    # our live check of the no-model answer (scripts/live_site.py --no-llm): only with the CRON_SECRET header
+    no_llm = _from_cron(request) and request.headers.get("x-no-llm") == "1"
 
     async def work():
         agent.new_search()
+        agent.NO_LLM.set(no_llm)
         token = agent.PROGRESS.set(lambda text: queue.put_nowait({"type": "status", "text": text}))
         said = agent.REPLY.set(lambda text: queue.put_nowait({"type": "reply", "text": text}))  # typed as it comes
         early = agent.PARTIAL.set(lambda data: queue.put_nowait({"type": "partial", "data": data}))  # first results
@@ -564,7 +570,10 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
     users = [m for m in messages if m["role"] == "user"]
     plan_key = ("__plan__:" + db.cache_key(newest, market.current().code)
                 if len(users) == len(messages) == 1 and not turn.shown and not turn.request and not rng else "")
-    if plan_key and not DEMO and (plan := await _db(db.cached_search, plan_key, PLAN_TTL)):
+    if agent.NO_LLM.get():
+        log.info("chat: the live check asks for the answer with no model")
+        failed = agent.llm.LLMError(details="no model (live check)")
+    elif plan_key and not DEMO and (plan := await _db(db.cached_search, plan_key, PLAN_TTL)):
         log.info("chat: the same first message was planned today: reusing its plan")
         if plan.get("reply") and (live := agent.REPLY.get()):
             live(plan["reply"])
@@ -644,7 +653,7 @@ async def _chat_turn_in_market(turn: ChatTurn, client: str | None, limit: int) -
     if plan and plan.get("understood"):
         agent._progress(plan["understood"])
     hit = None
-    if failed and not DEMO:  # someone asked exactly this a few hours ago: their answer (prices checked again)
+    if failed and not DEMO and not agent.NO_LLM.get():  # someone asked exactly this a few hours ago: their answer (prices checked again)
         hit = await _db(db.cached_search, db.cache_key(request, market.current().code), CACHE_TTL)
     if hit:
         log.info("chat: planner busy, the same request was answered earlier: serving it")

@@ -16,10 +16,12 @@ import urllib.request
 TIMEOUT = 300
 
 
-def search(site: str, text: str) -> dict:
+def search(site: str, text: str, no_llm: bool = False) -> dict:
     body = json.dumps({"messages": [{"role": "user", "text": text}]}).encode()
-    req = urllib.request.Request(site.rstrip("/") + "/api/chat/stream", data=body, method="POST",
-                                 headers={"Content-Type": "application/json", "User-Agent": "dealhunter-live-check"})
+    headers = {"Content-Type": "application/json", "User-Agent": "dealhunter-live-check"}
+    if no_llm:  # the answer the site gives when every model rests (needs our CRON_SECRET)
+        headers.update({"x-cron-secret": os.environ.get("CRON_SECRET", ""), "x-no-llm": "1"})
+    req = urllib.request.Request(site.rstrip("/") + "/api/chat/stream", data=body, method="POST", headers=headers)
     start, seen = time.monotonic(), {}
     final = None
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
@@ -64,6 +66,8 @@ def report(text: str, got: dict) -> str:
              "  store pages read: %s without the LLM, %s by the LLM" % (
                  (d.get("page_reads") or {}).get("without_llm", "?"), (d.get("page_reads") or {}).get("llm", "?")),
              "  pages the LLM read: " + (", ".join(d.get("llm_pages") or []) or "-")]
+    if d.get("no_llm_funnel"):
+        lines.append("  no-model steps: " + ", ".join(f"{k} {v}" for k, v in d["no_llm_funnel"].items()))
     for p in (d.get("results") or [])[:8]:
         lines.append(f"    {p.get('price')} | {p.get('store')} | {(p.get('title') or '')[:70]}")
     noon = d.get("noon") or []
@@ -75,7 +79,8 @@ def report(text: str, got: dict) -> str:
 
 def main(argv: list[str]) -> int:
     site = os.environ.get("SITE_URL") or "https://dealhunter-opk9.onrender.com"
-    texts = [t for t in argv if t.strip()]
+    no_llm = os.environ.get("NO_LLM") == "1" or "--no-llm" in argv
+    texts = [t for t in argv if t.strip() and t != "--no-llm"]
     if not texts:
         print(__doc__)
         return 2
@@ -85,7 +90,7 @@ def main(argv: list[str]) -> int:
         print("wake-up:", e)
     for text in texts:
         try:
-            print(report(text, search(site, text)), flush=True)
+            print(report(text, search(site, text, no_llm)), flush=True)
         except (OSError, ValueError) as e:  # the site down, a timeout or a broken line
             print(f"== {text}\n  failed: {type(e).__name__}: {e}", flush=True)
     return 0

@@ -92,7 +92,29 @@ AR_WORDS = {
     "لايت": "lite", "ميني": "mini", "نوت": "note", "نووت": "note", "اوتوماتيك": "automatic", "أوتوماتيك": "automatic", "اتوماتيك": "automatic",
     "ساخن": "heat", "سخن": "heat", "بارد": "cool", "نوفروست": "no frost", "ديفروست": "defrost",
     "كريستال": "crystal", "سمارت": "smart", "انفرتر": "inverter", "ديجيتال": "digital", "وايرلس": "wireless",
+    "لاسلكي": "wireless", "لاسلكيه": "wireless", "بلوتوث": "bluetooth", "بلوتووث": "bluetooth",
+    "العاب": "gaming", "الالعاب": "gaming", "للالعاب": "gaming", "للعاب": "gaming", "جيمنج": "gaming",
+    "جيمينج": "gaming", "جيمنغ": "gaming", "جيمر": "gaming", "قيمنق": "gaming",
+    "هيدفون": "headphones", "هيدسيت": "headset", "سبيكر": "speaker", "اسبيكر": "speaker",
+    # accessories, so a request for one is understood as one (and its results aren't left out as accessories)
+    "شنطة": "bag", "شنطه": "bag", "حقيبة": "bag", "حقيبه": "bag", "ستاند": "stand", "حامل": "holder",
+    "منظف": "cleaner", "كابل": "cable", "وصلة": "cable", "وصله": "cable", "ماوس": "mouse", "كيبورد": "keyboard",
 }
+# Brands and words shoppers write as several Arabic words ("جي بي ال" = JBL): made one word before anything else.
+AR_PHRASES = {
+    "جي بي ال": "jbl", "جى بى ال": "jbl", "جي بي إل": "jbl", "ال جي": "lg", "ال جى": "lg", "إل جي": "lg",
+    "اتش بي": "hp", "اتش بى": "hp", "إتش بي": "hp", "تي سي ال": "tcl", "تى سى ال": "tcl", "ام اس اي": "msi",
+    "إم إس آي": "msi", "ون بلس": "oneplus", "وان بلس": "oneplus", "لاب توب": "لابتوب", "نو فروست": "نوفروست",
+    "مكبر صوت": "speaker", "هيد فون": "هيدفون", "سمارت واتش": "smartwatch", "ساعة ذكية": "smartwatch",
+    "ساعه ذكيه": "smartwatch",
+}
+_PHRASE_RE = re.compile("|".join(rf"(?<![\u0600-\u06ff]){re.escape(k)}(?![\u0600-\u06ff])"
+                                 for k in sorted(AR_PHRASES, key=len, reverse=True)))
+
+
+def phrased(text: str) -> str:
+    """The shopper's text with multi-word names made one word ("سماعة جي بي ال" -> "سماعة jbl")."""
+    return _PHRASE_RE.sub(lambda m: AR_PHRASES[m.group(0)], text or "")
 _UNITS = {"inch", "kg", "gb", "tb", "hp", "liter"}
 BRANDS = {"samsung", "xiaomi", "realme", "oppo", "apple", "iphone", "huawei", "infinix", "tecno", "honor", "nokia",
           "vivo", "motorola", "lenovo", "dell", "acer", "asus", "toshiba", "sharp", "tornado", "fresh", "zanussi",
@@ -121,7 +143,7 @@ def english_words(text: str) -> str:
     know replaced by its English word, Latin words and numbers kept, numbers joined to their unit ("55 بوصة" ->
     "55inch"); Arabic words we don't know are left out. '' when nothing is left."""
     out: list[str] = []
-    for w in normalize(text).split():
+    for w in normalize(phrased(text)).split():
         w = w.strip(".,!?؟،()")
         plus = len(w) > 1 and w.endswith("+")  # "برو+" / "pro+": the plus model
         w = w.rstrip("+") if plus else w
@@ -155,7 +177,8 @@ KIND_WORDS = {
     "tablet": ("tablet", "ipad", "تابلت", "ايباد"),
     "phone": ("phone", "smartphone", "mobile", "iphone", "ايفون", "موبايل", "تليفون", "هاتف"),
     "laptop": ("laptop", "notebook", "macbook", "لابتوب", "لاب توب"),
-    "earbuds": ("earbuds", "earphones", "headphones", "headset", "سماعه", "سماعات"),
+    "earbuds": ("earbuds", "earphones", "headphones", "headset", "earphone", "headphone", "سماعه", "سماعات"),
+    "speaker": ("speaker", "speakers", "soundbar", "سبيكر", "مكبر صوت", "مكبرات صوت"),
     "watch": ("smart watch", "smartwatch", "watch", "ساعه"),
     "freezer": ("freezer", "ديب", "فريزر"),
     "fan": ("fan", "مروحه"),
@@ -212,3 +235,93 @@ def lacks_wanted(title: str, eng: str) -> bool:
     """The title says it lacks a feature the request (english_words output) asks for."""
     t = _folded(title)
     return any(re.search(pat, t) for feat, pat in LACKS.items() if re.search(rf"(?<![a-z]){feat}(?![a-z])", eng))
+
+
+# Words that make a title an accessory or a part for the product it names ("Laptop Stand", "Cleaning Kit for
+# AirPods", "حقيبة لابتوب"): with no model to judge, never shown for a search of the product itself. Not when the
+# word follows "with"/"مع" (a laptop "with backpack" is still the laptop) or the shopper asked for an accessory.
+ACCESSORY_WORDS = {
+    "case", "cases", "cover", "covers", "protector", "tempered", "film", "skin", "skins", "holder", "mount",
+    "replacement", "compatible", "sticker", "stickers", "pouch", "sleeve", "spare", "bracket", "tpu", "bumper",
+    "shockproof", "stand", "bag", "backpack", "cleaning", "cleaner", "kit",
+    "adapter", "charger", "cable", "dock", "hub", "decal", "lanyard", "organizer", "keycaps", "guard",
+    "جراب", "جرابات", "كفر", "غطاء", "اسكرينه", "لاصقه", "حامل", "ستاند", "شنطه", "حقيبه", "منظف", "تنظيف",
+    "شاحن", "كابل", "وصله", "بديل", "متوافق", "استيكر",
+}
+ACCESSORY_PHRASES = ("cooling pad", "mouse pad", "laptop pad", "قاعده تبريد")
+_WITH = {"with", "w/", "+", "&", "and", "مع", "و", "plus", "including", "includes"}
+_FREE_PHRASES = ("vacuum cleaner", "robot cleaner", "charging case", "wireless charging", "fast charging", "charging", "cleaning mode", "self cleaning",
+                 "self-cleaning", "تنظيف ذاتي")
+
+
+def wants_accessory(eng: str) -> bool:
+    """The request (english_words output) names an accessory: then accessories are what they want."""
+    return bool(set(eng.lower().split()) & ACCESSORY_WORDS) or any(p in eng.lower() for p in ACCESSORY_PHRASES)
+
+
+def is_accessory(title: str) -> bool:
+    """The title is an accessory or a part (by ACCESSORY_WORDS), not a product sold with one."""
+    t = _folded(title)
+    for phrase in _FREE_PHRASES:
+        t = t.replace(phrase, " ")
+    if any(p in t for p in ACCESSORY_PHRASES):
+        return True
+    words = [w for w in re.split(r"[^a-z0-9؀-ۿ/+&]+", t) if w]
+    for i, w in enumerate(words):
+        bare = w[2:] if w.startswith("ال") and w[2:] in ACCESSORY_WORDS else w
+        bare = bare[1:] if bare.startswith("و") and bare[1:] in ACCESSORY_WORDS else bare
+        if bare in ACCESSORY_WORDS and not (set(words[max(0, i - 5):i]) & _WITH or w.startswith("و") and bare != w):
+            return True
+    return False
+
+
+# Features a shopper names that a title must say (in any of these words) when no model can judge: a "gaming laptop"
+# request never shows a Celeron office laptop, an "inverter" one never a plain AC. Folded spelling (ة->ه, أ->ا).
+FEATURES = {
+    "gaming": r"gaming|gamer|game|جيمنج|جيمينج|العاب|للالعاب|rtx|gtx|radeon rx",
+    "inverter": r"inverter|انفرتر|انفرتير",
+    "no frost": r"no\s*-?\s*frost|nofrost|نو\s*فروست|نوفروست",
+    "automatic": r"automatic|auto|اوتوماتيك|اتوماتيك|اوتوماتك",
+    "wireless": r"wireless|bluetooth|tws|لاسلكي|بلوتوث|وايرلس",
+    "bluetooth": r"bluetooth|wireless|tws|بلوتوث|لاسلكي|وايرلس",
+    "smart": r"smart|سمارت|ذكي|android|google tv|webos|tizen|vidaa",
+}
+
+
+def misses_feature(title: str, eng: str) -> bool:
+    """The request (english_words output) names a feature (FEATURES) the title never says."""
+    t = _folded(title)
+    words = set(eng.lower().split())
+    return any(feat in words or (" " in feat and feat in eng.lower())
+               for feat in FEATURES if not re.search(FEATURES[feat], t))
+
+
+# Words that make a phone or a device another model of the same number: a "Realme 12 Pro" request never shows the
+# "12 Pro+" or the plain "12", an "iPhone 16 Pro Max" request never the "16 Pro".
+VARIANTS = {"pro", "plus", "max", "ultra", "lite", "mini", "fe", "neo", "prime", "edge", "air"}
+
+
+def _variants_after(words: list[str], i: int) -> frozenset:
+    got = set()
+    for w in words[i + 1:i + 4]:
+        if w in VARIANTS:
+            got.add(w)
+        elif w not in ("5g", "4g"):
+            break
+    return frozenset(got)
+
+
+def other_variant(title: str, eng: str) -> bool:
+    """The request names a model number ("12" in "realme 12 pro", not a size like "55 inch"), the title has that
+    number, and every time it does it's another variant of it (Pro+ for Pro, Pro for Pro Max, Pro for the plain one)."""
+    req = eng.lower().split()
+    t = re.sub(r"\+", " plus ", _folded(title))
+    t_words = [w for w in re.split(r"[^a-z0-9.]+", t) if w]
+    for i, w in enumerate(req):
+        if not w.isdigit() or (i + 1 < len(req) and req[i + 1] in _UNITS) or len(w) >= 4:
+            continue
+        want = _variants_after(req, i)
+        seen = [_variants_after(t_words, j) for j, x in enumerate(t_words) if x == w]
+        if seen and want not in seen:
+            return True
+    return False
