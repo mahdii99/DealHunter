@@ -268,25 +268,27 @@ const limitBar = r => {  // used of the limit, orange from 80٪, red when used u
   const p = r.limit ? r.used / r.limit : 0;
   return r.limit ? `<div class="meter"><i class="${p >= 1 ? 'bad' : p >= 0.8 ? 'warn' : ''}" style="width:${Math.min(100, Math.max(2, p * 100))}%"></i></div>` : '';
 };
+// where a number comes from: the provider itself, or our own count (which misses the same key used elsewhere)
+const source = r => `<div class="muted" style="font-size:11px">${r.source === 'provider' ? 'حسب الخدمة نفسها' : 'عدّنا إحنا'}</div>`;
 const modelName = n => n.endsWith(':*') ? `${esc(n.slice(0, -2))} <span class="muted" dir="rtl">كل موديلاته مع بعض</span>` : esc(n);
 function drawLimits() {
   const llm = data.llm_limits || [], share = num(Math.round((data.llm_background_share ?? 0.6) * 100));
   const reset = llm.find(r => !r.name.startsWith('@cf/'));
   $('#llmReset').innerHTML = (reset ? `بيتجدد الساعة ${clock(reset.resets_at)} (${inHours(reset.resets_at)}). ` : '') +
-    `شغل الخلفية بيقف عند ${share}٪ من كل حد، والباقي للزوار.`;
+    `شغل الخلفية بيقف عند ${share}٪ من كل حد، والباقي للزوار. «عدّنا إحنا» مابيشملش نفس المفتاح لو اشتغل من جهازك، بس أول ما الخدمة ترد إن الحد خلص بيبان «خلص» على طول ويفضل كده لحد التجديد.`;
   $('#llmLimits').innerHTML = table(llm, [
     ['الموديل', r => `<td class="t" dir="ltr" style="text-align:right">${modelName(r.name)}${limitBar(r)}</td>`],
-    ['اتصرف', r => `<td class="n">${r.limit ? `${num(r.used)} من ${num(r.limit)}` : num(r.used)}</td>`],
-    ['فاضل', r => `<td class="n">${r.limit ? num(r.left) : '<span class="muted">مفيش حد يومي معروف</span>'}</td>`],
-    ['الحالة', r => `<td>${r.limit && !r.left ? `<span class="pill bad">خلص · يرجع ${clock(r.resets_at)}</span>`
+    ['اتصرف', r => `<td class="n">${r.limit ? `${num(r.used)} من ${num(r.limit)}` : r.out_until ? '' : num(r.used)}${source(r)}</td>`],
+    ['فاضل', r => `<td class="n">${r.limit || r.out_until ? num(r.left) : '<span class="muted">مفيش حد يومي معروف</span>'}</td>`],
+    ['الحالة', r => `<td>${r.out_until || (r.limit && !r.left) ? `<span class="pill bad">خلص · يرجع ${clock(r.resets_at)}</span>`
       : r.resting_until ? `<span class="pill warn">مستريح لحد ${clock(r.resting_until)}</span>` : '<span class="pill search">شغال</span>'}</td>`]],
     'مفيش مفتاح موديلات متظبط.');
   const srch = data.search_limits || [];
-  $('#searchReset').textContent = srch.length ? `بيتجدد أول الشهر (${day(srch[0].resets_at)}). الرقم ده من عدّنا إحنا، والرقم الأدق في لوحة كل خدمة.` : '';
+  $('#searchReset').textContent = srch.length ? 'Tavily وFirecrawl بنسألهم هما عن الرقم. Exa مابتقولش، فده عدّنا إحنا (وبيبان «خلص» أول ما ترفض).' : '';
   $('#searchLimits').innerHTML = table(srch, [
     ['الخدمة', r => `<td class="t" dir="ltr" style="text-align:right">${esc(r.name)}${limitBar(r)}</td>`],
-    ['اتصرف', r => `<td class="n">${r.limit ? `${num(r.used)} من ${num(r.limit)}` : num(r.used)}</td>`],
-    ['فاضل', r => `<td class="n">${r.limit ? num(r.left) : ''}</td>`],
+    ['اتصرف', r => `<td class="n">${r.limit ? `${num(r.used)} من ${num(r.limit)}` : num(r.used)}${source(r)}</td>`],
+    ['فاضل', r => `<td class="n">${r.left == null ? '' : num(r.left)}</td>`],
     ['الحالة', r => `<td>${r.quota_out_until ? '<span class="pill bad">الحد خلص أو المفتاح اترفض</span>'
       : r.busy_until ? `<span class="pill warn">مشغولة لحد ${clock(r.busy_until)}</span>` : '<span class="pill search">شغالة</span>'}</td>`]],
     'مفيش مفتاح بحث متظبط.');

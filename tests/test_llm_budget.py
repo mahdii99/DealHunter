@@ -222,3 +222,95 @@ def test_web_searches_are_counted_per_month_and_saved(monkeypatch, tmp_path):
     assert row["name"] == "tavily" and row["used"] == 3 and row["limit"] == 300 and row["left"] == 297
     assert row["resets_at"] > time.time() and row["quota_out_until"] is None
     db.close()
+
+
+def _clear_keys(monkeypatch, *keep):
+    for k in ("GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "MISTRAL_API_KEY", "NVIDIA_API_KEY",
+              "CLOUDFLARE_API_KEY", "CEREBRAS_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    for k in keep:
+        monkeypatch.setenv(k, "k")
+
+
+def test_a_daily_429_shows_used_up_even_when_our_count_is_zero(monkeypatch):
+    """mahdy, 26 Nov: /admin said gemini flash 0 of 20 while Gemini answered 429: the provider's word wins."""
+    _clear_keys(monkeypatch, "GEMINI_API_KEY")
+    body = ('{"error": {"code": 429, "message": "You exceeded your current quota", "details": [{"violations": '
+            '[{"quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests", '
+            '"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"}]}]}}')
+    llm._note_reported("gemini", "gemini-flash-latest", httpx.Response(429, text=body))
+    rows = {r["name"]: r for r in llm.quota_report()}
+    row = rows["gemini-flash-latest"]
+    assert row["used"] == 20 and row["left"] == 0 and row["limit"] == 20 and row["source"] == "provider"
+    assert row["out_until"] > time.time() and "gemini flash" not in rows       # no 0-of-20 placeholder beside it
+    assert list(rows)[0] == "gemini-flash-latest"
+    assert llm.over_budget("gemini", "gemini-flash-latest", False)
+
+
+def test_groq_daily_headers_beat_our_count(monkeypatch):
+    _clear_keys(monkeypatch, "GROQ_API_KEY")
+    llm._tally("groq", "openai/gpt-oss-120b", "judge", 10)  # we counted 1; the key was also used elsewhere
+    r = httpx.Response(200, headers={"x-ratelimit-limit-requests": "1000", "x-ratelimit-remaining-requests": "12",
+                                     "x-ratelimit-reset-requests": "2m59.5s"}, json={})
+    llm._note_reported("groq", "openai/gpt-oss-120b", r)
+    row = {r["name"]: r for r in llm.quota_report()}["openai/gpt-oss-120b"]
+    assert row["used"] == 988 and row["left"] == 12 and row["source"] == "provider"
+    assert row["resets_at"] - time.time() > 3600 * 0 and not row.get("out_until")
+    assert llm.real_use("groq", "openai/gpt-oss-120b") == (988, 1000)
+    assert llm.over_budget("groq", "openai/gpt-oss-120b", True)        # past the background share
+    assert not llm.over_budget("groq", "openai/gpt-oss-120b", False)
+
+
+def test_a_used_up_model_stays_skipped_after_a_restart(monkeypatch, tmp_path):
+    _clear_keys(monkeypatch, "OPENROUTER_API_KEY")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "prices.db")
+    db.close()
+    llm.PERSIST = True
+    reset_ms = int((time.time() + 5 * 3600) * 1000)
+    r = httpx.Response(429, text='{"error":{"message":"Rate limit exceeded: free-models-per-day. "}}',
+                       headers={"X-RateLimit-Limit": "50", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(reset_ms)})
+    llm._note_reported("openrouter", "openai/gpt-oss-20b:free", r)
+    for _ in range(50):  # the save runs on a thread
+        if db.quota_states():
+            break
+        time.sleep(0.02)
+    llm._REPORTED.clear(); llm._reported_loaded[0] = False; llm._COOLDOWN.clear()  # the server restarts
+    assert llm.over_budget("openrouter", "meta-llama/llama-3.3-70b-instruct:free", False)  # one limit for all its models
+    row = {r["name"]: r for r in llm.quota_report()}["openrouter:*"]
+    assert row["left"] == 0 and row["limit"] == 50 and abs(row["resets_at"] - reset_ms / 1000) < 1
+    db.close()
+
+
+def test_search_services_own_usage_wins_and_used_up_survives_a_restart(monkeypatch, tmp_path):
+    from app import websearch
+    for k in websearch.KEYS.values():
+        monkeypatch.delenv(k, raising=False)
+    for k in ("TAVILY_API_KEY", "FIRECRAWL_API_KEY", "EXA_API_KEY"):
+        monkeypatch.setenv(k, "k")
+
+    def handler(request: httpx.Request):
+        if request.url.host == "api.tavily.com":
+            return httpx.Response(200, json={"key": {"usage": 40, "limit": None},
+                                             "account": {"current_plan": "Researcher", "plan_usage": 997, "plan_limit": 1000}})
+        return httpx.Response(200, json={"success": True, "data": {"remainingCredits": 300, "planCredits": 1000,
+                                                                   "billingPeriodEnd": "2026-12-20T00:00:00Z"}})
+    real = httpx.AsyncClient
+    monkeypatch.setattr(websearch.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    live = asyncio.run(websearch.provider_usage())
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "prices.db")
+    db.close()
+    websearch.PERSIST = True
+    websearch._mark_out("exa", time.time() + 3600)
+    for _ in range(50):
+        if db.quota_states():
+            break
+        time.sleep(0.02)
+    websearch._QUOTA_OUT.clear(); websearch._REST.clear()  # the server restarts
+    rows = {r["name"]: r for r in websearch.quota_report(live)}
+    assert rows["tavily"]["used"] == 997 and rows["tavily"]["left"] == 3 and rows["tavily"]["source"] == "provider"
+    assert rows["firecrawl"]["left"] == 150 and rows["firecrawl"]["limit"] == 500 and rows["firecrawl"]["used"] == 350
+    assert rows["exa"]["source"] == "ours" and rows["exa"]["left"] == 0 and rows["exa"]["quota_out_until"]
+    assert websearch._REST["exa"] > time.time()   # skipped by searches too
+    db.close()

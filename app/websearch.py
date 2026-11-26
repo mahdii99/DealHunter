@@ -86,20 +86,141 @@ def flush_usage() -> None:
             _UNSAVED[(d, s)] = _UNSAVED.get((d, s), 0) + n
 
 
-def quota_report() -> list[dict]:
+# ---------- what the services themselves say ----------
+# Our count misses searches made with the same key elsewhere (the owner's computer), so the services' own usage
+# pages win where they have one: Tavily /usage, Firecrawl /v2/team/credit-usage. Exa has none: our count plus
+# "used up" when it refuses. A service that said "used up" stays skipped across restarts (db quota_state).
+LIVE_TTL = 600  # seconds the services' own numbers are kept before asking again
+_LIVE: dict[str, tuple[float, dict | None]] = {}
+_out_loaded = [False]
+
+
+def _num(v) -> int | None:
+    try:
+        return None if v is None else int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _iso(v) -> float | None:
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+async def _tavily_usage(client, key) -> dict | None:
+    r = await client.get("https://api.tavily.com/usage", headers={"Authorization": f"Bearer {key}"}, timeout=10)
+    if r.status_code != 200:
+        return None
+    d = r.json()
+    acc, k = d.get("account") or {}, d.get("key") or {}
+    used, lim = _num(acc.get("plan_usage")), _num(acc.get("plan_limit"))
+    if used is None or not lim:
+        used, lim = _num(k.get("usage")), _num(k.get("limit"))
+    return {"used": used, "limit": lim} if used is not None and lim else None
+
+
+async def _firecrawl_usage(client, key) -> dict | None:
+    r = await client.get("https://api.firecrawl.dev/v2/team/credit-usage", headers={"Authorization": f"Bearer {key}"},
+                         timeout=10)
+    if r.status_code != 200:
+        return None
+    d = r.json().get("data") or {}
+    left, plan = _num(d.get("remainingCredits", d.get("remaining_credits"))), _num(d.get("planCredits"))
+    if left is None:
+        return None
+    out = {"left": left // 2}  # 2 credits per search
+    if plan:
+        out.update(limit=plan // 2, used=max(0, plan - left) // 2)
+    if end := _iso(d.get("billingPeriodEnd")):
+        out["resets_at"] = end
+    return out
+
+
+_USAGE_CALLS = {"tavily": _tavily_usage, "firecrawl": _firecrawl_usage}
+
+
+async def provider_usage() -> dict[str, dict]:
+    """{service: {used, limit, left, resets_at}} as each service reports it (only the ones that can), cached."""
+    out, now = {}, time.time()
+    async with httpx.AsyncClient() as client:
+        for p in configured():
+            if p not in _USAGE_CALLS:
+                continue
+            if (hit := _LIVE.get(p)) and now - hit[0] < LIVE_TTL:
+                got = hit[1]
+            else:
+                try:
+                    got = await _USAGE_CALLS[p](client, os.environ[KEYS[p]])
+                except (httpx.HTTPError, ValueError, AttributeError) as e:
+                    log.warning("search %s usage: %s", p, type(e).__name__)
+                    got = None
+                _LIVE[p] = (now, got)
+            if got:
+                out[p] = got
+    return out
+
+
+def _mark_out(p: str, until: float) -> None:
+    _QUOTA_OUT[p] = until
+    if PERSIST:
+        def save():
+            try:
+                from . import db
+                db.save_quota_state([(f"search:{p}", p, None, 0, until, until, time.time())])
+            except Exception as e:
+                log.warning("search: could not save %s used up: %s", p, e)
+        threading.Thread(target=save, daemon=True).start()
+
+
+def load_out() -> None:
+    """Services that said "used up" before a restart stay skipped until then."""
+    if _out_loaded[0] or not PERSIST:
+        return
+    _out_loaded[0] = True
+    try:
+        from . import db
+        rows = db.quota_states()
+    except Exception as e:
+        log.warning("search: could not load used-up services: %s", e)
+        return
+    now = time.time()
+    for row in rows:
+        if row["name"].startswith("search:") and (until := row["out_until"] or 0) > now:
+            p = row["name"][7:]
+            _QUOTA_OUT[p] = max(_QUOTA_OUT.get(p, 0), until)
+            _REST[p] = max(_REST.get(p, 0), until)
+
+
+def quota_report(live: dict[str, dict] | None = None) -> list[dict]:
     """Each configured search service this month, for the owner's /admin page: used of its free monthly searches,
-    left, and whether it's skipped now (quota used up or key refused, or busy)."""
+    left, and whether it's skipped now (quota used up or key refused, or busy). live = what the services said
+    (provider_usage), which wins over our own count (source 'provider')."""
+    load_out()
     now = datetime.now(timezone.utc)
     month = now.strftime("%Y-%m")
     _load_month(month)
     nxt = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) + timedelta(days=32)).replace(day=1)
-    limits, out = monthly_limits(), []
+    limits, out, t = monthly_limits(), [], time.time()
     for p in configured():
         used = sum(n for (d, s), n in _MONTH.items() if s == p and d.startswith(month))
-        lim = limits.get(p)
-        out.append({"name": p, "used": used, "limit": lim, "left": None if lim is None else max(0, lim - used),
-                    "resets_at": nxt.timestamp(), "quota_out_until": _QUOTA_OUT.get(p) if _QUOTA_OUT.get(p, 0) > time.time() else None,
-                    "busy_until": _REST.get(p) if _REST.get(p, 0) > time.time() else None})
+        lim, source, resets = limits.get(p), "ours", nxt.timestamp()
+        if got := (live or {}).get(p):
+            lim, source, resets = got.get("limit") or lim, "provider", got.get("resets_at") or resets
+            if got.get("used") is not None:
+                used = got["used"]
+            elif got.get("left") is not None and lim:
+                used = max(0, lim - got["left"])
+        left = None if lim is None else max(0, lim - used)
+        if got and got.get("left") is not None:
+            left = got["left"]
+        out_until = _QUOTA_OUT.get(p) if _QUOTA_OUT.get(p, 0) > t else None
+        if out_until:
+            left = 0
+            used = lim if lim and source == "ours" else used
+        out.append({"name": p, "used": used, "limit": lim, "left": left, "resets_at": resets, "source": source,
+                    "quota_out_until": out_until, "busy_until": _REST.get(p) if _REST.get(p, 0) > t else None})
     return out
 
 
@@ -201,7 +322,7 @@ async def search(client: httpx.AsyncClient, query: str, max_results: int = 8,
         quota = r.status_code in (401, 402, 403, 432, 433)
         _REST[p] = time.time() + (QUOTA_REST if quota else BUSY_REST)
         if quota:
-            _QUOTA_OUT[p] = _REST[p]
+            _mark_out(p, _REST[p])
             problems.note("search_error", f"{p} {r.status_code}: free quota used up or key refused")
     problems.note("search_error", "every search service failed: " + ", ".join(errors), request=query)
     raise SearchError("البحث فشل: " + ", ".join(errors))

@@ -222,6 +222,15 @@ CREATE TABLE IF NOT EXISTS search_usage (
     service TEXT NOT NULL,              -- tavily / exa / firecrawl / brave
     calls INTEGER NOT NULL,
     PRIMARY KEY (day, service)
+);
+CREATE TABLE IF NOT EXISTS quota_state (
+    name TEXT PRIMARY KEY,              -- what a free limit counts: a model, 'openrouter:*', 'search:tavily'
+    provider TEXT NOT NULL,
+    lim INTEGER,                        -- the limit the provider itself reported (NULL = it didn't say)
+    remaining INTEGER,                  -- left of it, as the provider said at 'at'
+    reset_at {FLOAT},                   -- when the provider said it renews
+    out_until {FLOAT},                  -- the provider said it's used up: skip it until then (kept across restarts)
+    at {FLOAT} NOT NULL
 )
 """
 # columns added after a table first went live (CREATE TABLE IF NOT EXISTS doesn't add them to an existing table)
@@ -697,6 +706,19 @@ def add_search_usage(rows: list[tuple]) -> None:
 def search_usage_month(month: str) -> list[dict]:
     rows = _db.run("SELECT day, service, calls FROM search_usage WHERE day LIKE ?", (month + "-%",))
     return [dict(zip(("day", "service", "calls"), r)) for r in rows]
+
+
+def save_quota_state(rows: list[tuple]) -> None:
+    """rows: (name, provider, lim, remaining, reset_at, out_until, at), what a provider last said about a limit."""
+    _db.run_many("INSERT INTO quota_state (name, provider, lim, remaining, reset_at, out_until, at) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO UPDATE SET provider = excluded.provider, "
+                 "lim = excluded.lim, remaining = excluded.remaining, reset_at = excluded.reset_at, "
+                 "out_until = excluded.out_until, at = excluded.at", rows)
+
+
+def quota_states() -> list[dict]:
+    names = ("name", "provider", "lim", "remaining", "reset_at", "out_until", "at")
+    return [dict(zip(names, r)) for r in _db.run(f"SELECT {', '.join(names)} FROM quota_state")]
 
 
 def searches_today(client: str) -> int:

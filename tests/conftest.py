@@ -91,6 +91,9 @@ def _llm_counts_in_memory():
                  websearch._loaded_months):
         book.clear()
     llm._loaded_days.clear()
+    llm._REPORTED.clear()
+    llm._reported_loaded[0] = websearch._out_loaded[0] = False
+    websearch._LIVE.clear()
     yield
     llm.PERSIST = websearch.PERSIST = False
 
