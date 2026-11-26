@@ -1078,7 +1078,8 @@ def read_why(text: str, title: str) -> str:
     if why:
         return why
     if got[2] is None:
-        return "no buy button or sold-out mark"
+        m = extract_mod._TEXT_BUY.search(text.lower())
+        return "no buy button or sold-out mark" + (f" (a buy word {m.start()} chars into the copy)" if m else " (no buy words in the copy)")
     return "another product's name" if not _same_name(title, got[0]) else "its price isn't shown"
 
 

@@ -570,5 +570,11 @@ def _text_reads(text: str, title: str):
             return
         near = window[:600].lower()
         stock = False if any(w in near for w in OOS_WORDS) else True if _TEXT_BUY.search(near) else None
+        if stock is None:
+            # a page listing its specs first writes its buy button further down, still before related items;
+            # there only one of the two marks counts (both: a related item's, not clear)
+            rest = window.lower()
+            sold, buy = any(w in rest for w in OOS_WORDS), bool(_TEXT_BUY.search(rest))
+            stock = None if sold == buy else buy
         yield (name, price, stock), ""
         return
