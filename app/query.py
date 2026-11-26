@@ -249,7 +249,7 @@ ACCESSORY_WORDS = {
     "شاحن", "كابل", "وصله", "بديل", "متوافق", "استيكر",
 }
 ACCESSORY_PHRASES = ("cooling pad", "mouse pad", "laptop pad", "قاعده تبريد")
-_WITH = {"with", "w/", "+", "&", "and", "مع", "و", "plus", "including", "includes"}
+_WITH = {"with", "w/", "+", "مع", "including", "includes"}
 _FREE_PHRASES = ("vacuum cleaner", "robot cleaner", "charging case", "wireless charging", "fast charging", "charging", "cleaning mode", "self cleaning",
                  "self-cleaning", "تنظيف ذاتي")
 
@@ -270,7 +270,9 @@ def is_accessory(title: str) -> bool:
     for i, w in enumerate(words):
         bare = w[2:] if w.startswith("ال") and w[2:] in ACCESSORY_WORDS else w
         bare = bare[1:] if bare.startswith("و") and bare[1:] in ACCESSORY_WORDS else bare
-        if bare in ACCESSORY_WORDS and not (set(words[max(0, i - 5):i]) & _WITH or w.startswith("و") and bare != w):
+        if bare in ("compatible", "متوافق", "replacement", "بديل"):
+            return True  # "... compatible with iPhone 15": made for the product, never the product
+        if bare in ACCESSORY_WORDS and not (set(words[max(0, i - 4):i]) & _WITH or w.startswith("و") and bare != w):
             return True
     return False
 
@@ -312,8 +314,9 @@ def _variants_after(words: list[str], i: int) -> frozenset:
 
 
 def other_variant(title: str, eng: str) -> bool:
-    """The request names a model number ("12" in "realme 12 pro", not a size like "55 inch"), the title has that
-    number, and every time it does it's another variant of it (Pro+ for Pro, Pro for Pro Max, Pro for the plain one)."""
+    """The request names a model number ("12" in "realme 12 pro", not a size like "55 inch") and the title never
+    names that model: the number isn't in it (a "C85 Pro"), or every time it is it's another variant of it (Pro+ for
+    Pro, Pro for Pro Max, Pro for the plain one)."""
     req = eng.lower().split()
     t = re.sub(r"\+", " plus ", _folded(title))
     t_words = [w for w in re.split(r"[^a-z0-9.]+", t) if w]
@@ -322,6 +325,20 @@ def other_variant(title: str, eng: str) -> bool:
             continue
         want = _variants_after(req, i)
         seen = [_variants_after(t_words, j) for j, x in enumerate(t_words) if x == w]
-        if seen and want not in seen:
+        if want not in seen:
             return True
     return False
+
+
+_FOR = {"for", "fits", "fit", "compatible", "لـ", "متوافق"}
+
+
+def made_for(title: str, eng: str) -> bool:
+    """The title names the requested brand or product line only after "for" ("Power Bank for iPhone 15"): it's made
+    for that product, not that product."""
+    words = [w for w in re.split(r"[^a-z0-9\u0600-\u06ff]+", _folded(title)) if w]
+    brands = [b for b in eng.lower().split() if b in BRANDS]
+    if not brands:
+        return False
+    at = [i for i, w in enumerate(words) if w in brands]
+    return bool(at) and all(set(words[max(0, i - 3):i]) & _FOR for i in at)

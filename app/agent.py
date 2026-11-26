@@ -27,7 +27,7 @@ from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, we
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
-from .query import (AR_UNITS, AR_WORDS, BRANDS, english_words, is_accessory, kinds_in, lacks_wanted, misses_feature,
+from .query import (AR_UNITS, AR_WORDS, BRANDS, english_words, is_accessory, kinds_in, lacks_wanted, made_for, misses_feature,
                     names_brand, other_variant, parse_query, phrased, same_kind, shows_size,
                     wanted_sizes, wants_accessory)
 from .ranking import rank
@@ -2623,7 +2623,7 @@ def _shelf_firsts(stocked: list[Product], raw: str, plan: dict, minp=None, maxp=
     list's offers that are clearly the brand, kind and size the shopper wrote: shown in seconds like the index's,
     instead of after the whole first round (live 2026-11-26: first offers at 36-62 s). For a need ("good camera
     phone") only the products the planner suggested for it, never just the cheapest of the kind."""
-    eng = english_words(raw)
+    eng = english_words(_without_budget(raw))
     if not eng or not stocked:
         return []
     out = [p for p in stocked if _matches_request(p, eng) and (wants_accessory(eng) or not _is_part(p.title))
@@ -2907,19 +2907,26 @@ def _matches_request(p: Product, eng: str) -> bool:
     """With no model to judge it, an offer must at least be the brand, the kind of product and the size the shopper
     wrote: a Samsung 55-inch TV request never shows a 32-inch monitor or a 43-inch TV, a Toshiba 10 kg washer never a
     Fresh 6 kg one, a Sharp fridge never a Sharp TV. The brand may be written in English or Arabic in the title."""
+    return _why_not(p, eng) is None
+
+
+def _why_not(p: Product, eng: str) -> str | None:
+    """Why the offer isn't what the request (english_words output) asks for, or None when it is."""
     if not all(names_brand(p.title, brand) for brand in {w for w in eng.split() if w in BRANDS}):
-        return False  # as a whole word: an LG request never shows a Levon TV whose model code is "50LG8070Q"
+        return "brand"  # as a whole word: an LG request never shows a Levon TV whose model code is "50LG8070Q"
     if not same_kind(p.title, kinds_in(eng)):
-        return False  # a "Sharp fridge" request never shows Sharp TVs
+        return "kind"  # a "Sharp fridge" request never shows Sharp TVs
     if lacks_wanted(p.title, eng):
-        return False  # "بارد ساخن" never shows a "Cooling Only" air conditioner
+        return "lacks"  # "بارد ساخن" never shows a "Cooling Only" air conditioner
     if misses_feature(p.title, eng):
-        return False  # "لابتوب للالعاب" never shows a Celeron office laptop
+        return "feature"  # "لابتوب للالعاب" never shows a Celeron office laptop
     if other_variant(p.title, eng):
-        return False  # "ريلمي 12 برو" never shows the 12 Pro+ or the plain 12
-    if not wants_accessory(eng) and is_accessory(p.title):
-        return False  # "سماعة" never shows an earbuds cleaning kit, "لابتوب" never a laptop stand or bag
-    return all(shows_size(p.title, n, u) for n, u in wanted_sizes(eng))
+        return "model"  # "ريلمي 12 برو" never shows the 12 Pro+, the plain 12 or a C85 Pro
+    if not wants_accessory(eng) and (is_accessory(p.title) or made_for(p.title, eng)):
+        return "accessory"  # "سماعة" never shows a cleaning kit, "ايفون 15" never a stand "compatible with iPhone 15"
+    if not all(shows_size(p.title, n, u) for n, u in wanted_sizes(eng)):
+        return "size"
+    return None
 
 
 async def _nothing() -> tuple[list, dict]:
@@ -2981,11 +2988,14 @@ async def _outage_answer(raw: str, request: str, wait: float | None, note: str) 
     fitting = [p for p in _fitting(found, eng) if p.url not in have
                and not (parsed.max_price and _paid(p) > parsed.max_price)
                and not (parsed.min_price and _paid(p) < parsed.min_price)]
-    picks = [p for p in shelf + fitting[:OUTAGE_MAX] if _matches_request(p, eng)]
+    pool = shelf + fitting[:OUTAGE_MAX]
+    why = {p.url: _why_not(p, eng) for p in pool}
+    picks = [p for p in pool if why[p.url] is None]
     shown, unchecked, gone = await checked_only(picks, quick=True) if picks else ([], [], 0)
     # how many offers each step kept, for the live check: where a request with no model ends with too few
     funnel = {"understood": eng, "price_list": len(shelf), "store_search": len(found), "store_fitting": len(fitting),
-              "matched": len(picks), "checked": len(shown), "sold_out": gone}
+              "matched": len(picks), "checked": len(shown), "sold_out": gone,
+              "left_out": [f"{why[p.url]}: {p.title[:60]}" for p in pool if why[p.url]][:6]}
     for p in shown:
         p.unconfirmed = True
     later = _wait_text(wait)
