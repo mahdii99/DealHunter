@@ -102,3 +102,24 @@ def test_every_model_resting_answers_at_once_with_checked_offers(monkeypatch):
 
     d = c.post("/api/chat", json={"messages": [{"role": "user", "text": "غسالة اطباق بوش"}]}).json()
     assert d["results"] == [] and d["deals_link"] and "عروض النهارده" in d["summary"]
+
+
+def test_no_model_never_shows_another_kind_or_a_brand_inside_a_model_code():
+    db.save_catalog([
+        {"url": "https://www.btech.com/sharp-tv-50.html", "store": "B.TECH",
+         "title": "Sharp 50 Inch Smart TV , 4K UHD LED - 4T-C50FJ16EX", "price": 19499},
+        {"url": "https://www.btech.com/sharp-fridge.html", "store": "B.TECH",
+         "title": "ثلاجة شارب نوفروست 16 قدم - SJ-58C", "price": 37898},
+        {"url": "https://www.amazon.eg/dp/B0SHARPFR1", "store": "Amazon.eg",
+         "title": "Sharp NoFrost Top Freezer Refrigerator 384 Liter, Black", "price": 31495},
+    ], "EG", "appliances")
+    got = agent._shelf_offers("ثلاجة شارب 16 قدم", "ثلاجة شارب 16 قدم")
+    assert got and all("TV" not in p.title for p in got)
+    eng = "lg 50 inch tv"
+    levon = agent.Product(store="B.TECH", title="Levon 50 Inch Smart TV , 4K UHD QLED - 50LG8070Q", price=1, url="x")
+    lg = agent.Product(store="B.TECH", title="LG 50 Inch Smart TV , 4K UHD LED - 50UA85006LA", price=1, url="y")
+    assert [agent._matches_request(p, eng) for p in (levon, lg)] == [False, True]
+    tv = agent.Product(store="B.TECH", title="Sharp 50 Inch Smart TV - 4T-C50FJ16EX", price=1, url="z")
+    phone = agent.Product(store="Amazon.eg", title="Samsung Galaxy A36 5G 256GB", price=1, url="w")
+    assert not agent._matches_request(tv, "refrigerator sharp 16")
+    assert agent._matches_request(phone, "phone samsung galaxy a36")  # a title naming no kind is kept

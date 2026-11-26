@@ -230,6 +230,9 @@ def _size_key(text: str) -> str:
 
 def title(slug: str) -> str:
     """A readable name from noon's address words: model numbers in capitals, the rest with a capital first letter."""
+    # a decimal size loses its dot in the address ("1-5-hp", "2-25-hp"): written back as "1.5 Hp" (a one-digit whole
+    # number, then digits, then a unit)
+    slug = re.sub(r"(?<![a-z0-9])(\d)-(\d{1,2})-(hp|ton|kg|l|liter|litre|inch|cm|m)(?=-|$)", r"\1.\2-\3", slug)
     words = slug.split("-")[:14]
     return " ".join(w.upper() if any(c.isdigit() for c in w) and len(w) <= 8 else w.capitalize() for w in words)
 
