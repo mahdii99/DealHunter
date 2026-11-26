@@ -984,6 +984,8 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
     if variants and all(not ok for _, ok, _ in variants):  # every option sold out: the product is
         return Product(store=trust.store_name(url), title=title or url, price=0.0, url=url, trusted=trust.is_known(url),
                        in_stock=False, option=wanted or None, option_ok=False if wanted else None)
+    if "<" not in html[:2000] and not extract_mod.text_prices_anywhere(html):
+        return None  # the page's text shows no price at all: an LLM read can't confirm one
     if not wanted and "<" not in html[:2000] and (got := _by_text(url, html, title)):
         _count_read(False)  # the reader service's live copy of the page names it, one price and its buy button
         return got
@@ -1439,6 +1441,11 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         for u, text in later:
             got, why = extract_mod.read_text_copy(text, hit_titles.get(u, "")) if _page_id(u) else (None, "")
             if not got:
+                if not extract_mod.text_prices_anywhere(text):
+                    # no price written with the currency anywhere in the copy: nothing an LLM read could give a price
+                    # from (and a bare number is a model or a size as often as a price)
+                    errors.setdefault(trust.domain(u), "text copy shows no price")
+                    continue
                 text_why[u] = why
                 unclear.append((u, text))
                 continue
