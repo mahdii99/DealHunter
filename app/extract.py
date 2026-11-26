@@ -474,7 +474,8 @@ _MONTHLY = re.compile(r"^\s*(?:/|per|a|كل|في)?\s*(?:month|mo\b|شهر|شهر
 _DISCOUNT = re.compile(r"%|خصم|وفر|was\b|save|off\b|بدلا من|بدلاً من|instead of|before", re.I)
 _RELATED = re.compile(r"you may also like|related products|similar products|customers also|frequently bought|"
                       r"منتجات (?:ذات صلة|مشابهة)|قد يعجبك|شاهد أيضا", re.I)
-_TEXT_BUY = re.compile(r"add to (?:cart|bag|basket)|buy now|[أا]ضف (?:[اإ]لى|لل) ?(?:ال)?سل[ةه]|[أا]ضف للسل[ةه]|اشتر[يى]? الآن|"
+_TEXT_BUY = re.compile(r"add to (?:cart|bag|basket)|buy now|[أا]ضف (?:[اإ]لى|لل) ?(?:ال)?(?:سل[ةه]|عرب[ةه])|[أا]ضف للسل[ةه]|"
+                       r"اشتر[يى]? الآن|شراء الآن|اطلب الآن|"
                        r"\bin stock\b|متوفر في المخزون", re.I)
 TEXT_WINDOW = 1200  # after a product's name in a text copy: its own price is there, before related items
 
@@ -550,7 +551,8 @@ def _text_reads(text: str, title: str):
                 i = -1  # the line found names a sibling model or size
         start = i + len(probe) if i != -1 else _name_line_end(text, name)
         if start == -1:
-            yield None, "its name isn't in the text"
+            heads = [" ".join(m.group(1).split())[:50] for m in _TEXT_TITLE.finditer(text[:3000])][:2]
+            yield None, "its name isn't in the text" + (f" (it names: {' / '.join(heads)})" if heads else "")
             continue
         window = text[start:start + TEXT_WINDOW].translate(_ARABIC_NUMS)
         if m := _RELATED.search(window):
