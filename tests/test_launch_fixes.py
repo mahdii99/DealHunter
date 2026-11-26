@@ -60,3 +60,9 @@ def test_searches_at_the_same_time_keep_their_own_stage_times():
         return await asyncio.gather(asyncio.create_task(one("a", False)), asyncio.create_task(one("b", True)))
 
     assert asyncio.run(both()) == [1.0, 0.0]  # the other search's clear() never reaches this one
+
+
+def test_and_joined_words_are_read_too():
+    eng = english_words("تكييف شارب 1.5 حصان بارد وساخن")
+    assert "heat" in eng.split()
+    assert lacks_wanted("Sharp Split Air Conditioner 1.5 HP 12000 (BTU/H) Cooling Only, Digital", eng)
