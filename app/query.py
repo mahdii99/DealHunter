@@ -101,6 +101,7 @@ BRANDS = {"samsung", "xiaomi", "realme", "oppo", "apple", "iphone", "huawei", "i
           "redmi", "poco", "msi", "haier", "white", "whirlpool", "ikon", "kiriazi", "olympic", "jac"} - {"white"}
 _AR_UNITS = {"inch": "بوص|بوصه|بوصة|انش", "kg": "كيلو|كجم|كغ", "gb": "جيجا|جيجابايت", "tb": "تيرا", "hp": "حصان",
              "liter": "لتر"}
+AR_UNITS = _AR_UNITS  # (the Arabic words of each unit, for matching sizes elsewhere)
 
 
 def wanted_sizes(eng: str) -> list[tuple[str, str]]:

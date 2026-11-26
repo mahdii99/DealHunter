@@ -23,7 +23,7 @@ The project runs entirely on free tiers: no paid API is needed.
 - **Saved chats and voice.** Signed-in shoppers find their past conversations on any device; a mic button lets you speak your request (the browser's own speech recognition, free).
 - **Need-based search.** "A phone whose battery lasts two days" becomes concrete specs (5000 mAh+) and suggested models to look for.
 - **Finds stores by itself.** No hand-picked store list. Each query is searched twice, on well-known retailers and on everyone else, so smaller (often cheaper) shops compete fairly.
-- **Prices come from the store, not the LLM.** Products are extracted from each page's own data (JSON-LD, Next.js data, embedded JSON). The LLM only reads a page when it has no structured data.
+- **Prices come from the store, not the LLM.** Products are extracted from each page's own data (JSON-LD, Next.js data, embedded JSON), or from a listing page's product cards (each card's own link, name and price). The LLM only reads a page when neither is clear.
 - **Strict matching.** Variants are different products (knob vs. digital, Hero vs. Hero Plus, 50 L vs. 30 L). When the listing doesn't confirm the exact variant, the result is kept but flagged "check the model".
 - **Trust score for unknown shops** (0-100) from signals on their own site: local phone number, cash on delivery, return policy, warranty, address. Replica wording is a red flag.
 - **Real discounts only.** Discount % comes from the store's own old price or checkout coupon, and every price is sanity-checked against the market (a 2,000 EGP fridge is a wrong currency or an installment, not a deal).
@@ -49,6 +49,7 @@ request ──► understand (LLM) ──► web search ──► open store pag
 | Open pages | `app/agent.py` `_web_find` | Parallel, with per-stage deadlines so one slow site can't hold up the answer |
 | Pages we can't open | `app/fetchers.py` | Retried through a reader service (Tavily Extract, then Jina Reader), only where the site's robots.txt allows it |
 | Extract products | `app/extract.py` | Generic: JSON-LD, Next.js flight data, Shopify JSON; fixes prices stored in cents; detects stock and condition |
+| Product cards | `app/cards.py` | Generic: a listing page's cards (link + name + one current price, old prices removed) read with no LLM call |
 | Judge | `app/agent.py` `JUDGE_PROMPT` | Keeps exact matches from legit stores, picks the best value deal, offers close alternatives if nothing matches |
 | Trust | `app/trust.py` | Known retailers + a page-signal score for everyone else; drops foreign stores and price-comparison sites |
 | LLM client | `app/llm.py` | Gemini, Groq, Mistral, NVIDIA, Cloudflare and OpenRouter free tiers; picks live models, rests busy ones, remembers daily quotas across restarts |
