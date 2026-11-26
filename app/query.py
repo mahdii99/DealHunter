@@ -72,12 +72,16 @@ AR_WORDS = {
     "جري": "gree", "هايسنس": "hisense", "سوني": "sony", "باناسونيك": "panasonic", "فيليبس": "philips",
     "براون": "braun", "انكر": "anker", "أنكر": "anker", "ساوندكور": "soundcore", "بوش": "bosch",
     "كينوود": "kenwood", "تيفال": "tefal", "هيتاشي": "hitachi", "ميديا": "midea", "شاومى": "xiaomi",
+    # product lines written alone ("ريدمي نوت 14")
+    "ريدمي": "redmi", "ردمي": "redmi", "بوكو": "poco", "جالاكسي": "galaxy", "جلاكسي": "galaxy", "جالكسي": "galaxy",
+    "ايربودز": "airpods",
     # kinds of products
     "شاشة": "tv", "شاشه": "tv", "تلفزيون": "tv", "تليفزيون": "tv", "غسالة": "washing machine",
     "غساله": "washing machine", "تلاجة": "refrigerator", "تلاجه": "refrigerator", "ثلاجة": "refrigerator",
     "ثلاجه": "refrigerator", "تكييف": "air conditioner", "مكيف": "air conditioner", "ميكروويف": "microwave",
     "سخان": "water heater", "بوتاجاز": "cooker", "مكنسة": "vacuum", "مكنسه": "vacuum", "قلاية": "air fryer",
-    "قلايه": "air fryer", "تابلت": "tablet", "ايباد": "ipad", "موبايل": "phone", "تليفون": "phone",
+    "قلايه": "air fryer", "جراب": "case", "جرابات": "case", "كفر": "cover", "حافظة": "case", "اسكرينة": "protector",
+    "اسكرينه": "protector", "لاصقة": "protector", "تابلت": "tablet", "ايباد": "ipad", "موبايل": "phone", "تليفون": "phone",
     "لابتوب": "laptop", "لاب": "laptop", "سماعة": "earbuds", "سماعه": "earbuds", "سماعات": "earbuds",
     "ساعة": "watch", "ساعه": "watch", "شاحن": "charger", "خلاط": "blender", "مكواة": "iron", "مكواه": "iron",
     "ديب": "freezer", "فريزر": "freezer", "مروحة": "fan", "مروحه": "fan", "كاميرا": "camera", "طابعة": "printer",
@@ -85,7 +89,7 @@ AR_WORDS = {
     # units and model words
     "بوصة": "inch", "بوصه": "inch", "انش": "inch", "كيلو": "kg", "جيجا": "gb", "جيجابايت": "gb", "تيرا": "tb",
     "حصان": "hp", "لتر": "liter", "برو": "pro", "بلس": "plus", "ماكس": "max", "الترا": "ultra", "ألترا": "ultra",
-    "لايت": "lite", "ميني": "mini", "اوتوماتيك": "automatic", "أوتوماتيك": "automatic", "اتوماتيك": "automatic",
+    "لايت": "lite", "ميني": "mini", "نوت": "note", "نووت": "note", "اوتوماتيك": "automatic", "أوتوماتيك": "automatic", "اتوماتيك": "automatic",
     "كريستال": "crystal", "سمارت": "smart", "انفرتر": "inverter", "ديجيتال": "digital", "وايرلس": "wireless",
 }
 _UNITS = {"inch", "kg", "gb", "tb", "hp", "liter"}

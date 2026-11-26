@@ -121,3 +121,28 @@ def test_a_busy_store_search_page_is_asked_once_more(monkeypatch):
     monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
     got, errors = asyncio.run(agent._store_search(["realme 12 pro plus"]))
     assert len(tries) == 2 and [p.price for p in got] == [21999.0] and not errors
+
+
+def test_cases_are_not_shown_for_a_phone_even_when_all_results_are_cases():
+    # every store result for the phone is a case: the quarter-of-the-middle-price rule can't catch it, the words can
+    P = agent.Product
+    found = [P("Amazon.eg", "GRABIST Shockproof Back Case Cover Compatible with Xiaomi Redmi Note 14 Pro", 35, "https://a.eg/dp/1"),
+             P("Amazon.eg", "Silicone Case Padded Inside for Xiaomi Redmi Note 14 Pro", 89, "https://a.eg/dp/2"),
+             P("Amazon.eg", "Tempered Glass Screen Protector for Redmi Note 14 Pro", 60, "https://a.eg/dp/3")]
+    assert agent._fitting(found, "xiaomi redmi note 14 pro") == []
+    # unless the shopper asked for a case
+    assert [p.url for p in agent._fitting(found, "case redmi note 14 pro")] == ["https://a.eg/dp/1", "https://a.eg/dp/3",
+                                                                               "https://a.eg/dp/2"]
+
+
+def test_phone_lines_written_in_arabic_are_kept():
+    from app.query import english_words
+    assert english_words("شاومي ريدمي نوت 14 برو") == "xiaomi redmi note 14 pro"
+    assert english_words("جراب ريدمي نوت 14 برو") == "case redmi note 14 pro"
+    assert english_words("سامسونج جالاكسي A56") == "samsung galaxy a56"
+    # a Xiaomi 14 Pro is not a Redmi Note 14 Pro: the line is a brand word that must be in the title
+    P = agent.Product
+    assert not agent._matches_request(P("Amazon.eg", "Xiaomi 14 Pro 512GB", 40000, "https://a.eg/dp/x"),
+                                      "xiaomi redmi note 14 pro")
+    assert agent._matches_request(P("Amazon.eg", "Xiaomi Redmi Note 14 Pro 5G 256GB", 14000, "https://a.eg/dp/r"),
+                                  "xiaomi redmi note 14 pro")
