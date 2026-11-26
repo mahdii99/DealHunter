@@ -1001,6 +1001,7 @@ def _cheapest_variant(products: list[Product]) -> list[Product]:
 
 
 JUDGE_BUDGET = 20  # seconds for the judge across models: when the free ones are busy, the cheapest fitting offers instead
+STORE_RETRY_WAIT = 1.5  # seconds before asking a busy store's search page once more
 STORE_SEARCH_DEADLINE = 12  # the big stores' own search pages, read with no LLM call
 STORE_SEARCHES = {"EG": ["https://www.amazon.eg/s?k={q}&language=en_AE", "https://btech.com/en/s?q={q}"],
                   "SA": ["https://www.amazon.sa/s?k={q}&language=en_AE"],
@@ -1018,7 +1019,18 @@ async def _store_search(queries: list[str]) -> tuple[list[Product], dict[str, st
         return [], {}
     t = time.monotonic()
     async with httpx.AsyncClient() as client:
-        pages = await _within(STORE_SEARCH_DEADLINE, [_fetch_page(client, asyncio.Semaphore(4), u) for u in urls])
+        sem = asyncio.Semaphore(4)
+
+        async def fetch(u: str):
+            try:
+                return await _fetch_page(client, sem, u)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code not in (429, 503):
+                    raise
+                # a big store answers "busy" now and then (Amazon, live 2026-11-25): once more, a moment later
+                await asyncio.sleep(STORE_RETRY_WAIT)
+                return await _fetch_page(client, sem, u)
+        pages = await _within(STORE_SEARCH_DEADLINE, [fetch(u) for u in urls])
     out, errors, seen = [], {}, set()
     for url, res in zip(urls, pages):
         if isinstance(res, Exception):
@@ -1748,9 +1760,9 @@ async def run(raw: str, plan: dict | None = None, budget_text: str | None = None
             # nothing at all to show: a shopper with an empty page leaves, so look in other stores before answering
             tw, times = time.monotonic(), dict(TIMES)
             try:
-                extra, more_unchecked, more_gone, judged = await _widen(plan, raw, picks, seen_urls, want, options,
-                                                                        minp, maxp, codes)
-            except Exception as e:  # the first round's results still stand
+                extra, more_unchecked, more_gone, judged = await asyncio.wait_for(
+                    _widen(plan, raw, picks, seen_urls, want, options, minp, maxp, codes), WIDEN_DEADLINE)
+            except Exception as e:  # (a time-out too) the first round's results still stand
                 log.warning("agent: widening failed: %s: %s", type(e).__name__, e)
                 extra, more_unchecked, more_gone, judged = [], [], 0, 0
             TIMES.clear()
@@ -1836,6 +1848,7 @@ async def _first_results(stocked: list[Product], plan: dict, raw: str, minp, max
 
 
 MIN_RESULTS = 4  # fewer offers than this after the checks: one more search round in other stores
+WIDEN_DEADLINE = 40  # the whole extra round: a shopper with nothing on screen won't wait longer (live: 71 s for 0)
 WIDEN_JUDGE_BUDGET = 12  # seconds for judging that round's offers (the first round's are on screen meanwhile)
 
 WIDEN_PROMPT = """A shopper in Egypt asked: {request}

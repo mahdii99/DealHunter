@@ -101,3 +101,23 @@ def test_with_no_model_an_offer_must_be_the_brand_and_size_asked_for():
 def test_a_plus_model_is_asked_for_in_english_too():
     from app.query import english_words
     assert english_words("موبايل ريلمي 12 برو+ 512") == "phone realme 12 pro plus 512"
+
+
+def test_a_busy_store_search_page_is_asked_once_more(monkeypatch):
+    import httpx
+    monkeypatch.setattr(market, "current", lambda: market.MARKETS["EG"])
+    monkeypatch.setattr(agent, "STORE_SEARCHES", {"EG": ["https://www.amazon.eg/s?k={q}"]})
+    monkeypatch.setattr(agent, "STORE_RETRY_WAIT", 0)
+    tries = []
+
+    async def fake_fetch(client, sem, url):
+        tries.append(url)
+        if len(tries) == 1:
+            raise httpx.HTTPStatusError("busy", request=httpx.Request("GET", url),
+                                        response=httpx.Response(503, request=httpx.Request("GET", url)))
+        card = ('<div data-asin="B0CXYZ1234"><h2><a href="/dp/B0CXYZ1234"><span>Realme 12 Pro+ 512GB</span></a></h2>'
+                '<span class="a-price"><span class="a-price-whole">21,999</span></span></div>')
+        return [], f"<html>{card}</html>"
+    monkeypatch.setattr(agent, "_fetch_page", fake_fetch)
+    got, errors = asyncio.run(agent._store_search(["realme 12 pro plus"]))
+    assert len(tries) == 2 and [p.price for p in got] == [21999.0] and not errors
