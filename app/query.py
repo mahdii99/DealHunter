@@ -125,6 +125,7 @@ def english_words(text: str) -> str:
         plus = len(w) > 1 and w.endswith("+")  # "برو+" / "pro+": the plus model
         w = w.rstrip("+") if plus else w
         w = w[2:] if w.startswith("ال") and w[2:] in AR_WORDS else w
+        w = w[1:] if w.startswith("و") and w not in AR_WORDS and w[1:] in AR_WORDS else w  # "بارد وساخن": "and hot"
         eng = AR_WORDS.get(w) or (w if re.fullmatch(r"[a-z0-9][a-z0-9+.\-]*", w) else "")
         if not eng or eng in STOPWORDS:
             continue
