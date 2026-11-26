@@ -136,3 +136,19 @@ def test_a_copy_with_its_buy_button_below_the_specs_is_read():
     assert extract.read_text_copy(copy, "Dell Inspiron 3520 Laptop Core i5")[0][2] is True
     # a sold-out mark and a buy button far down: not clear
     assert extract.read_text_copy(copy + "Out of stock", "Dell Inspiron 3520 Laptop Core i5")[0][2] is None
+
+
+def test_a_copy_with_a_discount_percent_and_small_numbers_is_read():
+    from app import extract
+    copy = ("# Anker Soundcore R50i Earbuds Black\nEGP 1,599\nEGP 3,500\n-54%\n4.5 out of 5 (25 ratings)\n"
+            "Shipping from EGP 25\nAdd to cart\n")
+    assert extract.read_text_copy(copy, "Anker Soundcore R50i Earbuds Black")[0][1:] == (1599.0, True)
+    # the same price written twice is one price
+    copy = "# Anker Soundcore R50i Earbuds Black\nEGP1,172.10\nPrice: 1,172 EGP\nAdd to cart\n"
+    assert extract.read_text_copy(copy, "Anker Soundcore R50i Earbuds Black")[0][1] == 1172.1
+    # two real prices with no discount mark: still not clear
+    copy = "# Anker Soundcore R50i Earbuds Black\nEGP 1,599\nWith case EGP 1,899\nAdd to cart\n"
+    assert extract.read_text_copy(copy, "Anker Soundcore R50i Earbuds Black")[0] is None
+    # a cheap product before a "free shipping over" line: its own price is kept, so two prices, not clear
+    copy = "# Anker USB C Cable 1m Braided\nEGP 120\nFree shipping on orders over EGP 1,500\nAdd to cart\n"
+    assert extract.read_text_copy(copy, "Anker USB C Cable 1m Braided")[0] is None
