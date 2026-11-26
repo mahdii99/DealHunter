@@ -1188,6 +1188,7 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         TIMES["search"] = round(time.monotonic() - t, 1)
         picked: dict[str, list[str]] = {"named": [], "famous": [], "other": []}
         crawled: dict[str, str] = {}  # page text the search service already has: used when we can't open the page
+        hit_titles: dict[str, str] = {}  # the search service's title of each page (a product page: its product)
         jobs, found = [("check", None)] + jobs, [seed or []] + list(found)  # the plan-check search's hits count too
         for (group, _), res in zip(jobs, found):
             if isinstance(res, Exception):
@@ -1197,6 +1198,8 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                 u = hit["url"]
                 if len(hit.get("content") or "") >= MIN_CRAWLED_TEXT:
                     crawled.setdefault(u, hit["content"])
+                if hit.get("title"):
+                    hit_titles.setdefault(u, str(hit["title"]))
                 if (trust.is_shop_candidate(u) and trust.domain(u) not in blocked
                         and all(u not in lst for lst in picked.values())):
                     big = trust.is_known(u) or any(trust._match(trust.domain(u), d) for d in famous)
@@ -1318,7 +1321,24 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                 later.append((u, text))
             for u, reason in why.items():
                 errors[trust.domain(u)] = f"{errors.get(trust.domain(u), '')} / {reason}".strip(" /")
-        later = worth_reading(later, max(0, MAX_LLM_READS - len(first)))
+        # a product page's text copy that names its product and shows one clear price right after the name: read
+        # with no LLM call (live 2026-11-26: nearly every page the LLM still read was such a copy, of noon, Jumia,
+        # 2B, Raya...). Its price is checked on the live page before it's shown, like any other
+        unclear = []
+        for u, text in later:
+            got = extract_mod.main_product_text(text, hit_titles.get(u, "")) if _page_id(u) else None
+            if not got:
+                unclear.append((u, text))
+                continue
+            p = Product(store=trust.store_name(u), title=got[0], price=got[1], url=u, trusted=trust.is_known(u),
+                        in_stock=got[2])
+            p.trust_score, p.trust_signals = (100, ["متجر مشهور"]) if p.trusted else trust.page_signals(text, u, False)
+            if (p.url, p.title) not in seen:
+                seen.add((p.url, p.title))
+                products.append(p)
+        if len(unclear) < len(later):
+            log.info("web: %d text copies of product pages read with no LLM call", len(later) - len(unclear))
+        later = worth_reading(unclear, max(0, MAX_LLM_READS - len(first)))
         if later:
             log.info("web: LLM reading (via reader) %s", [trust.domain(u) for u, _ in later])
         left = READING_DEADLINE - (time.monotonic() - t - TIMES["search"] - TIMES["pages"])
