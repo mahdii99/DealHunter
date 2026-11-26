@@ -100,3 +100,13 @@ def test_live_check_can_ask_for_the_no_model_answer(monkeypatch):
     assert not planned and done["outage"] and [r["price"] for r in done["results"]] == [2600]
     assert done["no_llm_funnel"]["understood"] == "earbuds jbl" and done["no_llm_funnel"]["checked"] == 1
     # without the secret the header does nothing
+
+
+def test_things_made_for_the_product_and_other_models():
+    # live 2026-11-26: "ايفون 15" showed a selfie stick, a desk stand and a power bank; "ريلمي 12 برو" a C85 Pro
+    assert _ok("iphone 15", "Mini Selfie Stick Tripod with Wireless Remote, Compatible with iPhone 15",
+               "3-in-1 Magnetic Phone & Tablet Desk Stand for iPhone 15",
+               "Anker Laptop Power Bank (25,000 mAh, 165W) for iPhone 15, MacBook",
+               "Apple iPhone 15 , 128 GB , 6 GB , 5G , Single SIM - Black") == [False, False, False, True]
+    assert _ok("realme 12 pro", "Realme C85 Pro , 256 GB , 8 GB") == [False]
+    assert agent._why_not(P("X", "Realme C85 Pro", 1, "u"), "realme 12 pro") == "model"
