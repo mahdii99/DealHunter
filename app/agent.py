@@ -21,15 +21,17 @@ from urllib.parse import quote_plus, unquote, urljoin, urlparse
 
 import httpx
 
+from . import cards as cards_mod
 from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, websearch
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
-from .query import AR_WORDS, BRANDS, english_words, kinds_in, lacks_wanted, names_brand, parse_query, same_kind, shows_size, wanted_sizes
+from .query import AR_UNITS, AR_WORDS, BRANDS, english_words, kinds_in, lacks_wanted, names_brand, parse_query, same_kind, shows_size, wanted_sizes
 from .ranking import rank
 from .stores import ALL_STORES
 from .stores.amazon import parse_amazon_cards
 from .stores.base import DEBUG_DIR, HEADERS
+from .utils import normalize
 
 log = logging.getLogger("uvicorn.error")
 MAX_CANDIDATES = 50  # cheapest first; the judge reads every line, so more = more tokens per search
@@ -477,6 +479,11 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
                               on_text=on_text if live else None,
                               temperature=0.5)  # a little variety: a salesperson, not a template
     query = plan.get("market_query")
+    if _named_product_search(plan):
+        # a search for a product the shopper named: today's prices come from the search itself, checked on each
+        # store's page, and the reply line never shows a price, so a second planner call with the market's
+        # prices would change nothing the shopper sees (live 2026-11-26: "ريلمي 12 برو بلس 256" asked for one)
+        query = None
     if isinstance(query, str) and query.strip() and (found := await _market_check(query.strip()[:150], plan)):
         log.info("agent: market check %r before answering", query)
         block += f"Market check (web search '{query.strip()[:150]}', today's prices in Egypt):\n{found}\n"
@@ -519,6 +526,15 @@ async def plan_turn(messages: list[dict], current: str = "", shown: list[dict] |
     plan["pick_options"] = [o for o in _strs(plan.get("pick_options"), 4, 60) if shopper_named(o, said)]
     log.info("agent: plan %s -> %r", plan["action"], reply if plan["action"] != "search" else plan["request"])
     return plan
+
+
+def _named_product_search(plan: dict) -> bool:
+    """The planner's first reading is a search for a product the shopper named (not a need to fill, a question to
+    ask or products to recommend): it needs no market check before the search."""
+    product = plan.get("product") if isinstance(plan.get("product"), dict) else {}
+    return (plan.get("action") == "search" and plan.get("need_based") is not True
+            and not plan.get("suggested_products") and bool(product.get("brand") or product.get("model")
+                                                            or plan.get("model_codes")))
 
 
 def _db_safe(fn, *args):
@@ -1031,6 +1047,38 @@ async def _fetch_page(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: st
     return products, r.text
 
 
+def _listed_products(html: str, url: str, words: str) -> list[Product]:
+    """The products of a listing page read from its product cards (app/cards.py, or Amazon's own card layout), no
+    LLM call: the ones whose names share a word with the request, best first. [] when the page isn't clearly a
+    list of priced products, or none of its products is about the request: the LLM reads it then, as before."""
+    store = trust.store_name(url)
+    products = cards_mod.listing_cards(html, store, url) or parse_amazon_cards(html, store, url)
+    if not products:
+        return []
+    wanted = {_stem(w) for w in re.findall(r"\w+", _fold(words))
+              if w not in _SEARCH_NOISE and w not in FILLER and (len(w) >= 3 or w.isdigit())}
+    scored = []
+    for p in products:
+        title = _fold(p.title)
+        hits = sum(1 for w in wanted if (_has_word(title, w) if w.isdigit() else w in title))
+        if hits:
+            scored.append((hits, p))
+    if not scored:
+        log.info("web: %s lists %d products, none about the request: the LLM reads it", trust.domain(url),
+                 len(products))
+        return []
+    scored.sort(key=lambda x: -x[0])
+    picked = _cheapest_variant([p for _, p in scored])[:MAX_PER_PAGE]
+    score, signals = trust.page_signals(html, url, True)
+    for p in picked:
+        p.store = trust.store_name(p.url or url)
+        p.trusted = trust.is_known(p.url or url)
+        p.trust_score, p.trust_signals = (100, ["متجر مشهور"]) if p.trusted else (score, signals)
+    log.info("web: %s read from its product cards (no LLM): %d of %d products", trust.domain(url), len(picked),
+             len(products))
+    return picked
+
+
 def _cheapest_variant(products: list[Product]) -> list[Product]:
     """One entry per product link (variants share it): fix x100 outliers, keep the cheapest, drop junk prices."""
     by_url: dict[str, list[Product]] = {}
@@ -1175,6 +1223,10 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                                          image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
                                          in_stock=False if extract_mod._page_says_sold_out(
                                              html, extract_mod._visible_text(html), main[0]) else None)]
+            if not page_products and (listed := _listed_products(html, url, f"{want} {focus}")):
+                # a listing page whose product cards show their own name, link and price: read with no LLM call
+                # (each offer's price is still checked on its own page before it's shown)
+                page_products = listed
             if not page_products:
                 # Little visible text = a JavaScript-only page; a reader service renders it better.
                 if len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", html, flags=re.S))) < 1500:
@@ -2041,7 +2093,11 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
                 # the page's own data says this price for this product (a single product on the page must
                 # also show it: it may be the page's main item or something else)
                 p.verified = abs(q.price - p.price) < 1 and (bool(by_link) or shows(_shown_numbers(html), p.price))
-                if options:  # the page's data is for the product, not the shopper's size/color: the LLM reads it
+                if options and p.verified and q.in_stock is True and _size_option_shown(options, q.title, html):
+                    # the shopper's option is a size (256 GB, 55 inch, 10 kg) that this page's own product is: its
+                    # name says so and the page has no choices of its own, so its in-stock price is that option's
+                    p.option, p.option_ok = options, True
+                elif options:  # the page's data is for the product, not the shopper's size/color: the LLM reads it
                     p.verified = False
                 if not p.verified:
                     to_read.append((p, html))
@@ -2121,7 +2177,7 @@ def _settled_without_llm(p: Product, page: str, sold: set[int], options: str, ne
     show. `near_title`: (a search, where a price can come from anywhere) that number must sit right where the page
     names the product, before the related items lower down. True when the page settled it (checked or sold out);
     False leaves it to the LLM (a size/color to check, reader text, or a page that isn't clear)."""
-    if options or "<" not in page[:2000]:
+    if "<" not in page[:2000] or (options and not _size_option_shown(options, p.title, page)):
         return False
     if got := recipes.read(p.url, page):
         price, stock = got
@@ -2130,6 +2186,8 @@ def _settled_without_llm(p: Product, page: str, sold: set[int], options: str, ne
             return True
         if abs(price - p.price) < 1 and shows(_shown_numbers(page), price):
             p.verified, p.in_stock = True, True
+            if options:
+                p.option, p.option_ok = options, True
             return True
         return False
     if near_title:
@@ -2141,6 +2199,41 @@ def _settled_without_llm(p: Product, page: str, sold: set[int], options: str, ne
     elif not shows(_shown_numbers(page), p.price):
         return False
     p.verified, p.in_stock = True, True
+    if options:
+        p.option, p.option_ok = options, True
+    return True
+
+
+def _size_option_shown(options: str, title: str, page: str) -> bool:
+    """The options the shopper must pick are all sizes ("256 جيجا", "55 بوصة", "10 كيلو"), the product's own name
+    shows each of them, and the page offers no choices of its own (sizes or colors with their own stock or price):
+    the page sells exactly that size, no LLM read needed. A color, a clothing size ("مقاس 46") or a page with
+    choices still goes to the LLM, which reads the page for that option."""
+    sizes = []
+    for part in options.split("،"):
+        eng = english_words(part)
+        got = wanted_sizes(eng)
+        if not got or eng.strip() != " ".join(f"{n} {u}" for n, u in got):
+            return False  # (a word that isn't a size: a color, a fit...)
+        sizes += got
+    if not all(shows_size(title, n, u) for n, u in sizes):
+        return False
+    if extract_mod.variant_stock(page):
+        return False
+    # the page's name for its product shows the size too (not only our listing's title)
+    h1 = re.search(r"<h1\b[^>]*>(.*?)</h1>", page, re.S | re.I)
+    name = " ".join(unescape(re.sub(r"<[^>]+>", " ", h1.group(1))).split()) if h1 else ""
+    if not name or not all(shows_size(name, n, u) for n, u in sizes):
+        return False
+    # where the page shows its product (name, price, choices), another size of the same kind its name doesn't have
+    # ("128GB | 256GB" buttons) means the shopper picks the size there: the LLM reads that
+    top = normalize(_page_text(page, name.split(), NEAR_TITLE_CHARS, base_url="", top=True))
+    named = normalize(name)
+    for _, unit in sizes:
+        ar = AR_UNITS.get(unit, unit)
+        for m in re.finditer(rf"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:-\s*)?(?:{unit}|{ar})", top):
+            if not shows_size(named, m.group(1), unit):
+                return False
     return True
 
 
