@@ -2513,11 +2513,24 @@ async def _nothing() -> tuple[list, dict]:
     return [], {}
 
 
+# words that make a title an accessory or a part for the product the shopper named ("case cover compatible with
+# Xiaomi Redmi Note 14 Pro"): with no model to judge, those are never shown for a search of the product itself
+PART_WORDS = {"case", "cases", "cover", "covers", "protector", "tempered", "film", "skin",
+              "holder", "mount", "replacement", "compatible", "sticker", "stickers", "pouch", "sleeve", "spare",
+              "bracket", "tpu", "bumper", "shockproof"}
+
+
+def _is_part(title: str) -> bool:
+    words = set(re.split(r"[^a-z0-9\u0600-\u06ff]+", (title or "").lower()))
+    return bool(words & PART_WORDS)
+
+
 def _fitting(products: list[Product], eng: str) -> list[Product]:
     """The store search's products that are what the shopper wrote (no model to judge them): most of the request's
     words in the title (60%), or every model number they wrote when there is one (a word with letters and digits,
-    e.g. r50i: Arabic titles have little else in English), cheapest first. Accessories that share a phone's words are far cheaper than it: those under a quarter of the middle price
-    of the fitting products are left out."""
+    e.g. r50i: Arabic titles have little else in English), cheapest first. Accessories that share a phone's words
+    (a case "compatible with" it) are left out unless the shopper asked for one, and so are those under a quarter of
+    the middle price of the fitting products."""
     words = [_squash_size(w) for w in eng.split() if _squash_size(w)]
     if not words:
         return []
@@ -2525,9 +2538,12 @@ def _fitting(products: list[Product], eng: str) -> list[Product]:
     # a model's own number (r50i, a55, 15irh10) names the product; a size or a chip (512gb, i5) doesn't
     names = [c for c in codes if len(c) >= 4 and not re.fullmatch(r"\d+(gb|tb|inch|kg|hp|mah|w|liter)", c)]
     need = max(1, -(-len(words) * 6 // 10))
+    want_part = bool(set(eng.lower().split()) & PART_WORDS)
     out = []
     for p in products:
         title = _squash_size(p.title)
+        if not want_part and _is_part(p.title):
+            continue
         if all(c in title for c in codes) and (names or sum(w in title for w in words) >= need):
             out.append(p)
     if len(out) >= 3:
