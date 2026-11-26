@@ -42,9 +42,19 @@ def _heading(tree) -> tuple[object, str] | None:
     """The page's one <h1> naming a product (two words or more)."""
     named = [(h, " ".join(unescape(_text(h)).split())) for h in tree.css("h1")]
     named = [(h, t) for h, t in named if len(t.split()) >= 2 and len(t) <= 300]
+    if len({t for _, t in named}) > 1:
+        # several headings ("About this item", "Product information"): the product's is the one the page's own
+        # title names too
+        head = tree.css_first("title")
+        title = _norm(head.text() if head else "")
+        named = [(h, t) for h, t in named if _norm(t)[:80] in title]
     if not named or len({t for _, t in named}) > 1:  # no name, or the page names several things
         return None
     return named[0]
+
+
+def _norm(t: str) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", unescape(t or "").lower()).split())
 
 
 def _shape(url: str) -> tuple:

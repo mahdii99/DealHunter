@@ -474,12 +474,14 @@ _MONTHLY = re.compile(r"^\s*(?:/|per|a|كل|في)?\s*(?:month|mo\b|شهر|شهر
 _DISCOUNT = re.compile(r"%|خصم|وفر|was\b|save|off\b|بدلا من|بدلاً من|instead of|before", re.I)
 _RELATED = re.compile(r"you may also like|related products|similar products|customers also|frequently bought|"
                       r"منتجات (?:ذات صلة|مشابهة)|قد يعجبك|شاهد أيضا", re.I)
+_TEXT_BUY = re.compile(r"add to (?:cart|bag|basket)|buy now|[أا]ضف (?:[اإ]لى|لل) ?(?:ال)?سل[ةه]|[أا]ضف للسل[ةه]|اشتر[يى]? الآن|"
+                       r"\bin stock\b|متوفر في المخزون", re.I)
 TEXT_WINDOW = 1200  # after a product's name in a text copy: its own price is there, before related items
 
 
 def main_product_text(text: str, title: str = "") -> tuple[str, float, bool | None] | None:
     """A product page's text copy (a search service's or a reader's: no tags left) read with no LLM call:
-    (its product's name, its price, False when it says sold out else None), or None when it isn't clear.
+    (its product's name, its price, False when it says sold out, True when it has a buy button, else None), or None when it isn't clear.
     `title` is the search service's title for the page; else the copy's own "Title:" or first heading names it.
     Clear means the name appears in the text and, right after it (before any related items), one price is written
     with the currency, or two where the page marks a discount (the lower one is the price); monthly installments
@@ -512,6 +514,7 @@ def main_product_text(text: str, title: str = "") -> tuple[str, float, bool | No
             price = min(prices)
         else:
             return None
-        stock = False if any(w in window[:600].lower() for w in OOS_WORDS) else None
+        near = window[:600].lower()
+        stock = False if any(w in near for w in OOS_WORDS) else True if _TEXT_BUY.search(near) else None
         return name, price, stock
     return None

@@ -90,3 +90,22 @@ def test_the_web_round_reads_product_pages_by_their_buy_box(monkeypatch):
     monkeypatch.setattr(llm, "ask_json", ask_must_not_run)
     products, _ = asyncio.run(agent._web_find(["Sharp washer 8 kg"], famous=["amazon.eg"]))
     assert [(p.title, p.price, p.in_stock) for p in products] == [("Sharp Washing Machine 8 Kg Inverter", 16499.0, True)]
+
+
+def test_a_reader_copy_of_the_page_is_checked_without_the_llm(monkeypatch):
+    copy = ("Title: Lenovo LOQ 15IRX9 Gaming Laptop | B.TECH\n# Lenovo LOQ 15IRX9 Gaming Laptop\nEGP 54,999\n"
+            "Add to cart\n" + "specs " * 100)
+
+    async def ask_must_not_run(*a, **k):
+        raise AssertionError("the copy names the product, one price and its buy button")
+    monkeypatch.setattr(llm, "ask_json", ask_must_not_run)
+    got = asyncio.run(agent._read_main_price("https://btech.com/en/lenovo-loq-15irx9", copy, "Lenovo LOQ 15IRX9 Gaming Laptop"))
+    assert (got.price, got.in_stock) == (54999.0, True)
+
+
+def test_an_option_the_names_say_needs_no_llm_read():
+    page_html = "<html><h1>Samsung 55 Inch Crystal UHD 4K TV</h1><p>EGP 20,499</p></html>"
+    assert agent._size_option_shown("55 بوصة، 4K", "Samsung 55 Inch Crystal UHD TV 4K", page_html)
+    assert not agent._size_option_shown("55 بوصة، 8K", "Samsung 55 Inch Crystal UHD TV 4K", page_html)
+    assert agent._size_option_shown("اسود", "ايفون 15 اسود", "<h1>ايفون 15 أسود</h1>")
+    assert not agent._size_option_shown("اسود", "ايفون 15 ازرق", "<h1>ايفون 15 ازرق</h1>")
