@@ -696,6 +696,15 @@ def test_search_free_service_first_cached_and_metered_only_as_fallback(monkeypat
     assert hits == ["api.keenable.ai", "api.keenable.ai", "api.tavily.com"]
 
 
+def test_langsearch_is_only_keenables_backup(monkeypatch):
+    from app import websearch
+    monkeypatch.setattr(websearch, "KEYLESS", True)
+    monkeypatch.setenv("LANGSEARCH_API_KEY", "l")
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    websearch._REST.clear()
+    assert [websearch._order(websearch.configured())[:2] for _ in range(3)] == [["keenable", "langsearch"]] * 3
+
+
 def test_search_probe_checks_free_services_and_cache(monkeypatch):
     from app import websearch
     monkeypatch.setattr(websearch, "KEYLESS", True)

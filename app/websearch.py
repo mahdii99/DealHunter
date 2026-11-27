@@ -411,8 +411,9 @@ def _remember(key: str, hits: list[dict]) -> None:
 
 
 def _order(names: list[str]) -> list[str]:
-    """Free services first, then the monthly-quota ones, each group taking turns so every free quota lasts. Resting
-    ones last (a resting service is asked only when nothing else is left)."""
+    """Free services first in FREE_FIRST order (Keenable's results for Egyptian stores are far better than
+    LangSearch's, live 2026-11-27: LangSearch is only its backup), then the monthly-quota ones taking turns so
+    every free quota lasts. Resting ones last (asked only when nothing else is left)."""
     _turn[0] += 1
     now = time.time()
 
@@ -421,7 +422,7 @@ def _order(names: list[str]) -> list[str]:
             return []
         k = _turn[0] % len(group)
         return group[k:] + group[:k]
-    order = turns([p for p in names if p in FREE_FIRST]) + turns([p for p in names if p not in FREE_FIRST])
+    order = [p for p in FREE_FIRST if p in names] + turns([p for p in names if p not in FREE_FIRST])
     return [p for p in order if _REST.get(p, 0) <= now] or order
 
 
