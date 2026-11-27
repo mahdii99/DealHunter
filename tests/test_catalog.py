@@ -281,3 +281,39 @@ def test_shopify_collection_lists_the_option_the_page_opens_on():
         ("Samsung Galaxy A17 Dual SIM 256GB - Light Blue", 16999, 18999), ("Anker Charger 20W", 650, None)]
     assert got[0].url == "https://kimostore.net/products/samsung-galaxy-a17"
     assert got[0].image == "https://cdn.shopify.com/b.jpg" and got[1].url == "https://kimostore.net/products/anker-20w"
+
+
+MAGENTO = """<ol><li class="product-item"><div class="product-item-info">
+<a href="https://2b.com.eg/en/galaxy-a37.html"><img class="product-image-photo" src="https://2b.com.eg/media/a37.jpg"></a>
+<strong><a class="product-item-link" href="https://2b.com.eg/en/galaxy-a37.html"> Samsung Galaxy A37 5G - 256GB </a></strong>
+<div class="price-box"><span class="old-price"><span data-price-amount="48449" data-price-type="oldPrice">EGP 48,449</span></span>
+<span data-price-amount="36349" data-price-type="finalPrice">EGP 36,349</span></div></div></li>
+<li class="product-item"><div class="product-item-info"><a class="product-item-link" href="/en/sold.html">Sold phone</a>
+<span data-price-amount="9000" data-price-type="finalPrice"></span><div class="stock unavailable">Out of stock</div></div></li></ol>"""
+
+PRESTA = """<ul><li class="ajax_block_product"><div class="left-block"><a class="product_img_link" href="https://cairosales.com/en/tvs/samsung-55.html">
+<img src="https://cairosales.com/1-home/samsung-55.jpg"></a></div><div class="right-block">
+<h5><a class="product-name" href="https://cairosales.com/en/tvs/samsung-55.html" title="SAMSUNG 55-inch Crystal UHD 4K Smart TV">SAMSUNG 55-inch...</a></h5>
+<div class="content_price"><span class="price product-price"> EGP 19,999 </span><span class="old-price product-price"> EGP 22,726 </span>
+<span class="availability"><span class="available-now">In Stock.</span></span></div></div></li></ul>"""
+
+
+def test_magento_and_prestashop_cards_are_read_with_their_before_price():
+    got = catalog.read_listing(MAGENTO, "https://2b.com.eg/en/mobile-and-tablet/mobiles.html")
+    assert [(p.title, p.price, p.old_price, p.store) for p in got] == [("Samsung Galaxy A37 5G - 256GB", 36349, 48449, "2B")]
+    assert got[0].image == "https://2b.com.eg/media/a37.jpg"
+    got = catalog.read_listing(PRESTA, "https://cairosales.com/en/tvs-screens/")
+    assert [(p.title, p.price, p.old_price, p.store) for p in got] == [
+        ("SAMSUNG 55-inch Crystal UHD 4K Smart TV", 19999, 22726, "Cairo Sales")]
+
+
+def test_a_page_read_whole_is_not_asked_for_again(monkeypatch):
+    monkeypatch.setattr(catalog, "PAUSE", 0)
+    asked = []
+
+    async def page(client, url):
+        asked.append(url)
+        return [Product(store="2B", title="Galaxy A37", price=36349, url=f"https://2b.com.eg/en/a{len(asked)}.html")]
+    monkeypatch.setattr(catalog, "_page", page)
+    asyncio.run(catalog.scrape(["2b.com.eg"], ["phones"]))
+    assert asked == ["https://2b.com.eg/en/mobile-and-tablet/mobiles.html"]

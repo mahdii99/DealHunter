@@ -1303,7 +1303,7 @@ async def check_watches(request: Request, limit: int = Query(30, ge=1, le=100), 
 
 
 @app.post("/api/cron/scrape")
-async def scrape_catalog(request: Request, store: str = Query("", max_length=40), category: str = Query("", max_length=40),
+async def scrape_catalog(request: Request, store: str = Query("", max_length=300), category: str = Query("", max_length=40),
                          pages: int = Query(0, ge=0, le=20)):
     """Reads the big stores' category pages into our own price list (app/catalog.py). Called once or twice a day by
     .github/workflows/scrape-prices.yml with the CRON_SECRET header, one store per call (short requests suit the
@@ -1635,7 +1635,7 @@ def _deals_html(got: dict, site: str) -> str:
     stamp = (f'<p class="when">فتحنا صفحة كل عرض في المتجر وتأكدنا من سعره وإنه متوفر <span data-ts="{when:.0f}"></span>. '
              'الأسعار بتتغير، فبص على السعر في صفحة المتجر قبل ما تطلب.</p>' if when else "")
     return (_shell("deals", site).replace("{TITLE}", "أحسن العروض النهارده في مصر: موبايلات وأجهزة بخصم حقيقي | Easy Found")
-            .replace("{DESC}", "عروض النهارده من أمازون وجوميا: موبايلات وشاشات وأجهزة نزل سعرها فعلاً عن آخر 30 يوم، "
+            .replace("{DESC}", "عروض النهارده من أمازون وجوميا وبي تك و2B وكايرو سيلز وغيرهم: موبايلات وشاشات وأجهزة نزل سعرها فعلاً عن آخر 30 يوم، "
                                "واتأكدنا من سعر كل واحد في صفحة المتجر.")
             .replace("{H1}", "أحسن العروض النهارده")
             .replace("{LEAD}", "منتجات نزل سعرها فعلاً عن أقل سعر شفناه في آخر 30 يوم، وبعدها خصومات المتاجر الكبيرة.")

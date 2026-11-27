@@ -6,7 +6,9 @@ spends any of the free web-search quota, and every price we read builds the pric
 
 How it reads a page: the same store-agnostic extraction the agent uses everywhere (product JSON / JSON-LD in the
 page, app/extract.py), plus the product cards of pages without such data (Amazon's, app/stores/amazon.py, and
-Jumia's). Whichever reads the most products wins, so a store that changes its page doesn't need new code here.
+Jumia's), the shop platforms many stores are built on (Shopify's public collection data, app/stores/shopify.py;
+Magento and PrestaShop cards, app/stores/platforms.py) and a store's own reader when we have one (B.TECH).
+None of it calls an LLM. A new store is checked first with `python -m scripts.store_probe <its pages>`. Whichever reads the most products wins, so a store that changes its page doesn't need new code here.
 
 Rules we keep:
   - robots.txt is read first and obeyed, for every page.
