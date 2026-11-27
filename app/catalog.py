@@ -105,6 +105,24 @@ CATEGORIES: dict[str, dict] = {
         "amazon.eg": "https://www.amazon.eg/s?k=vacuum+cleaner&i=appliances&language=en_AE&page={n}"}},
     "airfryers": {"ar": "قلايات هوائية", "pages": 3, "stores": {
         "amazon.eg": "https://www.amazon.eg/s?k=air+fryer&i=kitchen&language=en_AE&page={n}"}},
+    # beauty and personal care (many shoppers, women most of all, buy these online): one kind of product each, so a
+    # search finds them in our own list first. "mixed": very different prices in one kind (a lipstick and a palette),
+    # so a cheap one is not set apart as an accessory on the deals page.
+    "perfumes": {"ar": "برفانات", "pages": 5, "mixed": True, "stores": {
+        "jumia.com.eg": "https://www.jumia.com.eg/fragrances-allgenders/?page={n}",
+        "amazon.eg": "https://www.amazon.eg/s?k=perfume&i=beauty&language=en_AE&page={n}"}},
+    "makeup": {"ar": "ميكب", "pages": 5, "mixed": True, "stores": {
+        "jumia.com.eg": "https://www.jumia.com.eg/womens-make-up/?page={n}",
+        "amazon.eg": "https://www.amazon.eg/s?k=makeup&i=beauty&language=en_AE&page={n}"}},
+    "skincare": {"ar": "عناية بالبشرة", "pages": 4, "mixed": True, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=skin+care&i=beauty&language=en_AE&page={n}"}},
+    "haircare": {"ar": "عناية بالشعر", "pages": 3, "mixed": True, "stores": {
+        "jumia.com.eg": "https://www.jumia.com.eg/hair-conditioner-d/?page={n}",
+        "amazon.eg": "https://www.amazon.eg/s?k=shampoo&i=beauty&language=en_AE&page={n}"}},
+    "hair_tools": {"ar": "أجهزة الشعر", "pages": 3, "mixed": True, "stores": {
+        "amazon.eg": "https://www.amazon.eg/s?k=hair+dryer+straightener&i=beauty&language=en_AE&page={n}"}},
+    "deodorants": {"ar": "مزيلات عرق", "pages": 2, "mixed": True, "stores": {
+        "jumia.com.eg": "https://www.jumia.com.eg/styling-products-antiperspirants-deodorants/?page={n}"}},
     # broad sections for the deals page (shoppers browse those like a store's offers tab). Amazon's own "30% off and
     # more" filter (rh=p_8) gives discounted products only; Jumia's robots.txt forbids its filters and sorting, so its
     # plain section pages are read, plus its flash sales page.
@@ -338,10 +356,11 @@ shoppers find it whatever words they use (Arabic or English, the brand or just t
 {items}
 Reply JSON: {{"items": [{{"i": <number>, "brand": "brand or null", "line": "product line/name without the brand, e.g.
 'Galaxy A56', or null", "model": "model / part number exactly as written, or null", "kind": "what it is in plain
-English, e.g. 'washing machine', 'smartphone', 'phone case'", "kind_ar": "the same in the Arabic Egyptian shoppers
-use, e.g. 'غسالة', 'موبايل', 'جراب موبايل'", "size": "its main size/capacity/storage, e.g. '8 kg', '256GB', '55 inch',
-or null", "specs": ["up to 5 short English specs that matter when choosing, e.g. 'top load', 'automatic', '5G',
-'inverter'"], "accessory": true if it is an accessory/part for another product (case, cover, cable, filter)}}]}}
+English, e.g. 'washing machine', 'smartphone', 'phone case', 'perfume', 'lipstick'", "kind_ar": "the same in the
+Arabic Egyptian shoppers use, e.g. 'غسالة', 'موبايل', 'جراب موبايل', 'برفان', 'روج'", "size": "its main
+size/capacity/storage, e.g. '8 kg', '256GB', '55 inch', '100 ml', '50 g', or null", "specs": ["up to 5 short English
+specs that matter when choosing, e.g. 'top load', 'automatic', '5G', 'inverter', 'eau de parfum', 'matte', 'oily skin',
+'for women', a shade name or number"], "accessory": true if it is an accessory/part for another product (case, cover, cable, filter)}}]}}
 One entry per title, same numbers. Use only what the title says or what the model number surely means."""
 
 

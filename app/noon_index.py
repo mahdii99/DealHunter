@@ -214,7 +214,7 @@ async def build(first: int = 0, last: int = PDP_FILES - 1, mk: str = "eg", clien
 
 LINKS_MAX = 3
 # words that make a product an accessory/part for another one: those aren't shown for a search of the product itself
-ACCESSORY = {"case", "cases", "cover", "covers", "protector", "tempered", "film", "skin", "strap", "straps", "holder",
+ACCESSORY = {"case", "cases", "cover", "covers", "protector", "tempered", "film", "strap", "straps", "holder",
              "mount", "cable", "charger", "adapter", "replacement", "compatible", "sticker", "stickers", "pouch",
              "sleeve", "spare", "parts", "bracket", "tpu", "bumper"}
 CONDITION = {"refurbished", "renewed", "used"}  # like everywhere on the site: new products only

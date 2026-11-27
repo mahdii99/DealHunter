@@ -4,7 +4,7 @@ from .models import ParsedQuery, Product
 from .utils import normalize
 
 # Titles containing these are usually accessories, not the product itself.
-ACCESSORY_WORDS = {"case", "cover", "pouch", "sticker", "skin", "holder", "bag", "جراب"}
+ACCESSORY_WORDS = {"case", "cover", "pouch", "sticker", "holder", "bag", "جراب"}
 
 
 # Different stores name the same thing differently; map variants to the words users search with.
