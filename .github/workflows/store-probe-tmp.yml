@@ -1,0 +1,20 @@
+name: store probe (temporary)
+on:
+  push:
+    branches: [feature/more-deal-stores]
+    paths: [.github/workflows/store-probe-tmp.yml, scripts/store_probe.py]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -q -r requirements.txt
+      - run: >
+          python -m scripts.store_probe
+          https://btech.com/en/ https://2b.com.eg/en/ https://www.rayashop.com/en/ https://www.carrefouregypt.com/mafegy/en/
+          https://dubaiphone.net/ https://www.tradelinestores.com/ https://cairosales.com/en/ https://www.elarabygroup.com/
+          https://kimostore.net/ https://www.sigma-computer.com/ https://www.compumarts.com/ https://www.hyperone.com.eg/
+          https://dreamstores-eg.com/ https://www.lcwaikiki.eg/en-US/ https://www.defacto.com.eg/ https://www.maxfashion.com/eg/en/
+          https://www.homecentre.com/eg/en/ https://www.ikea.com/eg/en/ https://www.noon.com/egypt-en/ https://select-stores.com/
