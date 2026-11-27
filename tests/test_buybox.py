@@ -152,3 +152,18 @@ def test_a_copy_with_a_discount_percent_and_small_numbers_is_read():
     # a cheap product before a "free shipping over" line: its own price is kept, so two prices, not clear
     copy = "# Anker USB C Cable 1m Braided\nEGP 120\nFree shipping on orders over EGP 1,500\nAdd to cart\n"
     assert extract.read_text_copy(copy, "Anker USB C Cable 1m Braided")[0] is None
+
+
+def test_a_price_drawn_in_parts_and_a_hidden_offer():
+    # the price is drawn as "EGP 16,499 . 00" in parts; a used offer's price is kept hidden for a script
+    html = page('<div class="price-box"><span class="price"><span class="price-symbol">EGP</span>'
+                '<span class="price-whole">16,499 .</span><span class="price-fraction">00</span></span></div>'
+                '<div style="display:none"><span class="price">EGP 12,000</span></div><button>Add to cart</button>')
+    assert buybox.read(html, URL) == ("Sharp Washing Machine 8 Kg Inverter", 16499.0, True)
+
+
+def test_the_heading_the_title_words_a_little_differently():
+    html = page('<p class="price">16,499 EGP</p><button>Add to cart</button>').replace(
+        "<html>", "<html><head><title>Sharp Washer 8 Kg Inverter: Buy Online at Best Price</title></head>").replace(
+        "<h2>Related products</h2>", "<h1>Product details</h1><h1>Product Summary: Sharp Washing Machine 8 Kg Inverter</h1>")
+    assert buybox.read(html, URL)[:2] == ("Sharp Washing Machine 8 Kg Inverter", 16499.0)
