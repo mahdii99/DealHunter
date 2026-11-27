@@ -1394,6 +1394,16 @@ async def noon_probe(request: Request, pages: int = Query(20, ge=1, le=30)):
     return await noon_index.probe(pages)
 
 
+@app.post("/api/cron/search-probe")
+async def search_probe(request: Request, paid: bool = False, q: str = Query("", max_length=200)):
+    """Checks from this server that each web search service answers, and that a repeated search comes from the
+    cache (app/websearch.py probe). One search per service: the free ones, the monthly-quota ones with paid=true."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    return await websearch.probe(paid, q)
+
+
 @app.get("/api/coupons")
 async def coupons_api():
     return {"coupons": await _db(coupons.current, default=[])}

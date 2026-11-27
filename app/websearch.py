@@ -18,6 +18,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import httpx
 
@@ -475,3 +476,42 @@ async def search(client: httpx.AsyncClient, query: str, max_results: int = 8,
         return empty
     problems.note("search_error", "every search service failed: " + ", ".join(errors), request=query)
     raise SearchError("البحث فشل: " + ", ".join(errors))
+
+
+async def probe(paid: bool = False, query: str = "") -> dict:
+    """Checks from this server that each search service answers (the free ones; the monthly-quota ones too with
+    paid=True): status, results, seconds, the stores found, and whether a key was used. Then the cache: the same
+    search twice, the second from the cache. For the owner's check workflow; one search per service."""
+    query = query or "Samsung Galaxy A55 " + market.current().country_en
+    out: dict = {"services": [], "configured": configured()}
+    async with httpx.AsyncClient() as client:
+        for p in configured():
+            if p not in FREE_FIRST and not paid:
+                continue
+            row = {"name": p, "key": bool(os.getenv(KEYS[p]))}
+            t = time.monotonic()
+            try:
+                r, parse = await _CALLS[p](client, os.getenv(KEYS[p], ""), query, 8, None, None)
+                row["status"] = r.status_code
+                if r.status_code == 200:
+                    _count(p)
+                    hits = [h for h in parse(r.json()) if h.get("url")]
+                    row["results"] = len(hits)
+                    row["sites"] = sorted({urlparse(h["url"]).netloc.removeprefix("www.") for h in hits})[:10]
+                else:
+                    row["error"] = r.text[:200]
+            except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as e:
+                row["error"] = type(e).__name__
+            row["seconds"] = round(time.monotonic() - t, 1)
+            out["services"].append(row)
+        words = f"{query} {int(time.time())}"
+        t = time.monotonic()
+        try:
+            first = await search(client, words)
+            mid = time.monotonic()
+            again = await search(client, words)
+            out["cache"] = {"first_seconds": round(mid - t, 1), "again_seconds": round(time.monotonic() - mid, 2),
+                            "same": again == first, "results": len(first)}
+        except SearchError as e:
+            out["cache"] = {"error": str(e)[:200]}
+    return out

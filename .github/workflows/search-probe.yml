@@ -1,0 +1,24 @@
+# Run by hand: checks from the server that each web search service answers (Keenable, LangSearch; the monthly-quota
+# ones too when "paid" is ticked) and that a repeated search comes from the cache. One search per service.
+# Same secrets as scrape-prices.yml.
+name: search services check
+on:
+  workflow_dispatch:
+    inputs:
+      paid:
+        description: "Also check Tavily / Exa / Firecrawl (uses one of their monthly searches each)"
+        type: boolean
+        default: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the search services from the server
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          PAID: ${{ inputs.paid && 'true' || 'false' }}
+        run: |
+          if [ -z "$SITE_URL" ] || [ -z "$CRON_SECRET" ]; then echo "SITE_URL / CRON_SECRET secrets not set, skipping"; exit 0; fi
+          curl -fsS --retry 5 --retry-delay 20 --retry-all-errors --max-time 300 -X POST \
+            -H "X-Cron-Secret: $CRON_SECRET" "$SITE_URL/api/cron/search-probe?paid=$PAID" | python3 -m json.tool
