@@ -167,3 +167,20 @@ def test_the_heading_the_title_words_a_little_differently():
         "<html>", "<html><head><title>Sharp Washer 8 Kg Inverter: Buy Online at Best Price</title></head>").replace(
         "<h2>Related products</h2>", "<h1>Product details</h1><h1>Product Summary: Sharp Washing Machine 8 Kg Inverter</h1>")
     assert buybox.read(html, URL)[:2] == ("Sharp Washing Machine 8 Kg Inverter", 16499.0)
+
+
+def test_savings_and_installments_beside_the_price_are_not_prices():
+    from app import extract
+    name = "Anker Soundcore R50i Earbuds Black"
+    # "Save EGP 500", the old price and the price
+    copy = f"# {name}\nSave EGP 500\nEGP 1,999\nEGP 1,499\nAdd to cart\n"
+    assert extract.read_text_copy(copy, name)[0][1] == 1499.0
+    # the saving written alone is the old price minus the new one
+    copy = f"# {name}\nEGP 949\nWas EGP 1,999\nEGP 1,050 off\nAdd to cart\n"
+    assert extract.read_text_copy(copy, name)[0][1] == 949.0
+    # an installment: the price split into 6 months
+    copy = f"# {name}\nEGP 1,185\nEGP 1,499\n-21%\nPay EGP 197.50 with installments\nAdd to cart\n"
+    assert extract.read_text_copy(copy, name)[0][1] == 1185.0
+    # a cheap product written first stays, even when a later number is three times it
+    copy = f"# {name}\nEGP 400\nBundle with case EGP 1,200\nAdd to cart\n"
+    assert extract.read_text_copy(copy, name)[0] is None
