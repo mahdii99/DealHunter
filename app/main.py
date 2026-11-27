@@ -1404,6 +1404,22 @@ async def search_probe(request: Request, paid: bool = False, q: str = Query("", 
     return await websearch.probe(paid, q)
 
 
+@app.post("/api/cron/page-probe")
+async def page_probe(request: Request, urls: str = Query(..., max_length=4000)):
+    """Checks from this server how store pages answer us (app/agent.py probe_pages): robots.txt, our two ways of
+    asking, the reader service. `urls`: up to 8 public https addresses, separated by spaces or commas."""
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret or not hmac.compare_digest(request.headers.get("x-cron-secret", ""), secret):
+        raise HTTPException(403, "forbidden")
+    picked = []
+    for u in re.split(r"[\s,]+", urls.strip())[:8]:
+        if u and urlparse(u).scheme == "https" and await _public_host(urlparse(u).hostname or ""):
+            picked.append(u)
+    if not picked:
+        raise HTTPException(400, "no public https address")
+    return await agent.probe_pages(picked)
+
+
 @app.get("/api/coupons")
 async def coupons_api():
     return {"coupons": await _db(coupons.current, default=[])}
