@@ -477,6 +477,9 @@ _RELATED = re.compile(r"you may also like|related products|similar products|cust
 _TEXT_BUY = re.compile(r"add to (?:cart|bag|basket)|buy now|[أا]ضف (?:[اإ]لى|لل) ?(?:ال)?(?:سل[ةه]|عرب[ةه])|[أا]ضف للسل[ةه]|"
                        r"اشتر[يى]? الآن|شراء الآن|اطلب الآن|"
                        r"\bin stock\b|متوفر في المخزون", re.I)
+_SAVING_BEFORE = re.compile(r"(?:save|saving|you save|وفر|توفير|خصم)\W{0,3}(?:[A-Za-z.\u0600-\u06ff]{0,6}\W{0,2})?$", re.I)
+_SAVING_AFTER = re.compile(r"^[^\d]{0,8}[\d.,]+\s*(?:[A-Za-z.\u0600-\u06ff]{1,6}\s*)?(?:off\b|discount|saving|خصم|توفير)", re.I)
+_MONTHS = (3, 4, 6, 9, 10, 12, 18, 24, 30, 36, 48, 60)
 TEXT_WINDOW = 1200  # after a product's name in a text copy: its own price is there, before related items
 
 
@@ -569,6 +572,16 @@ def _text_reads(text: str, title: str):
         # a later number a tenth of the first one or less (a shipping fee, a count, a rating) isn't this product's
         # price (the first one is always kept: a cheap product's price comes before a "free shipping over ..." line)
         prices = prices[:1] + [n for n in prices[1:] if n * 10 > prices[0]]
+        # a saving ("Save EGP 500", or simply the old price minus the new one) and an installment (the price split
+        # into 3, 6, 12... months) are written beside the price but aren't prices
+        saved_at = {n for at, n in found if _SAVING_BEFORE.search(window[max(0, at - 25):at])
+                    or _SAVING_AFTER.match(window[at:at + 40].split("\n", 1)[0])}
+        # (the difference counts only when clearly smaller than both: 949 / 1,050 / 1,999 can't be told apart)
+        # (worked out from the numbers alone, never the first one written: that's where the product's price is)
+        first = prices[:1]
+        prices = [n for n in prices if n not in saved_at and (n in first or (
+                  not any(abs(a - b - n) <= 1 for a in prices for b in prices if a > b > 2 * n)
+                  and not any(a > n * 2 and any(abs(a / k - n) <= 0.5 for k in _MONTHS) for a in prices)))]
         if len(prices) == 1:
             price = prices[0]
         elif len(prices) == 2 and _DISCOUNT.search(window[:found[-1][0] + 40]) and max(prices) <= min(prices) * 3:
