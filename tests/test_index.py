@@ -65,10 +65,12 @@ def test_a_store_recipe_is_learned_confirmed_then_replaces_the_llm(monkeypatch):
         return out
     got = asyncio.run(go())
     assert [p.price for p in got] == prices
-    # 1st page: read + learned; 2nd, 3rd: read by the LLM and the recipe agreed; then trusted: no LLM call
-    assert calls == ["read_price", "learn_page", "read_price", "read_price"]
+    # 1st page: read + learned (the page leaves one choice: no LLM call to learn); 2nd, 3rd: read by the LLM and
+    # the recipe agreed; then trusted: no LLM call
+    assert calls == ["read_price", "read_price", "read_price"]
     row = db.get_recipe("shop.example.com")
-    assert row["ok"] == 3 and row["uses"] == 2 and json.loads(row["recipe"])["price"] == PRICE_SEL
+    assert row["ok"] == 3 and row["uses"] == 2
+    assert recipes.apply(json.loads(row["recipe"]), _page(12345)) == (12345, True)
 
 
 def test_a_recipe_that_stops_working_is_learned_again(monkeypatch):
@@ -86,8 +88,8 @@ def test_a_recipe_that_stops_working_is_learned_again(monkeypatch):
     asyncio.run(go())
     # the recipe found nothing (twice on the first page): the LLM reads, then learns the store anew; the new
     # recipe is checked against the LLM again before it is trusted
-    assert calls == ["read_price", "read_price", "learn_page", "read_price"]
-    assert json.loads(db.get_recipe("shop.example.com")["recipe"])["price"] == PRICE_SEL
+    assert calls == ["read_price", "read_price", "read_price"]
+    assert recipes.apply(json.loads(db.get_recipe("shop.example.com")["recipe"]), _page(12345)) == (12345, True)
 
 
 def test_a_recipe_never_says_in_stock_without_the_buy_button():

@@ -1104,11 +1104,20 @@ def _by_buybox(url: str, html: str, title: str) -> Product | None:
         return None  # the page's name isn't the followed product's
     if not shows(_shown_numbers(html), price):
         return None
+    _in_thread(recipes.after_clear_read, url, html, float(price))  # the store learns from its clear pages too
     return Product(store=trust.store_name(url), title=title or name, price=float(price), url=url,
                    trusted=trust.is_known(url), in_stock=stock)
 
 
 _BACKGROUND: set[asyncio.Task] = set()
+
+
+def _in_thread(fn, *args) -> None:
+    """Work nobody waits for that blocks (the database), off the event loop; nothing when there's no loop."""
+    try:
+        asyncio.get_running_loop().run_in_executor(None, fn, *args)
+    except RuntimeError:
+        pass
 
 
 def _later(coro) -> None:
@@ -1354,7 +1363,8 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                                          in_stock=got[1])]
             if not page_products and _page_id(url) and (box := buybox.read(html, url)):
                 # a product page whose buy box (its <h1> and the one price beside it) is clear: no LLM read. The
-                # price is checked again on the live page before it's shown
+                # price is checked again on the live page before it's shown. The store learns from it too
+                _in_thread(recipes.after_clear_read, url, html, box[1])
                 page_products = [Product(store=trust.store_name(url), title=box[0], price=box[1], url=url,
                                          image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
                                          in_stock=box[2])]
