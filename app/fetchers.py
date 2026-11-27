@@ -137,12 +137,19 @@ async def _tavily_extract(client: httpx.AsyncClient, urls: list[str]) -> dict[st
     return {x["url"]: x.get("raw_content") or "" for x in r.json().get("results", [])}
 
 
-async def _jina(client: httpx.AsyncClient, url: str) -> str:
+async def _jina_response(client: httpx.AsyncClient, url: str) -> httpx.Response:
     headers = {"Accept": "text/plain", "X-Return-Format": "markdown"}
     if key := os.getenv("JINA_API_KEY"):
         headers["Authorization"] = f"Bearer {key}"
-    r = await client.get("https://r.jina.ai/" + url, headers=headers, timeout=15)
-    return r.text if r.status_code == 200 else ""
+    return await client.get("https://r.jina.ai/" + url, headers=headers, timeout=15)
+
+
+async def _jina(client: httpx.AsyncClient, url: str) -> str:
+    r = await _jina_response(client, url)
+    if r.status_code != 200:
+        log.warning("jina reader %s for %s: %s", r.status_code, urlparse(url).netloc, r.text[:150])
+        return ""
+    return r.text
 
 
 async def read_pages(client: httpx.AsyncClient, urls: list[str], deadline: float = 12) -> tuple[dict[str, str], dict[str, str]]:
