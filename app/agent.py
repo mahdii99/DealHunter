@@ -3226,9 +3226,9 @@ async def probe_pages(urls: list[str]) -> dict:
                          "robot_check": _is_robot_check(r.text),
                          "products": len(extract_products(r.text, trust.store_name(url), str(r.url))),
                          "title": extract_mod.page_title(r.text)[:100] if r.status_code == 200 else ""}
-        text, secs = await timed(fetchers._jina(client, url))
-        row["reader"] = ({"error": type(text).__name__, "seconds": secs} if isinstance(text, Exception)
-                         else {"chars": len(text), "seconds": secs, "start": text[:160]})
+        r, secs = await timed(fetchers._jina_response(client, url))
+        row["reader"] = ({"error": type(r).__name__, "seconds": secs} if isinstance(r, Exception)
+                         else {"status": r.status_code, "chars": len(r.text), "seconds": secs, "start": r.text[:200]})
         row["remembered"] = dict(_host(url))
         return row
 
