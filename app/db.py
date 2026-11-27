@@ -382,6 +382,11 @@ def save_search(key: str, market: str, payload: dict) -> None:
             (key, market, time.time(), json.dumps(payload, ensure_ascii=False)))
 
 
+def drop_old_searches(prefix: str, older_than: float) -> None:
+    """Removes saved rows under one key prefix (e.g. the web search cache) saved before `older_than`."""
+    _db.run("DELETE FROM searches WHERE key LIKE ? AND saved_at < ?", (prefix + "%", older_than))
+
+
 def recent_prices_like(word: str, market: str, since: float, limit: int = 6) -> list[dict]:
     """Prices we saw lately (in anyone's search) on pages whose title has this word, e.g. a model number: what we
     already know for free before spending a web search on it. Newest first."""

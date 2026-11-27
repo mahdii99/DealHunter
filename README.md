@@ -45,9 +45,9 @@ request ──► understand (LLM) ──► web search ──► open store pag
 | Stage | Where | Notes |
 | --- | --- | --- |
 | Understand the chat | `app/agent.py` `plan_turn` | One LLM call: decides to search / ask / recommend / answer, merges follow-ups, plans an Arabic and an English query (with model numbers) |
-| Web search | `app/websearch.py` | Tavily, Exa and Firecrawl, rotated to share free quotas, with automatic fallback |
+| Web search | `app/websearch.py` | Keenable (keyless) and LangSearch first, then Tavily, Exa and Firecrawl only as fallback; repeated searches answered from a 12 h database cache |
 | Open pages | `app/agent.py` `_web_find` | Parallel, with per-stage deadlines so one slow site can't hold up the answer |
-| Pages we can't open | `app/fetchers.py` | Retried through a reader service (Tavily Extract, then Jina Reader), only where the site's robots.txt allows it |
+| Pages we can't open | `app/fetchers.py` | Retried through a reader service (Jina Reader first, Tavily Extract only for the pages Jina missed), only where the site's robots.txt allows it |
 | Extract products | `app/extract.py` | Generic: JSON-LD, Next.js flight data, Shopify JSON; fixes prices stored in cents; detects stock and condition |
 | Product cards | `app/cards.py` | Generic: a listing page's cards (link + name + one current price, old prices removed) read with no LLM call |
 | Buy box | `app/buybox.py` | Generic: a product page's name, its one current price and whether it can be bought, read from around its `<h1>` with no LLM call |
@@ -72,7 +72,7 @@ python -m scripts.check_keys                         # checks every key with one
 uvicorn app.main:app --reload                        # open http://localhost:8000
 ```
 
-At minimum you need one LLM key (e.g. a free Gemini key from Google AI Studio) and one search key (e.g. Tavily).
+At minimum you need one LLM key (e.g. a free Gemini key from Google AI Studio) web search works with no key (Keenable keyless); a Tavily/Exa key adds a fallback.
 Without keys it still runs in a basic rule-based mode, and `DEMO=1` serves saved sample pages offline.
 
 ## Quality checks

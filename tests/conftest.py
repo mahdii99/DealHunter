@@ -19,6 +19,8 @@ def _no_real_keys(monkeypatch):
              *(key for _, key, _ in llm.COMPAT.values()), *(f"{p.upper()}_MODEL" for p in llm.COMPAT)}
     for name in names:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(websearch, "KEYLESS", False)  # no keyless search service either (tests that want it set it)
+    websearch._CACHE.clear()
 
 
 @pytest.fixture(autouse=True)

@@ -35,7 +35,7 @@ pytest -q                           # الاختبارات
 - `app/llm.py` الاتصال بـ Gemini
 - `app/websearch.py` بحث الويب
 - `app/trust.py` سمعة المتاجر
-- `app/fetchers.py` قراءة الصفحات اللي مابتفتحش (Tavily Extract ثم Jina Reader) مع احترام robots.txt
+- `app/fetchers.py` قراءة الصفحات اللي مابتفتحش (Jina Reader الأول، وTavily Extract بس للصفحات اللي Jina مافتحهاش) مع احترام robots.txt
 - `app/db.py` قاعدة الأسعار (SQLite في `data/prices.db`): كاش للطلبات وتاريخ سعر كل منتج، و`/api/history?url=` بيرجع تاريخ السعر
 - `app/market.py` إعداد البلد (MARKET=EG/SA/AE): العملة والدومينات المحلية
 - `scripts/benchmark.py` اختبار ثابت بـ 20 طلب حقيقي: `python -m scripts.benchmark 5` والتقرير في `debug/benchmark/`
