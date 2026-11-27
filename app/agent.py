@@ -27,11 +27,12 @@ from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, we
 from . import extract as extract_mod
 from .extract import extract_products
 from .models import ParsedQuery, Product
-from .query import (AR_UNITS, AR_WORDS, BRANDS, english_words, is_accessory, kinds_in, lacks_wanted, made_for, misses_feature,
-                    names_brand, other_variant, parse_query, phrased, same_kind, shows_size,
-                    wanted_sizes, wants_accessory)
+from .query import (AR_UNITS, AR_WORDS, BRAND_ALIASES, BRANDS, copy_or_tester, english_words, is_accessory, is_beauty,
+                    kind_synonyms, kinds_in, lacks_wanted, made_for, misses_feature, names_brand, other_edition, other_gender,
+                    other_variant, parse_query, phrased, same_kind, shows_size, wanted_sizes, wants_accessory)
 from .ranking import rank
 from .stores import ALL_STORES
+from .stores import shopify
 from .stores.amazon import parse_amazon_cards
 from .stores.base import DEBUG_DIR, HEADERS
 from .utils import normalize
@@ -171,7 +172,7 @@ Reply JSON (in this order):
   "model_codes": ["official model / part numbers of the requested product if you know them, else []"],
   "product": {"kind": "for search/recommend: what the shopper wants in plain English, e.g. 'washing machine',
               'smartphone', 'wireless earbuds'", "brand": "the brand they asked for, or null",
-              "size": "the size/capacity/storage they asked for, e.g. '8 kg', '256GB', '55 inch', or null",
+              "size": "the size/capacity/storage they asked for, e.g. '8 kg', '256GB', '55 inch', '100 ml', or null",
               "model": "a model number only when they want ONE exact product, else null"} or null,
   "queries": ["1-2 short English store search queries, most specific first"],
   "requirements": ["hard requirements a matching product must meet, in English, from the need too, e.g.
@@ -674,7 +675,10 @@ person selling their own item: links like /ad/ or /listing/, titles like "للب
 with no shop behind it, even if the site looks organized), and prices
 suspiciously far below the others for the same item. A branded item sold by a shop that isn't the brand or a big
 retailer, far below what that brand charges in Egypt (common with clothes, shoes, perfume, bags), is likely a copy:
-drop it, or keep it with "sure": false and a note saying it may not be original. Check every price against what that product really costs in
+drop it, or keep it with "sure": false and a note saying it may not be original. For beauty products: an "inspired
+by" / dupe / alternative item, a tester or a body splash is not the perfume they named, another size (ml / g) is
+another product, a perfume's other edition sold under the same name (Intense, Elixir, Absolu, Privé, Night, a refill)
+is another product unless they named it, and a makeup item in another shade than the one they named isn't it. Check every price against what that product really costs in
 Egypt today (your market knowledge + the other candidates): a price far below it (e.g. an 18 ft fridge for 2,000 EGP)
 is a wrong currency, a monthly installment, a deposit or an accessory, so drop it. Drop used / refurbished / open-box items unless the shopper
 asked for them. Real discounts are a plus. Reply JSON:
@@ -1265,6 +1269,9 @@ STORE_SEARCH_DEADLINE = 12  # the big stores' own search pages, read with no LLM
 STORE_SEARCHES = {"EG": ["https://www.amazon.eg/s?k={q}&language=en_AE", "https://btech.com/en/s?q={q}"],
                   "SA": ["https://www.amazon.sa/s?k={q}&language=en_AE"],
                   "AE": ["https://www.amazon.ae/s?k={q}&language=en_AE"]}
+# beauty and personal-care shops searched too when the request is for one of those products (Shopify shops answer a
+# public search address with their products as data, app/stores/shopify.py)
+BEAUTY_SEARCHES = {"EG": ["https://sourcebeauty.com" + shopify.SUGGEST, "https://www.bloompharmacy.com" + shopify.SUGGEST]}
 
 
 async def _store_search(queries: list[str]) -> tuple[list[Product], dict[str, str]]:
@@ -1273,7 +1280,10 @@ async def _store_search(queries: list[str]) -> tuple[list[Product], dict[str, st
     list. robots.txt is read first, as for every page we open. Their prices are checked on each product's own page
     before they're shown, like any other offer."""
     qs = [q for q in queries if re.search(r"[A-Za-z]", q)][:2]
-    urls = [t.format(q=quote_plus(q)) for q in qs for t in STORE_SEARCHES.get(market.current().code, [])]
+    searches = STORE_SEARCHES.get(market.current().code, [])
+    if any(is_beauty(q) for q in qs):
+        searches = searches + BEAUTY_SEARCHES.get(market.current().code, [])
+    urls = [t.format(q=quote_plus(q)) for q in qs for t in searches]
     if not urls:
         return [], {}
     t = time.monotonic()
@@ -1298,7 +1308,9 @@ async def _store_search(queries: list[str]) -> tuple[list[Product], dict[str, st
             continue
         products, html = res
         if not products:
-            products = parse_amazon_cards(html, trust.store_name(url), url)[:MAX_PER_PAGE]
+            products = (shopify.parse_suggest(html, url, trust.store_name(url))
+                        or parse_amazon_cards(html, trust.store_name(url), url))[:MAX_PER_PAGE]
+            products = [p for p in products if p.in_stock is not False]
         for p in products:
             if p.url and p.url not in seen:
                 seen.add(p.url)
@@ -2907,6 +2919,8 @@ def _shelf_offers(raw: str, request: str) -> list[Product]:
         if w.isdigit() and len(w) >= 4:  # "2000" with no unit is mostly a price, not a product word
             continue
         alts = {_stem(w)} | ({AR_VOCAB[w]} if w in AR_VOCAB else set()) | ({AR_WORDS[w]} if w in AR_WORDS else set())
+        # the other ways titles write it: a brand's spellings ("l'oreal"), a kind's words ("برفان" -> "eau de parfum")
+        alts |= {_fold(a) for e in list(alts) for a in BRAND_ALIASES.get(e, ()) + tuple(kind_synonyms(e))}
         if alts not in groups:
             groups.append(alts)
     if not groups:
@@ -2978,6 +2992,12 @@ def _why_not(p: Product, eng: str) -> str | None:
         return "model"  # "ريلمي 12 برو" never shows the 12 Pro+, the plain 12 or a C85 Pro
     if not wants_accessory(eng) and (is_accessory(p.title) or made_for(p.title, eng)):
         return "accessory"  # "سماعة" never shows a cleaning kit, "ايفون 15" never a stand "compatible with iPhone 15"
+    if bad := copy_or_tester(p.title, eng):
+        return bad  # "برفان لانكوم" never shows a perfume "inspired by" Lancome, or a tester
+    if other_gender(p.title, eng):
+        return "gender"  # "برفان حريمي" never shows a perfume for men
+    if other_edition(p.title, eng):
+        return "edition"  # "برفان لانكوم لافي ايبل" never shows its Intensément or L'Elixir
     if not all(shows_size(p.title, n, u) for n, u in wanted_sizes(eng)):
         return "size"
     return None
@@ -2998,9 +3018,12 @@ def _fitting(products: list[Product], eng: str) -> list[Product]:
     e.g. r50i: Arabic titles have little else in English), cheapest first. Accessories that share a phone's words
     (a case "compatible with" it) are left out unless the shopper asked for one, and so are those under a quarter of
     the middle price of the fitting products."""
-    words = [_squash_size(w) for w in eng.split() if _squash_size(w)]
+    # who it's for is checked on its own (_why_not): "men" is inside "women"
+    words = [_squash_size(w) for w in eng.split() if _squash_size(w) and w not in ("men", "women")]
     if not words:
         return []
+    synonyms = {w: {x for x in map(_squash_size, kind_synonyms(w)) if len(x) >= 4 or x in ("edp", "edt")}
+                for w in words}  # "perfume": "edp", "eaudeparfum"...
     codes = [w for w in words if re.search(r"[a-z]", w) and re.search(r"\d", w)]
     # a model's own number (r50i, a55, 15irh10) names the product; a size or a chip (512gb, i5) doesn't
     names = [c for c in codes if len(c) >= 4 and not re.fullmatch(r"\d+(gb|tb|inch|kg|hp|mah|w|liter)", c)]
@@ -3011,7 +3034,8 @@ def _fitting(products: list[Product], eng: str) -> list[Product]:
         title = _squash_size(p.title)
         if not want_part and _is_part(p.title):
             continue
-        if all(c in title for c in codes) and (names or sum(w in title for w in words) >= need):
+        if all(c in title for c in codes) and (names or sum(w in title or any(x in title for x in synonyms[w])
+                                                            for w in words) >= need):
             out.append(p)
     if len(out) >= 3:
         mid = sorted(_paid(p) for p in out)[len(out) // 2]

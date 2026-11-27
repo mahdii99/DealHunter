@@ -1,4 +1,4 @@
-# Reads the big stores' category pages (phones, TVs, washers, fridges, ACs, laptops, and home, beauty, fashion, electronics and flash-sale sections) into the site's own price list, so searches already know
+# Reads the big stores' category pages (phones, TVs, washers, fridges, ACs, laptops, perfumes, makeup, skin and hair care, and home, beauty, fashion, electronics and flash-sale sections) into the site's own price list, so searches already know
 # their prices and spend fewer free web searches. Free: GitHub runs it on a schedule. Same two repository secrets as
 # check-watches.yml: SITE_URL and CRON_SECRET. Then it makes today's deals list (/deals).
 name: read store prices

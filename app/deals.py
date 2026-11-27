@@ -74,7 +74,8 @@ def _accessories_apart(rows: list[dict]) -> list[dict]:
     those, so anything priced far under its category's middle price goes under accessories instead."""
     by_cat: dict[str, list[float]] = {}
     for r in rows:
-        if not catalog.CATEGORIES.get(r["category"], {}).get("broad"):  # one kind of product, not a whole section
+        conf = catalog.CATEGORIES.get(r["category"], {})
+        if not conf.get("broad") and not conf.get("mixed"):  # one kind of product at one kind of price
             by_cat.setdefault(r["category"], []).append(r["price"])
     mid = {c: sorted(v)[len(v) // 2] for c, v in by_cat.items() if len(v) >= 10}
     return [{**r, "category": ACCESSORY} if r["category"] in mid and r["price"] < mid[r["category"]] * ACCESSORY_SHARE

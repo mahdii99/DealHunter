@@ -16,10 +16,15 @@ KNOWN_STORES = {
     "samsung.com": "Samsung", "xiaomi.com": "Xiaomi", "mi.com": "Xiaomi", "anker.com": "Anker",
     "oraimo.com": "Oraimo", "hyperone.com.eg": "HyperOne", "elghazawy.com": "El Ghazawy",
     "compumarts.com": "CompuMarts", "sigma-computer.com": "Sigma", "elbadrgroupeg.store": "El Badr",
+    # beauty and personal care
+    "sourcebeauty.com": "Source Beauty", "bloompharmacy.com": "Bloom Pharmacy",
 }
+BEAUTY_STORES = ("sourcebeauty.com", "bloompharmacy.com")
 # Well-known retail sites: the agent searches them as one group and every other shop as a second group,
 # so the big names can't crowd the smaller (often cheaper) shops out of the results.
-FAMOUS_SITES = [d for d in KNOWN_STORES if d not in ("samsung.com", "xiaomi.com", "mi.com", "anker.com", "oraimo.com")]
+# (beauty shops are searched for beauty products only: agent.BEAUTY_SEARCHES, and when the LLM names them)
+FAMOUS_SITES = [d for d in KNOWN_STORES if d not in ("samsung.com", "xiaomi.com", "mi.com", "anker.com", "oraimo.com")
+                + BEAUTY_STORES]
 # Never shop results for new items.
 CLASSIFIEDS = ["dubizzle.com.eg", "olx.com.eg"]
 # Pages that are never a place to buy from.
