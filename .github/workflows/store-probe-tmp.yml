@@ -2,7 +2,7 @@ name: store probe (temporary)
 on:
   push:
     branches: [feature/more-deal-stores]
-    paths: [.github/workflows/store-probe-tmp.yml, scripts/store_probe.py]
+    paths: [.github/workflows/store-probe-tmp.yml, scripts/store_probe.py, scripts/save_pages_tmp.py]
 jobs:
   probe:
     runs-on: ubuntu-latest
@@ -12,15 +12,10 @@ jobs:
         with: {python-version: "3.12"}
       - run: pip install -q -r requirements.txt
       - run: >
-          python -m scripts.store_probe
-          https://btech.com/en/collection/black-friday-offers https://btech.com/en/c/mobiles-tablets https://btech.com/en/c/tvs-projectors?page=2
-          https://2b.com.eg/en/mobile-and-tablet/mobiles.html https://2b.com.eg/en/computers/laptops.html?p=2 https://2b.com.eg/en/offers/intel-offer-product.html
-          https://www.rayashop.com/en/mobiles-and-tablets https://www.rayashop.com/en/televisions-and-receivers?p=2 https://www.rayashop.com/en/large-appliances
-          https://tradelinestores.com/pages/all-deals https://tradelinestores.com/collections/all https://tradelinestores.com/collections/all/products.json
-          https://cairosales.com/en/tvs-screens/ https://cairosales.com/en/tvs-screens/?page=2
-          https://kimostore.net/collections/mobile-phone https://kimostore.net/collections/mobile-phone/products.json
-          https://www.compumarts.com/collections/online-offers https://www.compumarts.com/collections/november-white-friday-offers/products.json
-          https://www.sigma-computer.com/en/offers/savings-offers
-          https://dreamstores-eg.com/collections/samsung-offer https://dreamstores-eg.com/collections/all/products.json
-          https://www.ikea.com/eg/en/offers/
-          https://www.carrefouregypt.com/robots.txt
+          python -m scripts.save_pages_tmp
+          https://2b.com.eg/en/mobile-and-tablet/mobiles.html https://www.rayashop.com/en/mobiles-and-tablets
+          https://cairosales.com/en/tvs-screens/ https://btech.com/en/c/mobiles-tablets
+          https://kimostore.net/collections/mobile-phone/products.json https://kimostore.net/collections/mobile-phone
+          https://btech.com/en/collection/black-friday-offers https://www.ikea.com/eg/en/offers/
+      - uses: actions/upload-artifact@v4
+        with: {name: pages, path: pages/}
