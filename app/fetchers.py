@@ -3,8 +3,9 @@ that only renders with JavaScript).
 
 It works like the page readers AI assistants use: a reader service fetches the page from its own infrastructure and
 returns the readable text, which the LLM then reads for products and prices.
-  1. Tavily Extract (same TAVILY_API_KEY as search; free credits, 5 pages = 1 credit)
-  2. Jina Reader (https://r.jina.ai, free, no key needed; JINA_API_KEY optional for higher limits)
+  1. Jina Reader (https://r.jina.ai, free, no key needed; JINA_API_KEY optional for higher limits)
+  2. Tavily Extract (same TAVILY_API_KEY as search, 5 pages = 1 credit of its small monthly quota): only for the
+     pages Jina couldn't give us in its share of the time
 
 Site rules are respected: a page is only sent to a reader if the store's robots.txt allows crawling it.
 """
@@ -117,10 +118,16 @@ def robots_reason(url: str) -> str:
     return hit[1].rule_for(url)[1] or "allowed"
 
 
+JINA_SHARE = 0.5  # part of the time Jina (free) has alone before Tavily Extract (monthly quota) is asked too
+
+
 async def _tavily_extract(client: httpx.AsyncClient, urls: list[str]) -> dict[str, str]:
     key = os.getenv("TAVILY_API_KEY")
     if not key or not urls:
         return {}
+    from . import websearch
+    for _ in range(0, len(urls), 5):  # 5 pages = 1 credit, counted with the searches on /admin
+        websearch._count("tavily")
     r = await client.post("https://api.tavily.com/extract", timeout=15,
                           headers={"Authorization": f"Bearer {key}"},
                           json={"urls": urls, "extract_depth": "basic", "format": "markdown"})
@@ -156,26 +163,34 @@ async def read_pages(client: httpx.AsyncClient, urls: list[str], deadline: float
         (allowed.append(u) if ok else why.__setitem__(u, "robots.txt disallows (or unreachable)"))
     if not allowed:
         return {}, why
-    tavily = asyncio.ensure_future(_tavily_extract(client, allowed))
-    jina = {u: asyncio.ensure_future(_jina(client, u)) for u in allowed}
-    pending = {tavily, *jina.values()}
     texts: dict[str, str] = {}
-    while pending and len(texts) < len(allowed):
-        left = deadline - (time.monotonic() - t0)
-        if left <= 0:
-            break
-        done, pending = await asyncio.wait(pending, timeout=left, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            if task.cancelled() or task.exception() is not None:
-                if task is tavily:
-                    log.warning("tavily extract failed: %s", type(task.exception()).__name__)
-                continue
+    jina = {u: asyncio.ensure_future(_jina(client, u)) for u in allowed}
+    tavily = None
+
+    def take(task):
+        if task.cancelled() or task.exception() is not None:
             if task is tavily:
-                texts.update({u: x for u, x in task.result().items() if u in jina and len(x) >= MIN_TEXT and u not in texts})
-            else:
-                u = next(k for k, v in jina.items() if v is task)
-                if len(task.result()) >= MIN_TEXT and u not in texts:
-                    texts[u] = task.result()
+                log.warning("tavily extract failed: %s", type(task.exception()).__name__)
+            return
+        if task is tavily:
+            texts.update({u: x for u, x in task.result().items() if u in jina and len(x) >= MIN_TEXT and u not in texts})
+        else:
+            u = next(k for k, v in jina.items() if v is task)
+            if len(task.result()) >= MIN_TEXT and u not in texts:
+                texts[u] = task.result()
+    pending = set(jina.values())
+    while len(texts) < len(allowed):
+        spent = time.monotonic() - t0
+        if tavily is None and (spent >= deadline * JINA_SHARE or not pending):
+            # Jina (free) had its share of the time, or is done: Tavily's quota only for the pages still missing
+            tavily = asyncio.ensure_future(_tavily_extract(client, [u for u in allowed if u not in texts]))
+            pending.add(tavily)
+        left = deadline - spent if tavily else deadline * JINA_SHARE - spent
+        if not pending or deadline - spent <= 0:
+            break
+        done, pending = await asyncio.wait(pending, timeout=max(left, 0.01), return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            take(task)
     for task in pending:
         task.cancel()
     for u in allowed:

@@ -48,6 +48,10 @@ services:
         sync: false
       - key: CLOUDFLARE_ACCOUNT_ID
         sync: false
+      - key: KEENABLE_API_KEY
+        sync: false
+      - key: LANGSEARCH_API_KEY
+        sync: false
       - key: TAVILY_API_KEY
         sync: false
       - key: EXA_API_KEY

@@ -478,6 +478,31 @@ def test_reader_fallback_respects_robots_and_reads_blocked_pages(monkeypatch):
     assert why == {"https://shop-b.com/p/heater": "robots.txt disallows (or unreachable)"}
 
 
+def test_reader_asks_tavily_extract_only_for_pages_jina_missed(monkeypatch):
+    from app import fetchers
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    asked = []
+
+    def handler(request: httpx.Request):
+        u = str(request.url)
+        if u.endswith("/robots.txt"):
+            return httpx.Response(404)
+        if "api.tavily.com/extract" in u:
+            asked.append(json.loads(request.read())["urls"])
+            return httpx.Response(200, json={"results": [{"url": "https://b.com/p", "raw_content": "B page EGP 10 " * 30}]})
+        if "r.jina.ai" in u:
+            return httpx.Response(200, text="A page EGP 9 " * 30) if "a.com" in u else httpx.Response(500)
+        return httpx.Response(500)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetchers.read_pages(client, ["https://a.com/p", "https://b.com/p"], deadline=2)
+
+    texts, _ = asyncio.run(go())
+    assert set(texts) == {"https://a.com/p", "https://b.com/p"}
+    assert asked == [["https://b.com/p"]]  # Jina's page isn't sent to Tavily's monthly quota
+
+
 def test_foreign_store_pages_and_domains_are_skipped():
     from app import trust
     from app.extract import extract_products
@@ -627,12 +652,48 @@ def test_search_shares_free_quotas_and_falls_back(monkeypatch):
 
     async def go():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
-            return [await websearch.search(c, "hero 50l", include_domains=["btech.com"]) for _ in range(3)]
+            return [await websearch.search(c, f"hero 50l {i}", include_domains=["btech.com"]) for i in range(3)]
 
     res = asyncio.run(go())
     assert all(r == [{"url": "https://btech.com/p/1", "title": "Hero 50L", "snippet": "", "content": ""}] for r in res)
     assert hits.count("api.tavily.com") == 1        # out of quota once -> rested, Exa takes over
     assert websearch._REST["tavily"] - time.time() > 3600
+
+
+def test_search_free_service_first_cached_and_metered_only_as_fallback(monkeypatch):
+    from app import websearch
+    monkeypatch.setattr(websearch, "KEYLESS", True)
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    websearch._REST.clear()
+    hits, now = [], time.time()
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 3600))
+    old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 30 * 86400))
+
+    def handler(request: httpx.Request):
+        hits.append(request.url.host)
+        if request.url.host == "api.keenable.ai":
+            assert request.url.path == "/v1/search/public" and request.headers["X-Keenable-Title"]
+            body = json.loads(request.read())
+            if "nothing" in body["query"]:
+                return httpx.Response(200, json={"results": []})
+            assert body["query"].endswith(" مصر")  # no country filter there: the market is named in the words
+            return httpx.Response(200, json={"results": [
+                {"url": "https://cards.keenable.ai/w/1", "title": "price card", "snippet": "x"},
+                {"url": "https://shop.eg/p/1", "title": "غسالة", "snippet": "copy " * 300, "acquired_at": fresh},
+                {"url": "https://shop.eg/p/2", "title": "غسالة 2", "snippet": "old copy", "acquired_at": old}]})
+        return httpx.Response(200, json={"results": [{"url": "https://btech.com/p/9", "title": "from tavily"}]})
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return (await websearch.search(c, "غسالة توشيبا"), await websearch.search(c, "غسالة  توشيبا"),
+                    await websearch.search(c, "nothing here"))
+
+    first, again, fallback = asyncio.run(go())
+    assert [h["url"] for h in first] == ["https://shop.eg/p/1", "https://shop.eg/p/2"]  # no keenable cards
+    assert first[0]["content"] and not first[1]["content"]  # an old crawl isn't used as the page's copy
+    assert again == first  # same words: from the cache, no second search
+    assert [h["url"] for h in fallback] == ["https://btech.com/p/9"]  # free one found nothing -> metered one
+    assert hits == ["api.keenable.ai", "api.keenable.ai", "api.tavily.com"]
 
 
 def test_openrouter_picks_big_free_models_and_rests_refused_ones():
