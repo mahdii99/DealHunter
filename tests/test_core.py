@@ -696,6 +696,24 @@ def test_search_free_service_first_cached_and_metered_only_as_fallback(monkeypat
     assert hits == ["api.keenable.ai", "api.keenable.ai", "api.tavily.com"]
 
 
+def test_search_probe_checks_free_services_and_cache(monkeypatch):
+    from app import websearch
+    monkeypatch.setattr(websearch, "KEYLESS", True)
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    hosts = []
+    real = httpx.AsyncClient
+
+    def handler(request: httpx.Request):
+        hosts.append(request.url.host)
+        return httpx.Response(200, json={"results": [{"url": "https://www.2b.com.eg/p/1", "title": "A55"}]})
+    monkeypatch.setattr(websearch.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    out = asyncio.run(websearch.probe())
+    assert out["services"] == [{"name": "keenable", "key": False, "status": 200, "results": 1, "sites": ["2b.com.eg"],
+                                "seconds": out["services"][0]["seconds"]}]
+    assert out["cache"]["same"] and out["cache"]["results"] == 1
+    assert "api.tavily.com" not in hosts and hosts.count("api.keenable.ai") == 2  # probe + one cached search
+
+
 def test_openrouter_picks_big_free_models_and_rests_refused_ones():
     av = ["thinkingmachines/inkling-2-small:free", "liquid/lfm-3-1.7b:free", "openai/gpt-oss-120b:free",
           "meta-llama/llama-3.3-70b-instruct:free", "qwen/qwen3-coder-480b:free"]
