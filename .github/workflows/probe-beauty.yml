@@ -1,0 +1,25 @@
+name: probe beauty pages (temporary)
+on:
+  push:
+    branches: [feature/beauty-products]
+    paths: [.github/workflows/probe-beauty.yml]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          UA="DealHunterBot/1.0 (+https://dealhunter-opk9.onrender.com/bot)"
+          for u in \
+            https://www.jumia.com.eg/fragrances/ https://www.jumia.com.eg/womens-make-up/ https://www.jumia.com.eg/beauty/ \
+            https://www.jumia.com.eg/skin-care/ https://www.jumia.com.eg/hair-care/ https://www.jumia.com.eg/personal-care/ \
+            https://www.jumia.com.eg/hair-styling-tools/ https://www.jumia.com.eg/womens-fragrances/ https://www.jumia.com.eg/beauty-personal-care/ \
+            https://www.jumia.com.eg/makeup/ https://www.jumia.com.eg/face-care/ https://www.jumia.com.eg/shaving-hair-removal/ \
+            "https://www.amazon.eg/s?k=perfume&i=beauty&language=en_AE" \
+            "https://sourcebeauty.com/search?q=serum" "https://www.bloompharmacy.com/search?q=serum" \
+            "https://sourcebeauty.com/search/suggest.json?q=serum&resources[type]=product" "https://www.bloompharmacy.com/search/suggest.json?q=serum&resources[type]=product" ; do
+            out=$(curl -s -m 30 -A "$UA" -L -o /tmp/p.html -w "%{http_code} %{url_effective}" "$u")
+            n=$(grep -o 'class="prd ' /tmp/p.html | wc -l); t=$(grep -o '<title>[^<]*' /tmp/p.html | head -1)
+            echo "$out | jumia-cards=$n | ${t:0:90} | size=$(wc -c </tmp/p.html)"
+            head -c 300 /tmp/p.html | tr '\n' ' ' | grep -q '^{' && head -c 600 /tmp/p.html && echo
+          done
+          for r in https://www.jumia.com.eg/robots.txt https://sourcebeauty.com/robots.txt https://www.bloompharmacy.com/robots.txt; do echo "== $r"; curl -s -m 20 -A "$UA" "$r" | grep -i -E "^(user-agent|disallow).*" | head -40; done
