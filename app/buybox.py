@@ -45,9 +45,21 @@ def _heading(tree) -> tuple[object, str] | None:
     if len({t for _, t in named}) > 1:
         # several headings ("About this item", "Product information"): the product's is the one the page's own
         # title names too
+        # (the title may word it a little differently: the heading with most of its words in the title, clearly)
         head = tree.css_first("title")
         title = _norm(head.text() if head else "")
-        named = [(h, t) for h, t in named if _norm(t)[:80] in title]
+        words = set(title.split())
+
+        def share(t: str) -> float:
+            own = _norm(t).split()
+            return 1.0 if _norm(t)[:80] in title else sum(w in words for w in own) / max(1, len(own))
+        scored = sorted({t: share(t) for _, t in named}.items(), key=lambda x: -x[1])
+        if scored:  # a heading repeating the name ("Product Summary: <name>") is the same name, not another one
+            top = _norm(scored[0][0])
+            scored = scored[:1] + [x for x in scored[1:] if top not in _norm(x[0])]
+        if not scored or scored[0][1] < 0.6 or (len(scored) > 1 and scored[1][1] >= scored[0][1] - 0.1):
+            return None
+        named = [(h, t) for h, t in named if t == scored[0][0]]
     if not named or len({t for _, t in named}) > 1:  # no name, or the page names several things
         return None
     return named[0]
@@ -88,6 +100,23 @@ def _inside(node, other) -> bool:
     return False
 
 
+def _hidden(node, box) -> bool:
+    """Not shown on the page: inside an element hidden by its style, its hidden attribute or a "...-hidden" class
+    (a used offer, another option's price kept for a script). Its price isn't the one the shopper sees."""
+    n = node
+    while n is not None and n.mem_id != box.mem_id:
+        style = (n.attributes.get("style") or "").replace(" ", "").lower()
+        if ("display:none" in style or "visibility:hidden" in style or "hidden" in n.attributes
+                or any(c.endswith("-hidden") for c in (n.attributes.get("class") or "").split())):
+            # (a bare "hidden" / "d-none" class is often undone at wider screens, "hidden md:block": not counted)
+            return True
+        n = n.parent
+    return False
+
+
+_SPLIT = re.compile(r"(\d)\s*([.,])\s*(\d)")
+
+
 def _prices(box, h1) -> set[float] | None:
     """The current prices the buy box shows (the heading's own numbers, "340 جم" in a name, aren't prices):
     itemprop="price", else the innermost price elements that show just a price, else the numbers written with the
@@ -95,31 +124,48 @@ def _prices(box, h1) -> set[float] | None:
     found = set()
     for node in box.css("[itemprop=price], [data-price-amount]"):
         v = node.attributes.get("content") or node.attributes.get("data-price-amount")
-        if v and (n := _attr_number(v)) and not cards._old(node, box) and not _inside(node, h1):
+        if v and (n := _attr_number(v)) and not cards._old(node, box) and not _inside(node, h1) and not _hidden(node, box):
             found.add(n)
     if found:
         return found
 
     def just_price(node) -> float | None:
-        m = _ONLY_PRICE.match(cards._shown_text(node).translate(cards._ARABIC_NUMS))
+        # (a price drawn in parts, "45 . 72", is one number)
+        m = _ONLY_PRICE.match(_SPLIT.sub(r"\1\2\3", cards._shown_text(node).translate(cards._ARABIC_NUMS)))
         return cards._num(m.group(1)) if m else None
+
+    def priced(node) -> bool:
+        return bool(cards._PRICE_CLASS.search(node.attributes.get("class") or "")) and bool(just_price(node))
+
+    def part_of_price(node) -> bool:
+        """Inside a price element that is itself one whole price ("45" and "72" of "AED 45.72")."""
+        own, n = just_price(node), node.parent
+        while n is not None and n.mem_id != box.mem_id:
+            if priced(n) and just_price(n) != own:
+                return True
+            n = n.parent
+        return False
     marked = False  # the box shows price elements (current or crossed out)
     for node in box.css("*"):
-        if not cards._PRICE_CLASS.search(node.attributes.get("class") or "") or _inside(node, h1):
+        if not cards._PRICE_CLASS.search(node.attributes.get("class") or "") or _inside(node, h1) or _hidden(node, box):
             continue
         marked = marked or bool(just_price(node))
         if cards._old(node, box):
             continue
         inner = [c for c in node.css("*") if c.mem_id != node.mem_id
                  and cards._PRICE_CLASS.search(c.attributes.get("class") or "") and not cards._old(c, box) and just_price(c)]
-        if not inner and (n := just_price(node)):
+        whole = just_price(node)
+        if whole and inner and all(part_of_price(c) for c in inner) and not any(
+                just_price(c) == whole for c in inner):
+            inner = []  # its inner price elements are only parts of this one price
+        if not inner and (n := whole) and not part_of_price(node):
             found.add(n)
     if found:
         return found
     if marked:  # every price element it shows reads as an old price: its names can't be told apart, not clear
         return None
     parts = [t.text_content or "" for t in box.traverse(include_text=True)
-             if t.tag == "-text" and not _inside(t, h1) and not cards._old(t.parent, box)]
+             if t.tag == "-text" and not _inside(t, h1) and not cards._old(t.parent, box) and not _hidden(t.parent, box)]
     text = " ".join(" ".join(parts).split()).translate(cards._ARABIC_NUMS)
     # (unlike a card, either way of writing the price counts: a second number beside the currency is a second price)
     # ("جم" after a number is grams as often as pounds: "340 جم" is a weight)
