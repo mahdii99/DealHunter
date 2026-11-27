@@ -105,3 +105,13 @@ def _no_real_store_searches(monkeypatch):
     """The big stores' own search pages (agent._store_search) are real sites: tests that need them set their own."""
     from app import agent
     monkeypatch.setattr(agent, "STORE_SEARCHES", {})
+
+
+@pytest.fixture(autouse=True)
+def _fresh_site_memory():
+    """What sites did lately (app/agent.py _HOSTS) is kept in memory: each test starts with none."""
+    from app import agent
+    agent._HOSTS.clear()
+    agent._HOST_SEMS.clear()
+    yield
+    agent._HOSTS.clear()

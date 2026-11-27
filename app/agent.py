@@ -1186,17 +1186,97 @@ class RobotsDisallowed(Exception):
         return "robots.txt disallows" + (f" ({self.args[0]})" if self.args else "")
 
 
+class RobotCheck(Exception):
+    """The store answered with its "are you a robot?" page instead of the product (Amazon's captcha, a Cloudflare or
+    Akamai challenge). We never try to get past it: the page counts as not opened."""
+
+    def __str__(self):
+        return "robot check page"
+
+
+class HostSlow(Exception):
+    """The site didn't answer our last requests in time: for a while its pages go straight to the reader service
+    instead of holding a request slot until the timeout (live 2026-11-27: noon never answered, every search)."""
+
+    def __str__(self):
+        return "didn't answer lately"
+
+
+# What each site did lately, kept in memory (one server process): which crawler name it lets in, whether it answers
+# at all. Only to waste less time; every page is still opened (or skipped) under the same rules.
+HOST_SLOW_AFTER = 2         # timeouts in a row before a site's pages skip our own request
+HOST_SLOW_SECONDS = 1800    # ... for this long, then it's tried again
+BOT_FIRST_SECONDS = 24 * 3600  # a site that refused the browser-like request but let our crawler name in: name first
+UNREADABLE_AFTER = 2        # searches in a row where neither we nor the reader service opened a site's pages
+UNREADABLE_SECONDS = 3 * 3600  # ... then its pages aren't picked for this long (their slots go to other stores)
+HOST_PARALLEL = 2           # pages of one site opened at the same time (all sites together: any number)
+_HOSTS: dict[str, dict] = {}
+_HOST_SEMS: dict[tuple[int, str], asyncio.Semaphore] = {}
+_ROBOT_CHECK = re.compile(r"validateCaptcha|api-services-support@amazon\.com|Type the characters you see|"
+                          r"cf-chl-|challenge-platform|<title>\s*(?:Just a moment|Attention Required|Access Denied|"
+                          r"Robot Check)", re.I)
+
+
+def _host(url: str) -> dict:
+    return _HOSTS.setdefault(trust.domain(url), {"timeouts": 0, "slow_until": 0.0, "bot_until": 0.0,
+                                                 "unread": 0, "skip_until": 0.0})
+
+
+def _host_sem(url: str) -> asyncio.Semaphore:
+    key = (id(asyncio.get_running_loop()), trust.domain(url))
+    if key not in _HOST_SEMS:
+        if len(_HOST_SEMS) > 500:
+            _HOST_SEMS.clear()
+        _HOST_SEMS[key] = asyncio.Semaphore(HOST_PARALLEL)
+    return _HOST_SEMS[key]
+
+
+def _is_robot_check(html: str) -> bool:
+    """A challenge page is small and has no product in it; a real product page that mentions "captcha" (a login
+    form) has its own product data."""
+    return len(html) < 80_000 and bool(_ROBOT_CHECK.search(html)) and not _BUY.search(html)
+
+
+def site_skipped(url: str) -> bool:
+    """Neither we nor the reader service opened this site's pages in the last searches: don't spend a slot on it."""
+    return _host(url)["skip_until"] > time.time()
+
+
+def _note_unreadable(domains: set[str], worked: set[str]) -> None:
+    for d in domains | worked:
+        h = _host("https://" + d)
+        if d in worked:
+            h["unread"], h["skip_until"] = 0, 0.0
+            continue
+        h["unread"] += 1
+        if h["unread"] >= UNREADABLE_AFTER:
+            h["skip_until"] = time.time() + UNREADABLE_SECONDS
+            log.info("web: %s didn't open for us or the reader %d times: skipped for %d h", d, h["unread"],
+                     UNREADABLE_SECONDS // 3600)
+
+
 async def _fetch_page(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: str) -> tuple[list[Product], str]:
+    host = _host(url)
+    if host["slow_until"] > time.time():
+        raise HostSlow()
     # the store's crawler rules apply to our own requests too, not only to the reader service (cached per site)
     if not await asyncio.wait_for(fetchers.robots_allows(client, url), timeout=PAGE_TIMEOUT):
         raise RobotsDisallowed(fetchers.robots_reason(url))
-    async with sem:
-        r = await client.get(url, headers=HEADERS, follow_redirects=True, timeout=PAGE_TIMEOUT)
-        if r.status_code == 403:
-            # some stores (Jumia) refuse browser-looking requests but welcome a crawler that says who it is
-            # (their robots.txt asks for that): ask once more under our own crawler name
-            r = await client.get(url, headers=catalog.BOT_HEADERS, follow_redirects=True, timeout=PAGE_TIMEOUT)
+    async with sem, _host_sem(url):
+        # one page gets PAGE_TIMEOUT in all (a site that sends a trickle never ends a read timeout)
+        try:
+            r = await asyncio.wait_for(_get_page(client, url, host), timeout=PAGE_TIMEOUT)
+        except (asyncio.TimeoutError, httpx.TimeoutException):
+            host["timeouts"] += 1
+            if host["timeouts"] >= HOST_SLOW_AFTER:
+                host["slow_until"] = time.time() + HOST_SLOW_SECONDS
+                log.info("web: %s timed out %d times in a row: reader service only for %d min", trust.domain(url),
+                         host["timeouts"], HOST_SLOW_SECONDS // 60)
+            raise
+    host["timeouts"] = 0
     r.raise_for_status()
+    if _is_robot_check(r.text):
+        raise RobotCheck()
     try:  # keep the latest copy of each store page so parsing problems can be checked later
         WEB_DEBUG.mkdir(parents=True, exist_ok=True)
         (WEB_DEBUG / f"{trust.domain(url)}.html").write_text(r.text, encoding="utf-8")
@@ -1210,6 +1290,19 @@ async def _fetch_page(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: st
     for p in products:
         p.trust_score, p.trust_signals = (100, ["متجر مشهور"]) if p.trusted else (score, signals)
     return products, r.text
+
+
+async def _get_page(client: httpx.AsyncClient, url: str, host: dict) -> httpx.Response:
+    """Our usual request; some stores (Jumia) refuse browser-looking requests but welcome a crawler that says who it
+    is (their robots.txt asks for that): then once more under our own crawler name, and that name first next time."""
+    bot_first = host["bot_until"] > time.time()
+    r = await client.get(url, headers=catalog.BOT_HEADERS if bot_first else HEADERS, follow_redirects=True,
+                         timeout=PAGE_TIMEOUT)
+    if r.status_code == 403 and not bot_first:
+        r = await client.get(url, headers=catalog.BOT_HEADERS, follow_redirects=True, timeout=PAGE_TIMEOUT)
+        if r.status_code < 400:
+            host["bot_until"] = time.time() + BOT_FIRST_SECONDS
+    return r
 
 
 def _listed_products(html: str, url: str, words: str) -> list[Product]:
@@ -1366,6 +1459,9 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                     hit_titles.setdefault(u, str(hit["title"]))
                 if (trust.is_shop_candidate(u) and trust.domain(u) not in blocked
                         and all(u not in lst for lst in picked.values())):
+                    if site_skipped(u):
+                        errors[trust.domain(u)] = "skipped: didn't open in the last searches"
+                        continue
                     big = trust.is_known(u) or any(trust._match(trust.domain(u), d) for d in famous)
                     mine = any(trust._match(trust.domain(u), d) for d in named)
                     picked["named" if mine else "famous" if big else "other"].append(u)
@@ -1376,10 +1472,13 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         urls = (_take_turns(picked["named"])[:MAX_PAGES // 2] + urls)[:MAX_PAGES]
         log.info("web: %d store pages to open: %s", len(urls), [trust.domain(u) for u in urls])
         _progress(f"لقيت {len(urls)} صفحة في {len({trust.domain(u) for u in urls})} متجر، بفتحها وبجمع الأسعار...")
-        sem = asyncio.Semaphore(5)
+        # every page at once (HOST_PARALLEL per site): with a few at a time, pages queued behind a site that never
+        # answers hit the deadline before they were even asked for (live 2026-11-27: Jumia, B.TECH... "TimeoutError")
+        sem = asyncio.Semaphore(MAX_PAGES)
         pages = await _within(PAGES_DEADLINE, [_fetch_page(client, sem, u) for u in urls])
 
         products, seen, unread, failed = [], set(), [], []
+        unopened: set[str] = set()  # sites neither we nor the reader service could open this time
         for url, res in zip(urls, pages):
             if isinstance(res, Exception):
                 code = getattr(getattr(res, "response", None), "status_code", None)
@@ -1493,6 +1592,8 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                 later.append((u, text))
             for u, reason in why.items():
                 errors[trust.domain(u)] = f"{errors.get(trust.domain(u), '')} / {reason}".strip(" /")
+                if not reason.endswith("too slow"):  # the reader answered: it can't open it either
+                    unopened.add(trust.domain(u))
         # a product page's text copy that names its product and shows one clear price right after the name: read
         # with no LLM call (live 2026-11-26: nearly every page the LLM still read was such a copy, of noon, Jumia,
         # 2B, Raya...). Its price is checked on the live page before it's shown, like any other
@@ -1527,6 +1628,8 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         collect(first, await _results(max(left, 1), first_tasks))
         collect(later, later_res)
         TIMES["reading"] = round(time.monotonic() - t - TIMES["search"] - TIMES["pages"], 1)
+    _note_unreadable(unopened, {trust.domain(p.url or "") for p in products} | {
+        trust.domain(u) for u, res in zip(urls, pages) if not isinstance(res, Exception)})
     await asyncio.to_thread(_remember_sites, urls, products, errors)  # the database may be far: off the event loop
     log.info("web: %d products from %d pages in %.1fs, failed=%s",
              len(products), len(urls) - len(errors), time.monotonic() - t, list(errors))
@@ -3094,3 +3197,41 @@ async def _outage_answer(raw: str, request: str, wait: float | None, note: str) 
         "sold_out_dropped": gone, "results": [p.to_dict() for p in _ordered(shown, "")], "unchecked": unchecked,
         "store_errors": errors or {}, "no_llm_funnel": funnel,
     }
+
+
+async def probe_pages(urls: list[str]) -> dict:
+    """For the store pages check (main.py /api/cron/page-probe): how each page answers this server, both ways we ask
+    (browser-like and our crawler name) and through the reader service, plus what we remember about its site.
+    Nothing is saved; robots.txt is read first and a disallowed page isn't requested."""
+    async def timed(coro):
+        t = time.monotonic()
+        try:
+            r = await asyncio.wait_for(coro, timeout=15)
+            return r, round(time.monotonic() - t, 1)
+        except Exception as e:
+            return e, round(time.monotonic() - t, 1)
+
+    async def one(client: httpx.AsyncClient, url: str) -> dict:
+        row: dict = {"url": url}
+        allowed, secs = await timed(fetchers.robots_allows(client, url))
+        row["robots"] = {"allowed": allowed is True, "rule": fetchers.robots_reason(url), "seconds": secs}
+        if allowed is not True:
+            return row
+        for name, headers in (("browser_like", HEADERS), ("crawler_name", catalog.BOT_HEADERS)):
+            r, secs = await timed(client.get(url, headers=headers, follow_redirects=True, timeout=15))
+            if isinstance(r, Exception):
+                row[name] = {"error": type(r).__name__, "seconds": secs}
+                continue
+            row[name] = {"status": r.status_code, "seconds": secs, "bytes": len(r.content),
+                         "robot_check": _is_robot_check(r.text),
+                         "products": len(extract_products(r.text, trust.store_name(url), str(r.url))),
+                         "title": extract_mod.page_title(r.text)[:100] if r.status_code == 200 else ""}
+        text, secs = await timed(fetchers._jina(client, url))
+        row["reader"] = ({"error": type(text).__name__, "seconds": secs} if isinstance(text, Exception)
+                         else {"chars": len(text), "seconds": secs, "start": text[:160]})
+        row["remembered"] = dict(_host(url))
+        return row
+
+    async with httpx.AsyncClient() as client:
+        rows = await asyncio.gather(*(one(client, u) for u in urls))
+    return {"pages": list(rows)}

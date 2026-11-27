@@ -1,0 +1,22 @@
+# Run by hand: checks from the server how some store pages answer us (robots.txt, browser-like request, our crawler
+# name, the reader service). Nothing is saved. Same secrets as scrape-prices.yml.
+name: store pages check
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "Store pages to check (up to 8, separated by spaces)"
+        default: "https://www.noon.com/egypt-en/ https://www.amazon.eg/s?k=sharp+refrigerator&language=en_AE https://2b.com.eg/en/ https://dreamstores-eg.com/ https://www.jumia.com.eg/televisions/"
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the store pages from the server
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          URLS: ${{ inputs.urls }}
+        run: |
+          if [ -z "$SITE_URL" ] || [ -z "$CRON_SECRET" ]; then echo "SITE_URL / CRON_SECRET secrets not set, skipping"; exit 0; fi
+          curl -fsS --retry 5 --retry-delay 20 --retry-all-errors --max-time 300 -X POST -G \
+            -H "X-Cron-Secret: $CRON_SECRET" --data-urlencode "urls=$URLS" "$SITE_URL/api/cron/page-probe" | python3 -m json.tool
