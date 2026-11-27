@@ -31,6 +31,7 @@ from .extract import extract_products
 from .models import Product
 from .stores.amazon import parse_amazon_cards
 from .stores.jumia import Jumia
+from .stores import shopify
 
 log = logging.getLogger("uvicorn.error")
 
@@ -230,7 +231,8 @@ class Blocked(Exception):
 def read_listing(html: str, url: str) -> list[Product]:
     """Every product a category page lists, with the reader that finds the most of them."""
     store = trust.store_name(url)
-    tries = [extract_products(html, store, url), parse_amazon_cards(html, store, url)]
+    tries = [extract_products(html, store, url), parse_amazon_cards(html, store, url),
+             shopify.parse_collection(html, url, store)]
     jumia = Jumia()
     jumia.name, jumia.base_url = store, f"https://{urlparse(url).netloc}"
     tries.append(jumia.parse(html))

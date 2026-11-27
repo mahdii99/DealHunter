@@ -1,8 +1,8 @@
 import asyncio, re, sys, pathlib
 import httpx
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 from app import catalog
-OUT = pathlib.Path("pages"); OUT.mkdir(exist_ok=True)
+OUT = pathlib.Path("probe_pages"); OUT.mkdir(exist_ok=True)
 SEL = ["a.product-item-link", ".product-title a", "a.product-thumbnail", "a[href*='/products/']", "a[href*='/p/']"]
 async def main(urls):
     async with httpx.AsyncClient(headers=catalog.BOT_HEADERS, follow_redirects=True, timeout=30) as c:

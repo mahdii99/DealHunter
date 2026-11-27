@@ -6,6 +6,7 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    permissions: {contents: write}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,5 +18,6 @@ jobs:
           https://cairosales.com/en/tvs-screens/ https://btech.com/en/c/mobiles-tablets
           https://kimostore.net/collections/mobile-phone/products.json https://kimostore.net/collections/mobile-phone
           https://btech.com/en/collection/black-friday-offers https://www.ikea.com/eg/en/offers/
-      - uses: actions/upload-artifact@v4
-        with: {name: pages, path: pages/}
+      - run: |
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add probe_pages; git commit -qm "sample pages (temporary)"; git push
