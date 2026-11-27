@@ -17,13 +17,14 @@ How (no code per store):
 Accuracy: a recipe only ever reads the page opened just now, the number must be shown on that page, and a size or
 color the shopper wants always goes to the LLM (a recipe can't tell which option a price is for).
 """
+import asyncio
 import json
 import logging
 import re
 
 from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 
-from . import db, llm, trust
+from . import db, llm, pricemodel, trust
 
 log = logging.getLogger("uvicorn.error")
 
@@ -185,6 +186,7 @@ async def after_llm_read(url: str, html: str, title: str, price: float) -> None:
     """The LLM just read this page's main price: check the store's recipe against it, or learn one."""
     if not ENABLED or "<" not in html[:2000]:  # text from the reader service: no page elements to learn from
         return
+    await asyncio.to_thread(pricemodel.remember, url, html, price, "llm")  # an example for the learned reader
     if _check(url, html, price):
         return
     if learn_free(url, html, price) is None:
@@ -198,6 +200,7 @@ def after_clear_read(url: str, html: str, price: float) -> None:
     if not ENABLED or "<" not in html[:2000]:
         return
     try:
+        pricemodel.remember(url, html, price, "clear")
         if not _check(url, html, price):
             learn_free(url, html, price)
     except Exception as e:  # (learning never breaks a search)

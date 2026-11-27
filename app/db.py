@@ -180,6 +180,17 @@ CREATE TABLE IF NOT EXISTS recipes (
     learned_at {FLOAT} NOT NULL,
     checked_at {FLOAT} NOT NULL
 );
+-- pages whose main price is known (an LLM read or a clear read), described the way the learned price reader
+-- (app/pricemodel.py) sees them: training examples for it, from every store the agent opens
+CREATE TABLE IF NOT EXISTS price_examples (
+    url TEXT PRIMARY KEY,
+    domain TEXT NOT NULL,
+    price {FLOAT} NOT NULL,             -- the page's known main price
+    how TEXT NOT NULL,                  -- llm / clear: where the known price came from
+    candidates TEXT NOT NULL,           -- JSON: [[number, facts], ...] as pricemodel.candidates gave them
+    at {FLOAT} NOT NULL
+);
+CREATE INDEX IF NOT EXISTS price_examples_domain ON price_examples (domain);
 -- store promo codes (app/coupons.py): only from an affiliate network's feed or added by the owner from the store
 -- itself / a network's offer page. `source` says which, and the page shows it.
 CREATE TABLE IF NOT EXISTS coupons (
@@ -593,6 +604,24 @@ def recipe_result(domain: str, right: bool | None) -> None:
     else:
         sql = "UPDATE recipes SET fails = fails + 1, ok = 0, checked_at = ? WHERE domain = ?"
     _db.run(sql, (domain,) if right is None else (time.time(), domain))
+
+
+MAX_EXAMPLES_PER_STORE = 30
+
+
+def save_price_example(url: str, domain: str, price: float, how: str, candidates: str) -> None:
+    """A training example for the learned price reader; a store's first MAX_EXAMPLES_PER_STORE pages are enough."""
+    have = _db.run("SELECT COUNT(*) FROM price_examples WHERE domain = ?", (domain,))
+    if have and have[0][0] >= MAX_EXAMPLES_PER_STORE:
+        return
+    _db.run("INSERT INTO price_examples (url, domain, price, how, candidates, at) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (url) DO UPDATE SET price = excluded.price, how = excluded.how, "
+            "candidates = excluded.candidates, at = excluded.at", (url, domain, price, how, candidates, time.time()))
+
+
+def price_examples(since: float = 0) -> list[dict]:
+    return _rows("SELECT url, domain, price, how, candidates, at FROM price_examples WHERE at >= ? ORDER BY at",
+                 (since,), "url domain price how candidates at")
 
 
 def recipes_list() -> list[dict]:

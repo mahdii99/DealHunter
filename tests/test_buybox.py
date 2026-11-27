@@ -201,3 +201,32 @@ def test_a_store_learns_its_page_recipe_from_a_clear_page_without_the_llm(monkey
     assert recipes.apply(recipe, html) == (16499.0, True)
     other = html.replace("16,499", "12,999").replace("Sharp Washing Machine 8 Kg", "Sharp Fridge 450 L")
     assert recipes.apply(recipe, other) == (12999.0, True)
+
+
+def test_the_learned_reader_is_used_only_when_the_page_agrees(monkeypatch):
+    from app import pricemodel
+    html = page('<p class="price">16,499 EGP</p><button>Add to cart</button>')
+    title = "Sharp Washing Machine 8 Kg Inverter"
+    monkeypatch.setattr(pricemodel, "read", lambda h, u: (16499.0, 0.99, True))
+    got = agent._by_model(URL, html, title)
+    assert (got.price, got.in_stock) == (16499.0, True)
+    # another product's page, nothing saying it can be bought, a price the page doesn't show: the LLM reads it
+    assert agent._by_model(URL, html, "LG Refrigerator 450 Liters No Frost") is None
+    monkeypatch.setattr(pricemodel, "read", lambda h, u: (16499.0, 0.99, None))
+    assert agent._by_model(URL, html, title) is None
+    monkeypatch.setattr(pricemodel, "read", lambda h, u: (15999.0, 0.99, True))
+    assert agent._by_model(URL, html, title) is None
+
+
+def test_a_page_whose_price_is_known_becomes_a_training_example(monkeypatch):
+    from app import db, pricemodel
+    saved = []
+    monkeypatch.setattr(db, "save_price_example", lambda *a: saved.append(a))
+    html = page('<p class="price"><del>17,999 EGP</del> <ins>16,499 EGP</ins></p><button>Add to cart</button>')
+    pricemodel.remember(URL, html, 16499.0, "clear")
+    url, domain, price, how, cands = saved[0]
+    assert (domain, price, how) == ("shop.example.eg", 16499.0, "clear")
+    values = [v for v, _ in __import__("json").loads(cands)]
+    assert 16499.0 in values and 17999.0 in values  # the old price is there too: a negative example
+    pricemodel.remember(URL, html, 1234.0, "llm")  # a price the page doesn't show as a price: nothing to learn
+    assert len(saved) == 1
