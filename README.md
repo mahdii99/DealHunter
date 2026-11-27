@@ -55,7 +55,7 @@ request ──► understand (LLM) ──► web search ──► open store pag
 | Trust | `app/trust.py` | Known retailers + a page-signal score for everyone else; drops foreign stores and price-comparison sites |
 | LLM client | `app/llm.py` | Gemini, Groq, Mistral, NVIDIA, Cloudflare and OpenRouter free tiers; picks live models, rests busy ones, remembers daily quotas across restarts |
 | Price DB | `app/db.py` | SQLite: request cache, price history (`GET /api/history?url=`), and sites whose pages never open, which later searches skip (`python -m scripts.blocked_sites`) |
-| Our price list | `app/catalog.py` | Twice a day the big stores' category pages (phones, TVs, washers, fridges, ACs, laptops on Amazon.eg and Jumia; noon doesn't answer our crawler) are read into the database. Searches take those offers as candidates and need one web-search round instead of two or three; every result is still opened on its own page before it's shown |
+| Our price list | `app/catalog.py` | Twice a day the big stores' category pages (phones, TVs, washers, fridges, ACs, laptops on Amazon.eg and Jumia, plus B.TECH, 2B, Cairo Sales, CompuMarts, Kimo Store, Tradeline and Dream Stores read through their shop platform (Shopify, Magento, PrestaShop) with no LLM; noon and Carrefour don't answer our crawler) are read into the database. Searches take those offers as candidates and need one web-search round instead of two or three; every result is still opened on its own page before it's shown |
 | Country config | `app/market.py` | Currency, local domains and stores per market (`MARKET=EG`, Saudi Arabia and UAE prepared) |
 
 ## Tech stack
