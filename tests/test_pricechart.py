@@ -122,4 +122,4 @@ def test_deals_page_links_through_go_and_shows_when_each_price_was_checked():
         "price": 23000, "was": 26000, "pct": 12, "kind": "drop", "category": "phones", "checked_at": now - 7200,
         "real": True, "hist": [[now - 20 * DAY, 26000], [now - 9 * DAY, 25800], [now, 23000]]}]}, "https://x.test")
     assert 'href="/go?src=deals&amp;u=https%3A%2F%2Fwww.jumia.com.eg%2Fa.html"' in html
-    assert f'data-ago="{now - 7200:.0f}"' in html and 'class=spark>' in html and html.count("<style>") == 2
+    assert f'data-ago="{now - 7200:.0f}"' in html and 'class="meter"' in html and html.count("<style>") == 2
