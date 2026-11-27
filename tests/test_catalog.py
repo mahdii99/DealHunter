@@ -262,3 +262,22 @@ def test_a_verdict_is_not_reused_when_the_price_moved_a_lot(monkeypatch):
     prompts.clear()
     asyncio.run(agent.run("A56", plan=plan))
     assert len(prompts) == 1  # judged again: half the price can be another item or a mistake
+
+
+SHOPIFY = """{"products": [
+ {"id": 1, "title": "Samsung Galaxy A17 Dual SIM 256GB", "handle": "samsung-galaxy-a17", "vendor": "Samsung",
+  "variants": [{"id": 11, "title": "Black", "price": "16999.00", "compare_at_price": "18999.00", "available": false},
+               {"id": 12, "title": "Light Blue", "price": "16999.00", "compare_at_price": "18999.00", "available": true}],
+  "images": [{"src": "https://cdn.shopify.com/a.jpg", "variant_ids": []}, {"src": "https://cdn.shopify.com/b.jpg", "variant_ids": [12]}]},
+ {"id": 2, "title": "Anker Charger 20W", "handle": "anker-20w", "vendor": "Anker",
+  "variants": [{"id": 21, "title": "Default Title", "price": "650.00", "compare_at_price": null, "available": true}], "images": []},
+ {"id": 3, "title": "Sold out phone", "handle": "gone", "variants": [{"id": 31, "price": "9000", "available": false}]}
+]}"""
+
+
+def test_shopify_collection_lists_the_option_the_page_opens_on():
+    got = catalog.read_listing(SHOPIFY, "https://kimostore.net/collections/mobile-phone/products.json?page=1")
+    assert [(p.title, p.price, p.old_price) for p in got] == [
+        ("Samsung Galaxy A17 Dual SIM 256GB - Light Blue", 16999, 18999), ("Anker Charger 20W", 650, None)]
+    assert got[0].url == "https://kimostore.net/products/samsung-galaxy-a17?variant=12"
+    assert got[0].image == "https://cdn.shopify.com/b.jpg" and got[1].url == "https://kimostore.net/products/anker-20w"
