@@ -1,0 +1,34 @@
+# Retrains the learned price reader (app/pricemodel.py) every week on the pages the site learned from (the saved
+# pages' facts in scripts/price_training_base.json + the examples collected live, table price_examples), and commits
+# the new weights to main only when, tested on stores it never saw, it was sure and wrong on no page.
+# Uses the DATABASE_URL secret (the same database as the site). Run it by hand too: Actions -> train price model.
+name: train price model
+on:
+  schedule:
+    - cron: "30 3 * * 5"  # Fridays 03:30 UTC
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: train-price-model
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt scikit-learn
+      - name: Train
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m scripts.train_price_model --db --only-if-safe
+      - name: Commit the new weights
+        run: |
+          if git diff --quiet app/price_model.json; then echo "weights unchanged"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898099+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Retrain the price reader on the examples collected live" app/price_model.json
+          git push
