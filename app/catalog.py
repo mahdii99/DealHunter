@@ -31,7 +31,7 @@ from .extract import extract_products
 from .models import Product
 from .stores.amazon import parse_amazon_cards
 from .stores.jumia import Jumia
-from .stores import shopify
+from .stores import ALL_STORES, platforms, shopify
 
 log = logging.getLogger("uvicorn.error")
 
@@ -52,6 +52,9 @@ CATEGORIES: dict[str, dict] = {
     "phones": {
         "ar": "موبايلات", "pages": 8,
         "stores": {
+            "btech.com": "https://btech.com/en/c/mobiles-tablets",
+            "2b.com.eg": "https://2b.com.eg/en/mobile-and-tablet/mobiles.html",
+            "kimostore.net": "https://kimostore.net/collections/mobile-phone/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/mobile-phones/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=smartphone&i=electronics&language=en_AE&page={n}",
         },
@@ -59,6 +62,9 @@ CATEGORIES: dict[str, dict] = {
     "tvs": {
         "ar": "شاشات", "pages": 6,
         "stores": {
+            "btech.com": "https://btech.com/en/c/tvs-projectors",
+            "cairosales.com": "https://cairosales.com/en/tvs-screens/",
+            "kimostore.net": "https://kimostore.net/collections/televisions/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/televisions/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=smart+tv&i=electronics&language=en_AE&page={n}",
         },
@@ -85,6 +91,9 @@ CATEGORIES: dict[str, dict] = {
     "laptops": {
         "ar": "لابتوبات", "pages": 6,
         "stores": {
+            "btech.com": "https://btech.com/en/c/laptop-pc",
+            "2b.com.eg": "https://2b.com.eg/en/computers/laptops.html",
+            "compumarts.com": "https://www.compumarts.com/collections/laptop/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/laptops/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=laptop&i=computers&language=en_AE&page={n}",
         },
@@ -93,6 +102,8 @@ CATEGORIES: dict[str, dict] = {
     "tablets": {"ar": "تابلت", "pages": 4, "stores": {
         "amazon.eg": "https://www.amazon.eg/s?k=tablet&i=electronics&language=en_AE&page={n}"}},
     "headphones": {"ar": "سماعات", "pages": 4, "stores": {
+            "kimostore.net": "https://kimostore.net/collections/earphone-headphone/products.json?limit=50&page={n}",
+            "cairosales.com": "https://cairosales.com/en/home-theaters-speakers/headphones/",
         "amazon.eg": "https://www.amazon.eg/s?k=wireless+earbuds+headphones&i=electronics&language=en_AE&page={n}"}},
     "smartwatches": {"ar": "ساعات ذكية", "pages": 3, "stores": {
         "amazon.eg": "https://www.amazon.eg/s?k=smart+watch&i=electronics&language=en_AE&page={n}"}},
@@ -130,6 +141,8 @@ CATEGORIES: dict[str, dict] = {
     "home": {
         "ar": "البيت والمطبخ", "pages": 3, "broad": True,
         "stores": {
+            "btech.com": "https://btech.com/en/c/small-home-appliances",
+            "kimostore.net": "https://kimostore.net/collections/home-appliances/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/home-office/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=kitchen&rh=p_8%3A30-&language=en_AE&page={n}",
         },
@@ -151,6 +164,8 @@ CATEGORIES: dict[str, dict] = {
     "electronics": {
         "ar": "إلكترونيات", "pages": 3, "broad": True,
         "stores": {
+            "tradelinestores.com": "https://tradelinestores.com/collections/all/products.json?limit=50&page={n}",
+            "dreamstores-eg.com": "https://dreamstores-eg.com/collections/all/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/electronics/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=electronics&rh=p_8%3A30-&language=en_AE&page={n}",
         },
@@ -158,6 +173,8 @@ CATEGORIES: dict[str, dict] = {
     "computing": {
         "ar": "كمبيوتر وإكسسواراته", "pages": 3, "broad": True,
         "stores": {
+            "compumarts.com": "https://www.compumarts.com/collections/online-offers/products.json?limit=50&page={n}",
+            "2b.com.eg": "https://2b.com.eg/en/offers/intel-offer-product.html",
             "jumia.com.eg": "https://www.jumia.com.eg/computing/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=computers&rh=p_8%3A30-&language=en_AE&page={n}",
         },
@@ -210,6 +227,12 @@ CATEGORIES: dict[str, dict] = {
             "amazon.eg": "https://www.amazon.eg/s?i=automotive&rh=p_8%3A30-&language=en_AE&page={n}",
         },
     },
+    "appliances": {
+        "ar": "أجهزة منزلية كبيرة", "pages": 1, "broad": True,
+        "stores": {
+            "btech.com": "https://btech.com/en/c/large-home-appliances",
+        },
+    },
     "flash": {
         "ar": "عروض لفترة محدودة", "pages": 5, "broad": True,
         "stores": {
@@ -232,21 +255,25 @@ def read_listing(html: str, url: str) -> list[Product]:
     """Every product a category page lists, with the reader that finds the most of them."""
     store = trust.store_name(url)
     tries = [extract_products(html, store, url), parse_amazon_cards(html, store, url),
-             shopify.parse_collection(html, url, store)]
+             shopify.parse_collection(html, url, store), platforms.parse_platform_cards(html, store, url)]
     jumia = Jumia()
     jumia.name, jumia.base_url = store, f"https://{urlparse(url).netloc}"
     tries.append(jumia.parse(html))
-    best = max(tries, key=len)
+    # a store we already have a reader for (its product links are built from the ids in its page data)
+    tries += [s.parse(html) for s in ALL_STORES if trust.domain(s.base_url) == trust.domain(url)]
     host = trust.domain(url)
-    out = []
-    for p in best:  # only this store's own product pages, new, for sale, with a real price
-        if trust.domain(p.url) != host or urlparse(p.url).path.rstrip("/") == urlparse(url).path.rstrip("/"):
-            continue
-        if p.in_stock is False or p.condition or p.price < 5:
-            continue
-        p.store = store
-        out.append(p)
-    return out
+
+    def usable(found: list[Product]) -> list[Product]:  # this store's own product pages, new, for sale, real price
+        out = []
+        for p in found:
+            if trust.domain(p.url) != host or urlparse(p.url).path.rstrip("/") == urlparse(url).path.rstrip("/"):
+                continue
+            if p.in_stock is False or p.condition or p.price < 5:
+                continue
+            p.store = store
+            out.append(p)
+        return out
+    return max((usable(t) for t in tries), key=len)
 
 
 def _robot_check(html: str) -> bool:
@@ -286,6 +313,8 @@ async def scrape(stores: list[str] | None = None, categories: list[str] | None =
             t, got, err, seen = time.monotonic(), 0, None, set()
             for n in range(1, (pages or conf["pages"]) + 1):
                 if n > 1:
+                    if "{n}" not in conf["stores"][d]:  # a page read whole (its later pages aren't open to crawlers)
+                        break
                     await asyncio.sleep(PAUSE)
                 url = conf["stores"][d].format(n=n)
                 try:

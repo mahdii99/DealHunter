@@ -279,5 +279,5 @@ def test_shopify_collection_lists_the_option_the_page_opens_on():
     got = catalog.read_listing(SHOPIFY, "https://kimostore.net/collections/mobile-phone/products.json?page=1")
     assert [(p.title, p.price, p.old_price) for p in got] == [
         ("Samsung Galaxy A17 Dual SIM 256GB - Light Blue", 16999, 18999), ("Anker Charger 20W", 650, None)]
-    assert got[0].url == "https://kimostore.net/products/samsung-galaxy-a17?variant=12"
+    assert got[0].url == "https://kimostore.net/products/samsung-galaxy-a17"
     assert got[0].image == "https://cdn.shopify.com/b.jpg" and got[1].url == "https://kimostore.net/products/anker-20w"

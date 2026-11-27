@@ -43,8 +43,8 @@ def parse_suggest(text: str, url: str, store: str) -> list[Product]:
 def parse_collection(text: str, url: str, store: str) -> list[Product]:
     """A Shopify collection's public product list, /collections/<name>/products.json: each product with its options
     (variants), their prices and the store's own "before" price (compare_at_price). The option the product page
-    opens on is the first one for sale, so that's the one listed, with its own address (?variant=), so the price
-    checked later on the page is the same option's. [] when the text isn't one."""
+    opens on is the first one for sale, so that's the one listed (its price is the one the page shows first, and the
+    one checked later on the page). [] when the text isn't one."""
     try:
         data = json.loads(text)
     except (ValueError, TypeError):
@@ -73,8 +73,6 @@ def parse_collection(text: str, url: str, store: str) -> list[Product]:
             title = f"{title} - {option}"
         old = parse_price(str(sale.get("compare_at_price") or ""))
         link = urljoin(base, f"/products/{it['handle']}")
-        if len(variants) > 1 and sale.get("id"):
-            link += f"?variant={sale['id']}"
         imgs = [i for i in it.get("images") or [] if isinstance(i, dict) and i.get("src")]
         image = next((i["src"] for i in imgs if sale.get("id") in (i.get("variant_ids") or [])), None)
         image = image or (imgs[0]["src"] if imgs else None)

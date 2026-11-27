@@ -44,9 +44,14 @@ def _match(host: str, d: str) -> bool:
     return host == d or host.endswith("." + d)
 
 
+# Display names of other shops our price list reads (app/catalog.py): named on the deals page, not searched as a group.
+STORE_NAMES = {"kimostore.net": "Kimo Store", "cairosales.com": "Cairo Sales", "tradelinestores.com": "Tradeline",
+               "dreamstores-eg.com": "Dream Stores"}
+
+
 def store_name(url: str) -> str:
     host = domain(url)
-    return next((n for d, n in KNOWN_STORES.items() if _match(host, d)), host)
+    return next((n for d, n in (KNOWN_STORES | STORE_NAMES).items() if _match(host, d)), host)
 
 
 def is_known(url: str) -> bool:

@@ -2,22 +2,13 @@ name: store probe (temporary)
 on:
   push:
     branches: [feature/more-deal-stores]
-    paths: [.github/workflows/store-probe-tmp.yml, scripts/store_probe.py, scripts/save_pages_tmp.py]
+    paths: [.github/workflows/store-probe-tmp.yml, scripts/store_probe.py, scripts/try_stores_tmp.py, app/catalog.py, app/stores/platforms.py, app/stores/shopify.py]
 jobs:
   probe:
     runs-on: ubuntu-latest
-    permissions: {contents: write}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: pip install -q -r requirements.txt
-      - run: >
-          python -m scripts.save_pages_tmp
-          https://2b.com.eg/en/mobile-and-tablet/mobiles.html https://www.rayashop.com/en/mobiles-and-tablets
-          https://cairosales.com/en/tvs-screens/ https://btech.com/en/c/mobiles-tablets
-          https://kimostore.net/collections/mobile-phone/products.json https://kimostore.net/collections/mobile-phone
-          https://btech.com/en/collection/black-friday-offers https://www.ikea.com/eg/en/offers/
-      - run: |
-          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add probe_pages; git commit -qm "sample pages (temporary)"; git push
+      - run: python -m scripts.try_stores_tmp btech.com,2b.com.eg,cairosales.com,kimostore.net,tradelinestores.com,compumarts.com,dreamstores-eg.com
