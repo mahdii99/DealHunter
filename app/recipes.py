@@ -4,9 +4,10 @@ Why: checking a result's price on its own page is the step that costs most LLM c
 product data). Most of those pages come from a few stores, and every page of a store is built the same way.
 
 How (no code per store):
-  1. The LLM reads a page as before (agent._read_main_price) and gives the main product's price.
+  1. A page's main price is known: the LLM read it (agent._read_main_price), or the page was clear without it (its buy
+     box, app/buybox.py). Clear pages teach too, at no LLM cost (after_clear_read): every store we open learns.
   2. We list the page's elements that show that exact number, and the buttons / marks near the buy area, each with a
-     CSS selector. The LLM picks the one that is the main product's price, the buy button and the sold-out mark
+     CSS selector. When only one element shows it (and one buy button), that's the recipe (learn_free). Else the LLM picks the one that is the main product's price, the buy button and the sold-out mark
      (LEARN_PROMPT). It's checked on that page right away: the selector must give the same price.
   3. The next pages of that store: while the recipe is new, the LLM still reads them and the recipe must agree
      (TRUST_AFTER pages in a row). Then it replaces the LLM read, and every SPOT_CHECK-th page is still read by the
@@ -184,16 +185,71 @@ async def after_llm_read(url: str, html: str, title: str, price: float) -> None:
     """The LLM just read this page's main price: check the store's recipe against it, or learn one."""
     if not ENABLED or "<" not in html[:2000]:  # text from the reader service: no page elements to learn from
         return
+    if _check(url, html, price):
+        return
+    if learn_free(url, html, price) is None:
+        await learn(url, html, title, price)
+
+
+def after_clear_read(url: str, html: str, price: float) -> None:
+    """A page read without the LLM and clear (its buy box, its product data): its price is known just as surely as
+    after an LLM read, so the store's recipe is checked against it, or learned from it, at no LLM cost. Every page of
+    every store we open teaches the reader for the store's next pages (the ones that aren't clear by themselves)."""
+    if not ENABLED or "<" not in html[:2000]:
+        return
+    try:
+        if not _check(url, html, price):
+            learn_free(url, html, price)
+    except Exception as e:  # (learning never breaks a search)
+        log.info("recipe: learning from a clear read failed on %s: %s", url[:100], e)
+
+
+def _check(url: str, html: str, price: float) -> bool:
+    """The store's recipe checked against a page whose price is known. False: there's no recipe to check (or it
+    failed too often and is learned again)."""
     domain = trust.domain(url)
     row = _load(domain)
-    if row and row["fails"] < RELEARN_AFTER:
-        got, _ = apply(row["recipe"], html)
-        right = got is not None and abs(got - price) < 1
-        _safe(db.recipe_result, domain, right)
-        if not right:
-            log.info("recipe: %s read %s, the LLM read %s on %s", domain, got, price, url[:100])
-        return
-    await learn(url, html, title, price)
+    if not row or row["fails"] >= RELEARN_AFTER:
+        return False
+    got, _ = apply(row["recipe"], html)
+    right = got is not None and abs(got - price) < 1
+    _safe(db.recipe_result, domain, right)
+    if not right:
+        log.info("recipe: %s read %s, the page's price is %s on %s", domain, got, price, url[:100])
+    return True
+
+
+_SOLD_OUT = re.compile(r"out.of.stock|sold.out|unavailable|غير متوفر|نفذ|نفدت|خلصان", re.I)
+_BUY_ONLY = re.compile(r"add.to.(?:cart|bag|basket)|buy now|[أا]ضف|اشتر", re.I)
+
+
+def learn_free(url: str, html: str, price: float) -> dict | None:
+    """A recipe learned with no LLM call from a page whose price is known: the element showing that price with the
+    most exact selector, and the buy button. Like every recipe it's used alone only after TRUST_AFTER more pages of
+    the store agree with their own known price, so a wrong pick is never used."""
+    tree = HTMLParser(html)
+    prices, buys = _candidates(tree, price)
+
+    def first_shows(sel: str) -> bool:  # (a recipe reads the first element its selector matches)
+        node = tree.css_first(sel)
+        return node is not None and (n := _number(_own_text(node))) is not None and abs(n - price) < 1
+    # the first element on the page (the buy box comes before related items) that shows the price by a selector
+    # whose first match is it; fewest matches first. A wrong pick doesn't agree on the store's next pages and is
+    # never trusted
+    own = sorted((n, i, s) for i, (s, n, _) in enumerate(prices)
+                 if not re.search(r"old|was|before|strike|regular|compare|list|related|recent|similar", s, re.I)
+                 and first_shows(s))
+    buy = sorted((n, i, s) for i, (s, n, t) in enumerate(buys) if _BUY_ONLY.search(t) and not _SOLD_OUT.search(t))
+    if not own or not buy:
+        return None
+    sold = [s for s, n, t in buys if n == 1 and _SOLD_OUT.search(t)]
+    recipe = {"price": own[0][2], "buy": buy[0][2], "sold_out": sold[0] if len(sold) == 1 else None}
+    check, stock = apply(recipe, html)
+    if check is None or abs(check - price) >= 1 or stock is False:
+        return None
+    _safe(db.save_recipe, trust.domain(url), json.dumps(recipe))
+    log.info("recipe: learned %s without the LLM: %s", trust.domain(url), recipe)
+    return recipe
 
 
 async def learn(url: str, html: str, title: str, price: float) -> dict | None:

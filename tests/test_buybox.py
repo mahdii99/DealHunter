@@ -184,3 +184,20 @@ def test_savings_and_installments_beside_the_price_are_not_prices():
     # a cheap product written first stays, even when a later number is three times it
     copy = f"# {name}\nEGP 400\nBundle with case EGP 1,200\nAdd to cart\n"
     assert extract.read_text_copy(copy, name)[0] is None
+
+
+def test_a_store_learns_its_page_recipe_from_a_clear_page_without_the_llm(monkeypatch):
+    from app import recipes
+    saved = {}
+    monkeypatch.setattr(recipes, "ENABLED", True)
+    monkeypatch.setattr(recipes, "_load", lambda domain: None)
+    monkeypatch.setattr(recipes, "_safe", lambda fn, *a: saved.update({fn.__name__: a}))
+    html = page('<p class="price"><del>17,999 EGP</del> <ins class="now">16,499 EGP</ins></p>'
+                '<button class="add-cart">Add to cart</button>')
+    recipes.after_clear_read(URL, html, 16499.0)
+    assert "save_recipe" in saved
+    recipe = __import__("json").loads(saved["save_recipe"][1])
+    # the learned recipe reads this page's price and buy button, and the next page of the store the same way
+    assert recipes.apply(recipe, html) == (16499.0, True)
+    other = html.replace("16,499", "12,999").replace("Sharp Washing Machine 8 Kg", "Sharp Fridge 450 L")
+    assert recipes.apply(recipe, other) == (12999.0, True)
