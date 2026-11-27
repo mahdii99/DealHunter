@@ -1,0 +1,10 @@
+name: search probe (temporary)
+on:
+  push:
+    branches: [feature/free-web-search]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/search_probe.py
