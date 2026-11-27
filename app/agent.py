@@ -21,7 +21,7 @@ from urllib.parse import quote_plus, unquote, urljoin, urlparse
 
 import httpx
 
-from . import buybox
+from . import buybox, pricemodel
 from . import cards as cards_mod
 from . import catalog, db, fetchers, llm, market, noon_index, recipes, trust, websearch
 from . import extract as extract_mod
@@ -1001,6 +1001,12 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
     if variants and wanted and (got := _by_variant(url, html, title, wanted, variants)):
         _count_read(False)
         return got
+    model_said = None
+    if not wanted and (got := await asyncio.to_thread(_by_model, url, html, title)):
+        if not _model_spot_check():
+            _count_read(False)
+            return got
+        model_said = got.price  # now and then the LLM reads it too, and the two are compared (shown by the live check)
     if variants and wanted:
         text += "\nVARIANTS: " + "; ".join(
             f"{label}: {'in stock' if ok else 'OUT OF STOCK'}" + (f" ({price:g})" if price else "")
@@ -1030,6 +1036,9 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
             or cur and cur not in {c.upper() for c in mk.currency_aliases + (mk.currency,)} | {"ج.م", "جم", "جنيه", "L.E", "L.E."}
             or not shows(_shown_numbers(html), price)):
         return None
+    if model_said is not None:
+        _count_read(True, f"{trust.domain(url)} model spot check: "
+                    + ("agreed" if abs(model_said - float(price)) < 1 else f"model read {model_said:g}, the LLM {float(price):g}"))
     if not wanted:  # the store's recipe is checked against this read, or learned from it (after the answer)
         _later(recipes.after_llm_read(url, html, title or url, float(price)))
     return Product(store=trust.store_name(url), title=title or url, price=float(price), url=url,
@@ -1105,6 +1114,31 @@ def _by_buybox(url: str, html: str, title: str) -> Product | None:
     if not shows(_shown_numbers(html), price):
         return None
     _in_thread(recipes.after_clear_read, url, html, float(price))  # the store learns from its clear pages too
+    return Product(store=trust.store_name(url), title=title or name, price=float(price), url=url,
+                   trusted=trust.is_known(url), in_stock=stock)
+
+
+MODEL_SPOT_CHECK = 5  # every n-th page the learned price reader reads is still read by the LLM too
+_model_reads = [0]
+
+
+def _model_spot_check() -> bool:
+    _model_reads[0] += 1
+    return _model_reads[0] % MODEL_SPOT_CHECK == 0
+
+
+def _by_model(url: str, html: str, title: str) -> Product | None:
+    """The followed product's page read by the learned price reader (app/pricemodel.py), no LLM call: only when the
+    page names this product, the model is sure of its price and the part of the page around it has its buy button
+    (or says sold out)."""
+    if "<" not in html[:2000] or not (got := pricemodel.read(html, url)):
+        return None
+    price, _, stock = got
+    name = extract_mod.page_title(html) or ""
+    if stock is None or not _same_name(title, name) or not shows(_shown_numbers(html), price):
+        return None
+    if stock and extract_mod._page_says_sold_out(html, extract_mod._visible_text(html), name):
+        return None  # the page's data and its button disagree: the LLM reads it
     return Product(store=trust.store_name(url), title=title or name, price=float(price), url=url,
                    trusted=trust.is_known(url), in_stock=stock)
 
