@@ -12,6 +12,6 @@ jobs:
           for i in $(seq 1 32); do
             date -u +%T
             curl -s -o /tmp/b -w "health %{http_code} %{time_total}s\n" -m 20 "$SITE_URL/health"; head -c 200 /tmp/b; echo
-            curl -s -o /dev/null -w "home %{http_code} %{time_total}s\n" -m 20 "$SITE_URL/"
+            curl -s -o /dev/null -w "home %{http_code} %{time_total}s\n" -m 20 "$SITE_URL/"; curl -s -o /dev/null -w "deals %{http_code} %{time_total}s\n" -m 30 "$SITE_URL/deals"
             sleep 15
           done
