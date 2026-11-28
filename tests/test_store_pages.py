@@ -130,3 +130,17 @@ def test_page_probe_needs_the_secret(monkeypatch):
     assert c.post("/api/cron/page-probe", params={"urls": "https://shop.test/p/1"}).status_code == 403
     assert c.post("/api/cron/page-probe", params={"urls": "http://127.0.0.1/"},
                   headers={"X-Cron-Secret": "s"}).status_code == 400
+
+
+def test_reader_copy_of_a_store_error_page_is_no_page():
+    def handler(request):
+        if "amazon" in str(request.url):
+            return httpx.Response(200, text="Title: عذرًا!\n\nURL Source: x\n\nWarning: Target URL returned error 503: "
+                                            "Service Unavailable\n\nMarkdown Content:\n" + "x" * 500)
+        return httpx.Response(200, text="Title: Shop\n\nMarkdown Content:\n" + "y" * 500)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await fetchers._jina(c, "https://www.amazon.eg/dp/X"), await fetchers._jina(c, "https://s.test/p")
+    bad, good = asyncio.run(go())
+    assert bad == "" and good.startswith("Title: Shop")

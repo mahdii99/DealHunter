@@ -144,10 +144,19 @@ async def _jina_response(client: httpx.AsyncClient, url: str) -> httpx.Response:
     return await client.get("https://r.jina.ai/" + url, headers=headers, timeout=15)
 
 
+# the reader answers 200 even when the store refused it, with the store's error page as the text ("Warning: Target URL
+# returned error 503", a "Just a moment..." challenge): that's no page (live 2026-11-28: Amazon 503, Jumia 403)
+_READER_ERROR = re.compile(r"Target URL returned error [45]\d\d|^Title: (?:Just a moment|Attention Required|Access Denied)",
+                           re.I | re.M)
+
+
 async def _jina(client: httpx.AsyncClient, url: str) -> str:
     r = await _jina_response(client, url)
     if r.status_code != 200:
         log.warning("jina reader %s for %s: %s", r.status_code, urlparse(url).netloc, r.text[:150])
+        return ""
+    if _READER_ERROR.search(r.text[:2000]):
+        log.info("jina reader: %s refused it too", urlparse(url).netloc)
         return ""
     return r.text
 
