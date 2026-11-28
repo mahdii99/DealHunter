@@ -275,7 +275,8 @@ def read_listing(html: str, url: str) -> list[Product]:
             p.store = store
             out.append(p)
         return out
-    return max((usable(t) for t in tries), key=len)
+    # the reader that finds the most products; of two that find as many, the one with their pictures
+    return max((usable(t) for t in tries), key=lambda found: (len(found), sum(1 for p in found if p.image)))
 
 
 def _robot_check(html: str) -> bool:

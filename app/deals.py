@@ -68,6 +68,19 @@ def candidates(now: float | None = None) -> list[dict]:
     return picked
 
 
+def fair_share(found: list[dict]) -> list[dict]:
+    """The best deals of every store in turn (each store's own order kept), so the checks of a run aren't all spent
+    on the stores with the most products: a smaller store's real deals reach the page too."""
+    by_store: dict[str, list[dict]] = {}
+    for d in found:
+        by_store.setdefault(d["store"], []).append(d)
+    out, queues = [], list(by_store.values())
+    while queues:
+        out += [q.pop(0) for q in queues]
+        queues = [q for q in queues if q]
+    return out
+
+
 ACCESSORY = "accessories"
 ACCESSORY_SHARE = 0.15      # far under the usual price of its category: a case, a bag, a stand, not the product
 
@@ -87,8 +100,9 @@ def _accessories_apart(rows: list[dict]) -> list[dict]:
 
 async def build() -> dict:
     """Opens the best candidates on their store pages and keeps those still at (or under) that price."""
-    found = (await asyncio.to_thread(candidates))[:CHECK]  # the database: off the event loop
-    picks = [Product(store=d["store"], title=d["title"], price=d["price"], url=d["url"], image=d["image"] or None,
+    found = fair_share(await asyncio.to_thread(candidates))[:CHECK]  # the database: off the event loop
+    # no picture given: the product page opened for the check gives its own (a list page's can be broken or old)
+    picks = [Product(store=d["store"], title=d["title"], price=d["price"], url=d["url"], image=None,
                      old_price=d.get("old_price"), trusted=True, trust_score=100) for d in found]
     by_url = {d["url"]: d for d in found}
     shown, unchecked, gone = [], [], 0
