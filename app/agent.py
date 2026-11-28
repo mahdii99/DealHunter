@@ -1982,7 +1982,7 @@ async def _judge(products: list[Product], plan: dict, raw: str, minp, maxp, code
     pool = _candidates(pool)
 
     picks, summary, typical, follow_ups = [], "", None, []
-    saved = _verdicts(vkey) if vkey else {}
+    saved = await asyncio.to_thread(_verdicts, vkey) if vkey else {}  # the database: off the event loop
     fresh = []
     for p in pool:
         v = _known_verdict(saved.get(_vid(p)), p)

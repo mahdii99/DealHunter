@@ -11,12 +11,14 @@ Where it's stored:
     is wiped every time the service sleeps or updates.
   - not set: a local SQLite file, data/prices.db (your own PC, the tests).
 """
+import asyncio
 import json
 import logging
 import os
 import sqlite3
 import threading
 import time
+import traceback
 from pathlib import Path
 
 from . import pricechart
@@ -256,6 +258,24 @@ PG_RETRY = 300  # seconds on the local file after Postgres couldn't be reached, 
 BLOCK_AFTER = 2  # failed searches in a row before a site is skipped (one failure can be a slow moment)
 
 
+QUERY_TIMEOUT = 60  # seconds one Postgres query may take (a hung one would hold the only connection)
+SCHEMA_LOCK_WAIT = 5  # seconds a table/column check at start waits for a busy table
+_SCHEMA_DONE = [False]
+LOOP_LOCK_WAIT = 1  # (from the event loop) everything else waits meanwhile
+_LOOP_WARNED: set[str] = set()
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+LOCK_WAIT = 90  # seconds a query waits for the one connection before it gives up
+
+
 class _Store:
     """One connection, to Postgres (DATABASE_URL) or SQLite. Queries are written once, with ? placeholders."""
 
@@ -299,26 +319,56 @@ class _Store:
     def _connect_pg(url: str):
         import psycopg  # only needed with Postgres
         # prepare_threshold=None: Supabase's pooler can't keep prepared statements between connections
-        conn = psycopg.connect(url, autocommit=True, prepare_threshold=None, connect_timeout=10)
-        for stmt in _SCHEMA.format(ID="BIGSERIAL PRIMARY KEY", FLOAT="DOUBLE PRECISION").split(";"):
-            conn.execute(stmt)
-        for stmt in _ADDED_COLUMNS:
-            conn.execute(stmt.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS"))
+        # a connection the network dropped silently (no reply, no reset) must fail, not wait forever with the lock
+        # held: every other query, and with it the whole server, would wait behind it (live 2026-11-28)
+        conn = psycopg.connect(url, autocommit=True, prepare_threshold=None, connect_timeout=10, keepalives=1,
+                               keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
+                               tcp_user_timeout=30_000)
+        conn.execute(f"SET statement_timeout = {QUERY_TIMEOUT * 1000}")
+        if _SCHEMA_DONE[0]:
+            return conn
+        # tables and columns: once per start, not on every reconnect. ALTER TABLE takes the table's strongest lock
+        # and waits for every query on it (a server restarting while its old copy still runs one): every later
+        # query then queues behind it and the site stops answering. A short lock wait, and a table that's busy is
+        # simply left as it is (its columns are there already)
+        conn.execute(f"SET lock_timeout = {SCHEMA_LOCK_WAIT * 1000}")
+        stmts = [x for x in _SCHEMA.format(ID="BIGSERIAL PRIMARY KEY", FLOAT="DOUBLE PRECISION").split(";") if x.strip()]
+        for stmt in stmts + [x.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS") for x in _ADDED_COLUMNS]:
+            try:
+                conn.execute(stmt)
+            except psycopg.errors.LockNotAvailable:
+                log.warning("price db: table busy, schema step skipped: %s", " ".join(stmt.split())[:80])
+        conn.execute("SET lock_timeout = 0")
+        _SCHEMA_DONE[0] = True
         return conn
 
     def _do(self, work):
-        with self._lock:
-            for attempt in (1, 2):
-                conn = self._connect()
-                try:
-                    return work(conn)
-                except sqlite3.Error:
+        wait = LOCK_WAIT
+        if _on_event_loop():  # should never happen: while a query runs here, the server answers nobody
+            where = "".join(traceback.format_stack(limit=6)[:-2])
+            if where not in _LOOP_WARNED:
+                _LOOP_WARNED.add(where)
+                log.warning("price db: query on the event loop (use asyncio.to_thread):\n%s", where)
+            wait = LOOP_LOCK_WAIT
+        if not self._lock.acquire(timeout=wait):  # a query stuck ahead: fail this one instead of waiting
+            raise TimeoutError(f"price db busy for {wait} s")
+        try:
+            return self._run(work)
+        finally:
+            self._lock.release()
+
+    def _run(self, work):
+        for attempt in (1, 2):
+            conn = self._connect()
+            try:
+                return work(conn)
+            except sqlite3.Error:
+                raise
+            except Exception as e:  # a Postgres connection the server dropped: connect again once
+                if attempt == 2 or not self.pg or "Operational" not in type(e).__name__:
                     raise
-                except Exception as e:  # a Postgres connection the server dropped: connect again once
-                    if attempt == 2 or not self.pg or "Operational" not in type(e).__name__:
-                        raise
-                    log.warning("price db: reconnecting after %s", type(e).__name__)
-                    self.close()
+                log.warning("price db: reconnecting after %s", type(e).__name__)
+                self.close()
 
     def _sql(self, sql: str) -> str:
         return sql.replace("?", "%s") if self.pg else sql

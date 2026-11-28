@@ -71,11 +71,26 @@ def monthly_limits() -> dict[str, int]:
     return out
 
 
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
 def _load_month(month: str) -> None:
     """This month's counts saved before a restart."""
     if month in _loaded_months or not PERSIST:
         return
     _loaded_months.add(month)
+    if _on_event_loop():  # the database can be slow: never wait for it on the event loop (the server stops answering)
+        threading.Thread(target=_load_month_now, args=(month,), daemon=True).start()
+        return
+    _load_month_now(month)
+
+
+def _load_month_now(month: str) -> None:
     try:
         from . import db
         for row in db.search_usage_month(month):
