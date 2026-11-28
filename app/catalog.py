@@ -54,8 +54,7 @@ CATEGORIES: dict[str, dict] = {
     "phones": {
         "ar": "موبايلات", "pages": 8,
         "stores": {
-            "btech.com": "https://btech.com/en/c/mobiles-tablets",
-            "2b.com.eg": "https://2b.com.eg/en/mobile-and-tablet/mobiles.html",
+            "btech.com": ["https://btech.com/en/c/mobiles-tablets", "https://btech.com/en/c/smartphones", "https://btech.com/en/c/mobile-phones"],
             "kimostore.net": "https://kimostore.net/collections/mobile-phone/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/mobile-phones/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=smartphone&i=electronics&language=en_AE&page={n}",
@@ -64,7 +63,7 @@ CATEGORIES: dict[str, dict] = {
     "tvs": {
         "ar": "شاشات", "pages": 6,
         "stores": {
-            "btech.com": "https://btech.com/en/c/tvs-projectors",
+            "btech.com": ["https://btech.com/en/c/tvs-projectors", "https://btech.com/en/c/televisions", "https://btech.com/en/c/smart-tvs"],
             "cairosales.com": "https://cairosales.com/en/tvs-screens/",
             "kimostore.net": "https://kimostore.net/collections/televisions/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/televisions/?page={n}",
@@ -93,8 +92,7 @@ CATEGORIES: dict[str, dict] = {
     "laptops": {
         "ar": "لابتوبات", "pages": 6,
         "stores": {
-            "btech.com": "https://btech.com/en/c/laptop-pc",
-            "2b.com.eg": "https://2b.com.eg/en/computers/laptops.html",
+            "btech.com": ["https://btech.com/en/c/laptop-pc", "https://btech.com/en/c/laptops", "https://btech.com/en/c/monitors"],
             "compumarts.com": "https://www.compumarts.com/collections/laptop/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/laptops/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=laptop&i=computers&language=en_AE&page={n}",
@@ -104,6 +102,7 @@ CATEGORIES: dict[str, dict] = {
     "tablets": {"ar": "تابلت", "pages": 4, "stores": {
         "amazon.eg": "https://www.amazon.eg/s?k=tablet&i=electronics&language=en_AE&page={n}"}},
     "headphones": {"ar": "سماعات", "pages": 4, "stores": {
+            "btech.com": "https://btech.com/en/c/earbuds",
             "kimostore.net": "https://kimostore.net/collections/earphone-headphone/products.json?limit=50&page={n}",
             "cairosales.com": "https://cairosales.com/en/home-theaters-speakers/headphones/",
         "amazon.eg": "https://www.amazon.eg/s?k=wireless+earbuds+headphones&i=electronics&language=en_AE&page={n}"}},
@@ -123,14 +122,18 @@ CATEGORIES: dict[str, dict] = {
     # search finds them in our own list first. "mixed": very different prices in one kind (a lipstick and a palette),
     # so a cheap one is not set apart as an accessory on the deals page.
     "perfumes": {"ar": "برفانات", "pages": 5, "mixed": True, "stores": {
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/fragrance-deals/products.json?limit=50&page={n}",
         "jumia.com.eg": "https://www.jumia.com.eg/fragrances-allgenders/?page={n}",
         "amazon.eg": "https://www.amazon.eg/s?k=perfume&i=beauty&language=en_AE&page={n}"}},
     "makeup": {"ar": "ميكب", "pages": 5, "mixed": True, "stores": {
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/makeup-deals/products.json?limit=50&page={n}",
         "jumia.com.eg": "https://www.jumia.com.eg/womens-make-up/?page={n}",
         "amazon.eg": "https://www.amazon.eg/s?k=makeup&i=beauty&language=en_AE&page={n}"}},
     "skincare": {"ar": "عناية بالبشرة", "pages": 4, "mixed": True, "stores": {
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/skincare-deals/products.json?limit=50&page={n}",
         "amazon.eg": "https://www.amazon.eg/s?k=skin+care&i=beauty&language=en_AE&page={n}"}},
     "haircare": {"ar": "عناية بالشعر", "pages": 3, "mixed": True, "stores": {
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/hair-deals/products.json?limit=50&page={n}",
         "jumia.com.eg": "https://www.jumia.com.eg/hair-conditioner-d/?page={n}",
         "amazon.eg": "https://www.amazon.eg/s?k=shampoo&i=beauty&language=en_AE&page={n}"}},
     "hair_tools": {"ar": "أجهزة الشعر", "pages": 3, "mixed": True, "stores": {
@@ -143,7 +146,7 @@ CATEGORIES: dict[str, dict] = {
     "home": {
         "ar": "البيت والمطبخ", "pages": 3, "broad": True,
         "stores": {
-            "btech.com": "https://btech.com/en/c/small-home-appliances",
+            "btech.com": ["https://btech.com/en/c/small-home-appliances", "https://btech.com/en/c/hair-care", "https://btech.com/en/c/water-heaters"],
             "kimostore.net": "https://kimostore.net/collections/home-appliances/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/home-office/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=kitchen&rh=p_8%3A30-&language=en_AE&page={n}",
@@ -152,6 +155,8 @@ CATEGORIES: dict[str, dict] = {
     "beauty": {
         "ar": "جمال وعناية", "pages": 3, "broad": True,
         "stores": {
+        "bloompharmacy.com": "https://www.bloompharmacy.com/collections/on-sale/products.json?limit=50&page={n}",
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/body-care-deals/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/health-beauty/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=beauty&rh=p_8%3A30-&language=en_AE&page={n}",
         },
@@ -176,7 +181,6 @@ CATEGORIES: dict[str, dict] = {
         "ar": "كمبيوتر وإكسسواراته", "pages": 3, "broad": True,
         "stores": {
             "compumarts.com": "https://www.compumarts.com/collections/online-offers/products.json?limit=50&page={n}",
-            "2b.com.eg": "https://2b.com.eg/en/offers/intel-offer-product.html",
             "jumia.com.eg": "https://www.jumia.com.eg/computing/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=computers&rh=p_8%3A30-&language=en_AE&page={n}",
         },
@@ -218,6 +222,7 @@ CATEGORIES: dict[str, dict] = {
     "gaming": {
         "ar": "ألعاب فيديو", "pages": 3, "broad": True,
         "stores": {
+            "btech.com": ["https://btech.com/en/c/playstation", "https://btech.com/en/c/consoles"],
             "jumia.com.eg": "https://www.jumia.com.eg/video-games/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=videogames&rh=p_8%3A30-&language=en_AE&page={n}",
         },
@@ -232,12 +237,13 @@ CATEGORIES: dict[str, dict] = {
     "appliances": {
         "ar": "أجهزة منزلية كبيرة", "pages": 1, "broad": True,
         "stores": {
-            "btech.com": "https://btech.com/en/c/large-home-appliances",
+            "btech.com": ["https://btech.com/en/c/large-home-appliances", "https://btech.com/en/c/air-conditioners", "https://btech.com/en/c/washing-machines-dryers", "https://btech.com/en/c/water-coolers-and-filters"],
         },
     },
     "flash": {
         "ar": "عروض لفترة محدودة", "pages": 5, "broad": True,
         "stores": {
+        "btech.com": ["https://btech.com/en/collection/black-friday-offers", "https://btech.com/en/collection/flash-sale-tvs"],
             "jumia.com.eg": "https://www.jumia.com.eg/flash-sales/?page={n}",
         },
     },
@@ -275,7 +281,8 @@ def read_listing(html: str, url: str) -> list[Product]:
             p.store = store
             out.append(p)
         return out
-    return max((usable(t) for t in tries), key=len)
+    # the reader that finds the most products; of two that find as many, the one with their pictures
+    return max((usable(t) for t in tries), key=lambda found: (len(found), sum(1 for p in found if p.image)))
 
 
 def _robot_check(html: str) -> bool:
@@ -312,32 +319,42 @@ async def scrape(stores: list[str] | None = None, categories: list[str] | None =
         for cat, conf in CATEGORIES.items():
             if (categories and cat not in categories) or d not in conf["stores"]:
                 continue
-            t, got, err, seen = time.monotonic(), 0, None, set()
-            for n in range(1, (pages or conf["pages"]) + 1):
-                if n > 1:
-                    if "{n}" not in conf["stores"][d]:  # a page read whole (its later pages aren't open to crawlers)
-                        break
+            t, got, errs, seen = time.monotonic(), 0, [], set()
+            addrs = conf["stores"][d]  # one address, or a few pages of the same kind (a store without page numbers)
+            for i, addr in enumerate([addrs] if isinstance(addrs, str) else addrs):
+                err = blocked = None
+                if i:
                     await asyncio.sleep(PAUSE)
-                url = conf["stores"][d].format(n=n)
-                try:
-                    products = await _page(client, url)
-                except Blocked as e:
-                    err = str(e)
+                for n in range(1, (pages or conf["pages"]) + 1):
+                    if n > 1:
+                        if "{n}" not in addr:  # a page read whole (its later pages aren't open to crawlers)
+                            break
+                        await asyncio.sleep(PAUSE)
+                    url = addr.format(n=n)
+                    try:
+                        products = await _page(client, url)
+                    except Blocked as e:
+                        err = blocked = str(e)
+                        break
+                    except NothingRead as e:
+                        if n == 1:  # past the last page is normal; an empty first page is worth a look
+                            err = str(e)
+                        break
+                    except Exception as e:  # a slow page: the next run tries again
+                        err = f"{type(e).__name__}: {e}"[:200]
+                        break
+                    new = [p for p in products if p.url not in seen]
+                    if not new:  # past the last page (some stores show page 1 again)
+                        break
+                    seen.update(p.url for p in new)
+                    rows = [{"url": p.url, "store": p.store, "title": p.title, "price": p.price,
+                             "old_price": p.old_price, "image": p.image, "in_stock": True} for p in new]
+                    got += await asyncio.to_thread(db.save_catalog, rows, mk, cat)
+                if err:
+                    errs.append(err)
+                if blocked:  # the store refused us: none of its other pages this run
                     break
-                except NothingRead as e:
-                    if n == 1:  # past the last page is normal; an empty first page is worth a look
-                        err = str(e)
-                    break
-                except Exception as e:  # a slow page: the next run tries again
-                    err = f"{type(e).__name__}: {e}"[:200]
-                    break
-                new = [p for p in products if p.url not in seen]
-                if not new:  # past the last page (some stores show page 1 again)
-                    break
-                seen.update(p.url for p in new)
-                rows = [{"url": p.url, "store": p.store, "title": p.title, "price": p.price,
-                         "old_price": p.old_price, "image": p.image, "in_stock": True} for p in new]
-                got += await asyncio.to_thread(db.save_catalog, rows, mk, cat)
+            err = "; ".join(errs)
             report[f"{d} {cat}"] = {"products": got, "seconds": round(time.monotonic() - t, 1),
                                     **({"error": err} if err else {})}
             log.info("catalog: %s %s: %d products%s", d, cat, got, f" ({err})" if err else "")

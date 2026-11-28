@@ -201,8 +201,11 @@ def _as_product(d: dict, store: str, base_url: str, url_pattern: str | None, ima
     if not url and isinstance(d.get("handle"), str):  # Shopify stores
         url = f"/products/{d['handle']}"
     image = _first(d, IMAGE_KEYS)
-    if image and image_base and not image.startswith(("http", "//", "/")):
-        image = image_base.rstrip("/") + "/" + image
+    if image and not image.startswith(("http", "//", "/", "data:")):
+        # a bare file path ("8/6/2/1/x.jpg") is relative to the store's picture server, not to the page: joined to
+        # the page's address it's a broken picture, so without that server it's left out (the page's own picture
+        # is used instead, extract.page_image)
+        image = image_base.rstrip("/") + "/" + image if image_base else None
     return Product(
         store=store, title=name, price=price, url=urljoin(base_url, url or ""),
         image=urljoin(base_url, image) if image else None,

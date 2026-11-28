@@ -154,3 +154,21 @@ def test_a_search_page_is_clear_without_the_llm_only_when_the_price_sits_by_the_
     assert not agent._settled_without_llm(p, far, sold, "") and not p.verified  # the LLM reads this one
     assert not agent._settled_without_llm(p, near, sold, "مقاس 42")  # a size to check: the LLM reads it
     assert agent._settled_without_llm(p, near, sold, "") and p.verified and not sold
+
+
+def test_every_store_gets_its_turn_in_the_checks():
+    from app import deals as deals_mod
+    found = [{"store": "Jumia", "n": i} for i in range(5)] + [{"store": "B.TECH", "n": 0}, {"store": "B.TECH", "n": 1}]
+    got = deals_mod.fair_share(found)
+    assert [(d["store"], d["n"]) for d in got[:4]] == [("Jumia", 0), ("B.TECH", 0), ("Jumia", 1), ("B.TECH", 1)]
+    assert len(got) == 7
+
+
+def test_a_bare_picture_path_is_not_joined_to_the_page_address():
+    from app.extract import extract_products
+    html = ('<script type="application/json">{"products": [{"name": "Fresh Microwave 20 Liter", "price": 3599,'
+            ' "url": "https://btech.com/en/p/fresh-microwave", "thumbnail_url": "b/a/5/b/x.jpg"}]}</script>')
+    got = extract_products(html, "B.TECH", "https://btech.com/en/c/small-home-appliances")
+    assert got and got[0].image is None
+    got = extract_products(html, "B.TECH", "https://btech.com/en/c/x", image_base="https://media.btech.com/catalogs")
+    assert got[0].image == "https://media.btech.com/catalogs/b/a/5/b/x.jpg"
