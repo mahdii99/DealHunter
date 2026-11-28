@@ -10,6 +10,7 @@ here only when it comes from:
 Codes copied from other coupon sites are never added: we can't know they work, and they aren't ours to give.
 An expired code is never shown.
 """
+import asyncio
 import base64
 import logging
 import os
@@ -111,7 +112,7 @@ async def refresh() -> dict:
     got = await read_admitad()
     if got is None:
         return {"admitad": "off" if not os.getenv("ADMITAD_WEBSITE_ID") else "failed"}
-    db.replace_feed_coupons(market.current().code, FEED_SOURCE, got)
+    await asyncio.to_thread(db.replace_feed_coupons, market.current().code, FEED_SOURCE, got)
     return {"admitad": len(got)}
 
 

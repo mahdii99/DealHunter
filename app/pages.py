@@ -9,6 +9,7 @@ price list run (POST /api/cron/pages from .github/workflows/scrape-prices.yml). 
 SHOW_HOURS is no longer shown; a page left with no checked offer stays reachable (its address doesn't break) but
 tells search engines not to list it until a new check, and it's left out of the sitemap.
 """
+import asyncio
 import json
 import logging
 import re
@@ -96,7 +97,7 @@ async def build(limit: int = MAX_PAGES) -> dict:
     """Opens the offers of the top products on their store pages and saves each product's page with the offers whose
     page showed a price just now."""
     mk = market.current().code
-    rows = db.catalog_since(mk, time.time() - SHOW_HOURS * 3600)
+    rows = await asyncio.to_thread(db.catalog_since, mk, time.time() - SHOW_HOURS * 3600)
     todo = groups(rows)[:limit]
     picks, owner = [], {}
     for g in todo:
@@ -118,8 +119,8 @@ async def build(limit: int = MAX_PAGES) -> dict:
     made = 0
     for g in todo:
         offers = sorted(checked.get(g["slug"], []), key=lambda o: o["price"])
-        db.save_product_page(g["slug"], mk, g["name"], g["category"], g.get("brand") or "",
-                             [r["url"] for r in g["rows"]], offers, now)
+        await asyncio.to_thread(db.save_product_page, g["slug"], mk, g["name"], g["category"], g.get("brand") or "",
+                                [r["url"] for r in g["rows"]], offers, now)
         made += bool(offers)
     log.info("product pages: %d of %d products with checked offers (%d offers, %d sold out)",
              made, len(todo), len(shown), gone)

@@ -118,6 +118,7 @@ def robots_reason(url: str) -> str:
     return hit[1].rule_for(url)[1] or "allowed"
 
 
+MAX_TEXT_CHARS = 600_000  # a reader copy longer than this is cut: memory and reading time on a small server
 JINA_SHARE = 0.5  # part of the time Jina (free) has alone before Tavily Extract (monthly quota) is asked too
 
 
@@ -134,7 +135,7 @@ async def _tavily_extract(client: httpx.AsyncClient, urls: list[str]) -> dict[st
     if r.status_code != 200:
         log.warning("tavily extract %s: %s", r.status_code, r.text[:150])
         return {}
-    return {x["url"]: x.get("raw_content") or "" for x in r.json().get("results", [])}
+    return {x["url"]: (x.get("raw_content") or "")[:MAX_TEXT_CHARS] for x in r.json().get("results", [])}
 
 
 async def _jina_response(client: httpx.AsyncClient, url: str) -> httpx.Response:
@@ -149,7 +150,7 @@ async def _jina(client: httpx.AsyncClient, url: str) -> str:
     if r.status_code != 200:
         log.warning("jina reader %s for %s: %s", r.status_code, urlparse(url).netloc, r.text[:150])
         return ""
-    return r.text
+    return r.text[:MAX_TEXT_CHARS]
 
 
 async def read_pages(client: httpx.AsyncClient, urls: list[str], deadline: float = 12) -> tuple[dict[str, str], dict[str, str]]:

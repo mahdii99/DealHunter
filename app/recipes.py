@@ -259,8 +259,7 @@ async def learn(url: str, html: str, title: str, price: float) -> dict | None:
     """One LLM call: which of this page's elements is the main price, the buy button, the sold-out mark."""
     llm.background()  # (a task of its own: its context ends with it) shoppers' searches go first
     domain = trust.domain(url)
-    tree = HTMLParser(html)
-    prices, buys = _candidates(tree, price)
+    prices, buys = await asyncio.to_thread(lambda: _candidates(HTMLParser(html), price))  # CPU work: off the loop
     if not prices:
         return None
     lines = lambda xs: "\n".join(f"- {s} | matches {n} | {t}" for s, n, t in xs) or "(none)"  # noqa: E731

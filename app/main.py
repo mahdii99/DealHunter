@@ -50,6 +50,20 @@ if DEMO:  # offline demo: stores read saved sample pages instead of the internet
             return _s.parse(_page)
         _s.search = _fake
 
+LOOP_LAG_WARN = 1.0  # seconds the event loop may be late before it's logged
+
+
+async def _watch_event_loop() -> None:
+    """Logs when the event loop was held (CPU work that should run in a worker thread): while it's held the server
+    answers nothing, not even Render's health check, which gives up after 5 s."""
+    loop = asyncio.get_running_loop()
+    while True:
+        t = loop.time()
+        await asyncio.sleep(1)
+        if (late := loop.time() - t - 1) > LOOP_LAG_WARN:
+            log.warning("event loop held for %.1fs (requests waited)", late)
+
+
 @asynccontextmanager
 async def _lifespan(app):
     try:  # models / search services a provider said were used up before this restart stay skipped
@@ -62,7 +76,9 @@ async def _lifespan(app):
             log.info("removed %d old price-drop alerts", n)
     except Exception:
         log.exception("removing old price-drop alerts failed")
+    watch = asyncio.create_task(_watch_event_loop())
     yield
+    watch.cancel()
     await asyncio.to_thread(agent.llm.flush_usage)  # today's LLM counts, so a restart doesn't forget them
     await asyncio.to_thread(websearch.flush_usage)  # and this month's web searches
 
@@ -115,11 +131,16 @@ def current_user(request: Request) -> dict | None:
 SHARE_SITE = "https://dealhunter-opk9.onrender.com"  # written in index.html's share tags; served as the real address
 
 
+_INDEX: list[str] = []  # the home page, read once (it only changes with a new deploy)
+
+
 @app.get("/")
-def index(request: Request):
+async def index(request: Request):
     # link previews (Facebook, WhatsApp, X) need full addresses: the page's share tags get this server's own, so a
     # new domain needs no edit. no-cache: the browser always picks up the latest page after an update
-    page = (ROOT / "static" / "index.html").read_text(encoding="utf-8").replace(SHARE_SITE, _site(request))
+    if not _INDEX:
+        _INDEX.append((ROOT / "static" / "index.html").read_text(encoding="utf-8"))
+    page = _INDEX[0].replace(SHARE_SITE, _site(request))
     return Response(page, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache"})
 
 
@@ -1876,5 +1897,7 @@ def _page_title(html: str) -> str:
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])  # uptime monitors (UptimeRobot) ask with HEAD
-def health():
+async def health():
+    # async: answered on the event loop itself, never queued behind the worker threads (Render's health check
+    # gives 5 s before it counts the server as down)
     return {"ok": True}
