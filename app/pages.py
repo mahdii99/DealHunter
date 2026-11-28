@@ -145,3 +145,40 @@ def listed() -> list[dict]:
 
 def category_name(key: str) -> str:
     return catalog.CATEGORIES.get(key, {}).get("ar", key)
+
+
+_NOISE = {"rom", "ram", "storage", "memory", "with", "and", "+"}
+
+
+def _tokens(name: str) -> frozenset[str]:
+    """The words of a product name, written one way: 'REDMI A7 Pro 128G ROM' and 'Redmi A7 Pro 128GB' match,
+    '128GB/6GB' is two words."""
+    words = re.split(r"[\s/|,()]+", _size(name).replace("+", " "))
+    return frozenset(re.sub(r"^(\d+)g$", r"\1gb", w) for w in words if w and w not in _NOISE)
+
+
+def distinct(rows: list[dict]) -> list[dict]:
+    """The pages a shopper should see in the list, without the same phone twice: two pages whose names are the same
+    words ('Redmi A7 Pro 128GB' / 'REDMI A7 Pro 128G ROM') are one product, so is a name whose words are all in a
+    longer one at the same cheapest price ('HOT 60i 128GB' / 'HOT 60i 128GB 6GB', 9,999 both). The cheaper, then the
+    one with more offers, then the more exact name stays. Different prices under a longer name ('OPPO A6 128GB' and
+    'OPPO A6 128GB/6GB') stay apart: the extra word may well be another model."""
+    def low(p):
+        return min(o["price"] for o in fresh_offers(p))
+    items = sorted(((p, _tokens(p["name"]), low(p)) for p in rows if fresh_offers(p)),
+                   key=lambda x: (x[2], -len(fresh_offers(x[0])), -len(x[1]), x[0]["slug"]))
+    kept: list[tuple[dict, frozenset, float]] = []
+    for p, words, price in items:
+        def same(k):
+            q, kw, kp = k
+            if q["category"] != p["category"]:
+                return False
+            if kw == words:
+                return True
+            return abs(kp - price) <= max(1.0, 0.005 * price) and (kw <= words or words <= kw)
+        twin = next((i for i, k in enumerate(kept) if same(k)), None)
+        if twin is None:
+            kept.append((p, words, price))
+        elif len(words) > len(kept[twin][1]) and words >= kept[twin][1] and price <= kept[twin][2]:
+            kept[twin] = (p, words, price)  # same price, the more exact name
+    return [k[0] for k in kept]

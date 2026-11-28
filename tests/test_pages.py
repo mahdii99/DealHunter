@@ -121,3 +121,31 @@ def test_product_page_shows_price_history_and_links_through_go():
     html = TestClient(main.app).get("/p/samsung-galaxy-a56-256gb").text
     assert '<div class="hist"><svg' in html
     assert "/go?src=p&amp;u=https%3A%2F%2Fwww.jumia.com.eg%2Fa56" in html
+
+
+def _listed(slug, name, price, old=None, stores=("Jumia",), category="phones", image="https://img.eg/a.jpg"):
+    now = time.time()
+    offers = [{"title": name, "store": st, "url": f"https://{st.lower()}.com/{slug}/{i}", "price": price + i * 100,
+               "old_price": old if i == 0 else None, "image": image, "checked_at": now} for i, st in enumerate(stores)]
+    db.save_product_page(slug, "EG", name, category, "", [o["url"] for o in offers], offers, now)
+
+
+def test_the_list_hides_the_same_phone_written_twice():
+    _listed("infinix-hot-60i-128gb", "Infinix HOT 60i 128GB", 9999)
+    _listed("infinix-hot-60i-128gb-6gb", "Infinix HOT 60i 128GB 6GB", 9999)
+    _listed("xiaomi-redmi-a7-pro-128gb", "Xiaomi Redmi A7 Pro 128GB", 8650)
+    _listed("xiaomi-redmi-a7-pro-128g-rom", "Xiaomi REDMI A7 Pro 128G ROM", 8700)
+    _listed("oppo-a6-128gb", "OPPO A6 128GB", 12399)
+    _listed("oppo-a6-128gb-6gb", "OPPO A6 128GB/6GB", 15370)  # another price: may be another model, stays
+    slugs = {p["slug"] for p in pages.distinct(pages.listed())}
+    assert slugs == {"infinix-hot-60i-128gb-6gb", "xiaomi-redmi-a7-pro-128gb", "oppo-a6-128gb", "oppo-a6-128gb-6gb"}
+
+
+def test_the_list_is_a_shelf_with_pictures_cheapest_store_and_a_link_to_compare():
+    _listed("samsung-galaxy-a56-256gb", "Samsung Galaxy A56 256GB", 23100, old=26000, stores=("Jumia", "Amazon"))
+    _listed("lg-nano-50", "LG NANO 50 inch", 19700, category="tvs", image="")
+    html = TestClient(main.app).get("/p").text
+    assert 'href="/p/samsung-galaxy-a56-256gb"' in html and 'src="https://img.eg/a.jpg"' in html
+    assert "23,100 ج.م" in html and "-11%" in html and "قارن 2 متاجر" in html
+    assert "📺" in html  # no picture: the section's sign, not an empty box
+    assert html.index("موبايلات") < html.index("شاشات") and 'id="pq"' in html
