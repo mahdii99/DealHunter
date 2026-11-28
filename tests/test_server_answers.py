@@ -57,3 +57,28 @@ def test_huge_pages_are_cut():
                 lambda req: httpx.Response(200, text="b" * (fetchers.MAX_TEXT_CHARS + 5)))) as c:
             return await fetchers._jina(c, "https://x.example/p/1")
     assert len(asyncio.run(go())) == fetchers.MAX_TEXT_CHARS
+
+
+def test_the_server_starts_without_waiting_for_the_database(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(main.agent.llm, "load_reported", lambda: time.sleep(3))
+    t = time.monotonic()
+    with TestClient(main.app) as c:
+        assert c.get("/health").json() == {"ok": True}
+        assert time.monotonic() - t < 2
+
+
+def test_a_query_stuck_ahead_never_holds_the_event_loop():
+    from app import db
+    db._db._lock.acquire()  # another thread's query hangs with the connection
+    try:
+        async def go():
+            t = time.monotonic()
+            try:
+                db.cached_search("x", 60)
+            except TimeoutError:
+                pass
+            return time.monotonic() - t
+        assert asyncio.run(go()) < db.LOOP_LOCK_WAIT + 0.5
+    finally:
+        db._db._lock.release()

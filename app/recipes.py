@@ -187,9 +187,9 @@ async def after_llm_read(url: str, html: str, title: str, price: float) -> None:
     if not ENABLED or "<" not in html[:2000]:  # text from the reader service: no page elements to learn from
         return
     await asyncio.to_thread(pricemodel.remember, url, html, price, "llm")  # an example for the learned reader
-    if _check(url, html, price):
+    if await asyncio.to_thread(_check, url, html, price):  # the database and page parsing: off the event loop
         return
-    if learn_free(url, html, price) is None:
+    if await asyncio.to_thread(learn_free, url, html, price) is None:
         await learn(url, html, title, price)
 
 
@@ -280,6 +280,6 @@ async def learn(url: str, html: str, title: str, price: float) -> dict | None:
     if check is None or abs(check - price) >= 1 or stock is False:  # wrong on the very page it was learned from
         log.info("recipe: %s: the picked selector reads %s, not %s", domain, check, price)
         return None
-    _safe(db.save_recipe, domain, json.dumps(recipe))
+    await asyncio.to_thread(_safe, db.save_recipe, domain, json.dumps(recipe))
     log.info("recipe: learned %s: %s", domain, recipe)
     return recipe

@@ -255,11 +255,26 @@ def daily_limit(provider: str, model: str) -> tuple[str, int] | None:
     return (f"{provider}:*" if entry[1] == "*" else model), entry[2]
 
 
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
 def _load_day(day: str) -> None:
     """Today's counts saved before a restart (Render's free service sleeps and restarts often)."""
     if day in _loaded_days or not PERSIST:
         return
     _loaded_days.add(day)
+    if _on_event_loop():  # the database can be slow: never wait for it on the event loop (the server stops answering)
+        threading.Thread(target=_load_day_now, args=(day,), daemon=True).start()
+        return
+    _load_day_now(day)
+
+
+def _load_day_now(day: str) -> None:
     try:
         from . import db
         for row in db.llm_usage_day(day):
