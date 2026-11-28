@@ -77,7 +77,7 @@ def _page_summary(got: dict, url: str) -> dict:
     if main:
         got.update({"title": main.title[:90], "price": main.price, "old_price": main.old_price,
                     "in_stock": main.in_stock, "products_read": len(products)})
-    m = re.search(r"<title[^>]*>(.*?)</title>", text, re.S | re.I)
+    m = re.search(r"<title[^<>]*>(.*?)</title>", text, re.S | re.I)
     got["page_title"] = " ".join((m.group(1) if m else "-").split())[:90]
     return got
 

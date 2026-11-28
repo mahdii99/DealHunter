@@ -294,7 +294,7 @@ async def _page(client: httpx.AsyncClient, url: str) -> list[Product]:
     if not products and _robot_check(r.text):
         raise Blocked("robot check page")
     if not products:  # say what the page was, so a changed or refused page can be told from an empty one
-        m = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S | re.I)
+        m = re.search(r"<title[^<>]*>(.*?)</title>", r.text, re.S | re.I)
         raise NothingRead(f"no products read ({len(r.text)} chars, title: {' '.join((m.group(1) if m else '-').split())[:80]})")
     return products
 

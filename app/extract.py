@@ -11,7 +11,7 @@ from urllib.parse import urljoin, urlparse
 
 from . import market
 from .models import Product
-from .utils import parse_price
+from .utils import drop_blocks, first_block, parse_price, script_bodies, strip_tags
 
 _DECODER = json.JSONDecoder()
 NAME_KEYS = ("name", "title", "product_name", "displayName")
@@ -68,15 +68,14 @@ def _availability(d: dict) -> bool | None:
 
 
 def _visible_text(html: str) -> str:
-    text = re.sub(r"<head\b.*?</head>|<script.*?</script>|<style.*?</style>|<noscript.*?</noscript>", " ", html,
-                  flags=re.S | re.I)
-    return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", text)))
+    text = drop_blocks(html, ("head", "script", "style", "noscript"))
+    return re.sub(r"\s+", " ", unescape(strip_tags(text)))
 
 
 def _page_says_sold_out(html: str, visible: str, title: str) -> bool | None:
     """Single product page: what the shopper sees next to the title/price wins over the page's data
     (some stores keep 'InStock' in their data while the button says 'غير متوفر')."""
-    meta = re.search(r'<meta[^>]+(?:product:availability|og:availability|twitter:data2)[^>]+content="([^"]+)"', html, re.I)
+    meta = re.search(r'<meta[^<>]+(?:product:availability|og:availability|twitter:data2)[^<>]+content="([^"]+)"', html, re.I)
     if meta and any(w in meta.group(1).lower() for w in ("out of stock", "sold out", "oos", "غير متوفر")):
         return True
     low = visible.lower()
@@ -90,8 +89,7 @@ def _page_says_sold_out(html: str, visible: str, title: str) -> bool | None:
 
 def _visible_numbers(html: str) -> set[float]:
     """Numbers a shopper can see on the page (scripts and tags removed)."""
-    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.S | re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
+    text = strip_tags(drop_blocks(html))
     out = set()
     for m in re.finditer(r"\d[\d,]*(?:\.\d+)?", text):
         try:
@@ -103,8 +101,8 @@ def _visible_numbers(html: str) -> set[float]:
 
 def _anchors(html: str) -> list[tuple[str, str]]:
     out = []
-    for m in re.finditer(r"<a\b[^>]*href=[\"']([^\"'#]+)[\"'][^>]*>(.*?)</a>", html, re.S | re.I):
-        text = re.sub(r"<[^>]+>|\s+", " ", m.group(2)).strip().lower()
+    for m in re.finditer(r"<a\b[^<>]*href=[\"']([^\"'#<>]+)[\"'][^<>]*>(.{0,3000}?)</a>", html, re.S | re.I):
+        text = re.sub(r"<[^<>]+>|\s+", " ", m.group(2)).strip().lower()
         out.append((m.group(1), text))
     return out
 
@@ -123,8 +121,7 @@ def _json_texts(html: str):
             pass
     if flight:
         yield "".join(flight)
-    for m in re.finditer(r"<script[^>]*>(.*?)</script>", html, re.S):
-        body = m.group(1)
+    for body in script_bodies(html):
         if "__next_f" not in body and ("{" in body):
             yield body
 
@@ -310,7 +307,7 @@ def _card_has(html: str, url: str, other_urls: list[str], words) -> bool:
     if not raw:
         return False
     classes = {c for attr in re.findall(r'class="([^"]*)"', raw) for c in attr.split()}
-    text = re.sub(r"<[^>]+>", " ", raw)
+    text = re.sub(r"<[^<>]+>", " ", raw)
     return bool(classes & OOS_CLASSES) or any(w in text for w in words)
 
 
@@ -342,10 +339,10 @@ def _card_window(html: str, url: str, other_urls: list[str], raw: bool = False) 
         k = html.find(op, pos + len(path), hi)
         if k != -1:
             hi = k
-    window = re.sub(r"<script.*?(</script>|$)|<style.*?(</style>|$)", " ", html[lo:hi], flags=re.S | re.I)
+    window = drop_blocks(html[lo:hi])
     if raw:
         return unescape(window).lower()
-    return unescape(re.sub(r"<[^>]+>", " ", window)).lower()
+    return unescape(re.sub(r"<[^<>]+>", " ", window)).lower()
 
 
 _VARIANT_ATTR = re.compile(r"""\sdata-[\w-]*variations?[\w-]*=(["'])(\[.*?\])\1""", re.S | re.I)
@@ -411,8 +408,8 @@ def variant_stock(html: str) -> list[tuple[str, bool, float | None]]:
 def page_image(html: str, base_url: str) -> str | None:
     """The product page's own picture: its og:image / twitter:image, else the product data's image."""
     for prop in ("og:image", "og:image:secure_url", "twitter:image"):
-        m = (re.search(r"<meta[^>]+(?:property|name)=[\"']" + re.escape(prop) + r"[\"'][^>]*content=[\"']([^\"']+)", html, re.I)
-             or re.search(r"<meta[^>]+content=[\"']([^\"']+)[\"'][^>]*(?:property|name)=[\"']" + re.escape(prop) + r"[\"']", html, re.I))
+        m = (re.search(r"<meta[^<>]+(?:property|name)=[\"']" + re.escape(prop) + r"[\"'][^<>]*content=[\"']([^\"']+)", html, re.I)
+             or re.search(r"<meta[^<>]+content=[\"']([^\"']+)[\"'][^<>]*(?:property|name)=[\"']" + re.escape(prop) + r"[\"']", html, re.I))
         if m and m.group(1).strip():
             return urljoin(base_url, unescape(m.group(1).strip()))
     return None
@@ -422,17 +419,17 @@ _PRICE_BY_CURRENCY = re.compile(
     r"(?:(?:EGP|E\.?G\.?P|L\.?E\.?|ج\.?\s?م\.?|جنيه(?:\s?مصري)?)\s*(\d[\d,]*(?:\.\d{1,2})?)"
     r"|(\d[\d,]*(?:\.\d{1,2})?)\s*(?:EGP|E\.?G\.?P|L\.?E\.?|ج\.?\s?م\.?|جنيه))", re.I)
 _ARABIC_NUMS = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,.")
-_OLD_PRICE = re.compile(r"<(span|div|p|del)\b[^>]*class=[\"'][^\"']*\b(?:old|was|before|regular|strike|crossed)"
-                        r"[\w-]*[^\"']*[\"'][^>]*>[^<]*</\1>", re.I)
+_OLD_PRICE = re.compile(r"<(span|div|p|del)\b[^<>]*class=[\"'][^\"']*\b(?:old|was|before|regular|strike|crossed)"
+                        r"[\w-]*[^\"']*[\"'][^<>]*>[^<]*</\1>", re.I)
 MAIN_WINDOW = 1200  # where a product page names its product: its own price is shown there, before related items
 
 
 def page_title(html: str) -> str:
     """The product page's name for its product: its <h1>, else its og:title ('' when neither names one)."""
-    h1 = re.search(r"<h1\b[^>]*>(.*?)</h1>", html, re.S | re.I)
-    title = " ".join(unescape(re.sub(r"<[^>]+>", " ", h1.group(1))).split()) if h1 else ""
+    h1 = first_block(html, "h1")
+    title = " ".join(unescape(strip_tags(h1.group(1))).split()) if h1 else ""
     if len(title.split()) < 2:
-        og = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.I)
+        og = re.search(r'<meta[^<>]+property=["\']og:title["\'][^<>]+content=["\']([^"\']+)', html, re.I)
         title = " ".join(unescape(og.group(1)).split()) if og else ""
     return title if 2 <= len(title.split()) and len(title) <= 300 else ""
 
@@ -449,7 +446,7 @@ def main_product(html: str) -> tuple[str, float] | None:
     if len({p for _, _, p in variants if p}) > 1:
         return None
     # a crossed-out old price isn't the price: it's dropped, the price shown beside it is read
-    shown = re.sub(r"<(del|s|strike)\b[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
+    shown = re.sub(r"<(del|s|strike)\b[^<>]*>.{0,2000}?</\1>", " ", html, flags=re.S | re.I)
     shown = _OLD_PRICE.sub(" ", shown)
     visible = _visible_text(shown)
     i = visible.find(title[:60])
@@ -467,8 +464,9 @@ def main_product(html: str) -> tuple[str, float] | None:
     return (title, prices.pop()) if len(prices) == 1 else None
 
 
-_MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
-_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+# (the text part stops at another "[": a page full of unclosed "[" stays linear)
+_MD_IMAGE = re.compile(r"!\[[^\[\]\n]{0,500}+\]\([^)\s]{0,2000}+\)")
+_MD_LINK = re.compile(r"\[([^\[\]\n]{0,500}+)\]\([^)\s]{0,2000}+\)")
 _TEXT_TITLE = re.compile(r"^(?:Title:\s*|#{1,2}\s+)(.+)$", re.M)
 _MONTHLY = re.compile(r"^\s*(?:/|per|a|كل|في)?\s*(?:month|mo\b|شهر|شهريا|شهرياً)", re.I)
 _DISCOUNT = re.compile(r"%|خصم|وفر|was\b|save|off\b|بدلا من|بدلاً من|instead of|before", re.I)
