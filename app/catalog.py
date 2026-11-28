@@ -290,7 +290,7 @@ async def _page(client: httpx.AsyncClient, url: str) -> list[Product]:
     if r.status_code in (401, 403, 429, 503):
         raise Blocked(f"HTTP {r.status_code}")
     r.raise_for_status()
-    products = read_listing(r.text, str(r.url))
+    products = await asyncio.to_thread(read_listing, r.text, str(r.url))  # CPU work: off the event loop
     if not products and _robot_check(r.text):
         raise Blocked("robot check page")
     if not products:  # say what the page was, so a changed or refused page can be told from an empty one
