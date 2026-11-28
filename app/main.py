@@ -1467,7 +1467,7 @@ async def coupons_api():
 async def coupons_page(request: Request):
     """Store promo codes, only from a network or the store itself (app/coupons.py)."""
     got = await _db(coupons.current, default=[])
-    return Response(_coupons_html(got or [], _site(request)), media_type="text/html; charset=utf-8",
+    return Response(await asyncio.to_thread(_coupons_html, got or [], _site(request)), media_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=600"})
 
 
@@ -1476,11 +1476,18 @@ async def deals_api():
     return await _db(deals.current, default={"checked_at": None, "deals": []})
 
 
+_DEALS_PAGE: dict = {}
+
+
 @app.get("/deals")
 async def deals_page(request: Request):
     """Today's best deals, as a plain page search engines can read (people find it from Google)."""
     got = await _db(deals.current, default={"checked_at": None, "deals": []})
-    return Response(_deals_html(got, _site(request)), media_type="text/html; charset=utf-8",
+    site = _site(request)
+    key = (got.get("checked_at"), len(got.get("deals") or []), site)
+    if _DEALS_PAGE.get("key") != key:  # the list changes twice a day: the page is made once per list, off the loop
+        _DEALS_PAGE.update(key=key, html=await asyncio.to_thread(_deals_html, got, site))
+    return Response(_DEALS_PAGE["html"], media_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=600"})
 
 
@@ -1488,7 +1495,7 @@ async def deals_page(request: Request):
 async def products_page(request: Request):
     """Every product page with checked offers, by section (people and search engines find the product pages here)."""
     got = await _db(pages.listed, default=[]) or []
-    return Response(_products_html(got, _site(request)), media_type="text/html; charset=utf-8",
+    return Response(await asyncio.to_thread(_products_html, got, _site(request)), media_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=600"})
 
 
@@ -1500,7 +1507,7 @@ async def product_page(slug: str = UrlPart(..., max_length=100, pattern="^[a-z0-
         raise HTTPException(404, "مفيش صفحة للمنتج ده")
     urls = [o["url"] for o in pages.fresh_offers(page)]
     hist = await _db(db.histories, urls, time.time() - 90 * 86400, default={}) if urls else {}
-    return Response(_product_html(page, _site(request), hist or {}), media_type="text/html; charset=utf-8",
+    return Response(await asyncio.to_thread(_product_html, page, _site(request), hist or {}), media_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=600"})
 
 

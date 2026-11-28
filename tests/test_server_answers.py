@@ -106,3 +106,16 @@ def test_a_query_stuck_ahead_never_holds_the_event_loop():
         assert asyncio.run(go()) < db.LOOP_LOCK_WAIT + 0.5
     finally:
         db._db._lock.release()
+
+
+def test_the_deals_page_is_made_quickly():
+    from app import deals as deals_mod
+    titles = ["Samsung Galaxy A56 5G 256GB", "Toshiba Refrigerator No Frost 16 ft", "Fabyo Men Winter Jacket",
+              "LG Smart TV 55 inch 4K", "Anker Soundcore Q20i Headphones", "Nivea Body Lotion 400ml"]
+    rows = [{"title": f"{titles[i % len(titles)]} {i}", "store": "Amazon.eg", "url": f"https://www.amazon.eg/dp/B{i}",
+             "image": "", "price": 1000 + i, "was": 2000 + i, "pct": 40, "kind": "drop", "category": "phones",
+             "checked_at": 0, "hist": [], "real": True, "brand": None, "kind_ar": None} for i in range(300)]
+    t = time.monotonic()
+    page = main._deals_html({"checked_at": time.time(), "deals": rows}, "https://x.example")
+    assert time.monotonic() - t < 3 and "Toshiba" in page
+    assert deals_mod.facets(rows[:1])[0]["brand_name"] == "Samsung"

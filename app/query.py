@@ -5,6 +5,7 @@ can be used first and this module is the fallback.
 """
 import re
 import unicodedata
+from functools import lru_cache
 
 from .models import ParsedQuery
 from .utils import normalize
@@ -329,6 +330,7 @@ BEAUTY_KINDS = {"perfume", "body splash", "deodorant", "shampoo", "hair conditio
 _FOLD = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ة": "ه", "ى": "ي"})
 
 
+@lru_cache(maxsize=8192)
 def _folded(text: str) -> str:
     """Lower case, Arabic spelling variants made one (ة->ه, أ->ا), accents and curly apostrophes plain ("L’Oréal" ->
     "l'oreal")."""
@@ -339,8 +341,14 @@ def _folded(text: str) -> str:
 def _says(title: str, word: str) -> bool:
     """The title has this word or phrase as a whole word (never inside another: "lg" is not in "50LG8070Q", "tv" not
     in "ctv"). Arabic words may carry ال before them."""
-    w = re.escape(_folded(word))
-    return bool(re.search(rf"(?<![a-z0-9؀-ۿ])(?:ال)?{w}(?![a-z0-9؀-ۿ])", _folded(title)))
+    return bool(_word_pattern(word).search(_folded(title)))
+
+
+@lru_cache(maxsize=8192)
+def _word_pattern(word: str) -> re.Pattern:
+    # compiled once per word: _says runs for every brand and kind word on every title (the deals page: 300 titles
+    # x thousands of words took over 30 s of CPU and froze the server, live 2026-11-28)
+    return re.compile(rf"(?<![a-z0-9؀-ۿ])(?:ال)?{re.escape(_folded(word))}(?![a-z0-9؀-ۿ])")
 
 
 def kinds_in(text: str) -> set[str]:
@@ -364,9 +372,14 @@ def same_kind(title: str, wanted: set[str]) -> bool:
 
 def names_brand(title: str, brand: str) -> bool:
     """The title names this brand as a whole word, in English or in the Arabic shoppers write."""
-    return (_says(title, brand) or any(_says(title, a) for a in BRAND_ALIASES.get(brand, ()))
-            or any(_says(title, a) for a, e in AR_WORDS.items() if e == brand)
-            or any(_says(title, a) for a, e in AR_PHRASES.items() if e == brand))
+    return any(_says(title, w) for w in _brand_words(brand))
+
+
+@lru_cache(maxsize=1024)
+def _brand_words(brand: str) -> tuple[str, ...]:
+    """The brand, its aliases, and the Arabic words and phrases shoppers write for it."""
+    return ((brand,) + tuple(BRAND_ALIASES.get(brand, ())) + tuple(a for a, e in AR_WORDS.items() if e == brand)
+            + tuple(a for a, e in AR_PHRASES.items() if e == brand))
 
 
 # Features a title can say it does NOT have: with no model to judge, an offer that says it lacks what the shopper
