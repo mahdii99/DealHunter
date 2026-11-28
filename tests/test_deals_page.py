@@ -12,14 +12,13 @@ def _deal(title, cat="phones", price=100, was=150, hist=None, **kw):
             "hist": hist or [], **kw}
 
 
-def test_every_card_gets_a_price_bar_even_with_no_history():
+def test_cards_are_simple_and_the_price_history_opens_on_a_tap():
     now = time.time()
-    with_hist = main._price_meter(_deal("A", price=90, was=150, hist=[[now - 20 * DAY, 120], [now - 5 * DAY, 80]]), now)
-    assert 'class="meter"' in with_hist and "سعره في آخر 20 يوم" in with_hist and "أرخص: 80" in with_hist
-    assert "قبل: 150" in with_hist and "النهارده" in with_hist  # the store's "before" is dearer than any price we saw
-    bare = main._price_meter(_deal("B", price=100, was=150), now)
-    assert 'class="meter"' in bare and "أرخص: 100" in bare and "قبل: 150" in bare
-    assert 'inset-inline-start:0%' in bare
+    html = main._deals_html({"checked_at": now, "deals": [
+        _deal("A", price=90, was=150, hist=[[now - 20 * DAY, 120], [now, 90]], real=True), _deal("B")]}, "x")
+    assert html.count('class="hbtn"') == 1  # only a product we have a history for
+    assert 'id="hs"' in html and "/api/history?url=" in html and "✓ خصم حقيقي" in html
+    assert 'class="meter"' not in html and 'id="off"' not in html and 'id="min"' not in html
 
 
 def test_brand_and_kind_come_from_the_title_with_no_llm():
@@ -39,10 +38,10 @@ def test_search_finds_english_titles_by_the_arabic_words_shoppers_type():
     assert "غساله" in deals.search_text(w, deals.facets([w])[0], "غسالات")
 
 
-def test_page_has_search_sort_discount_and_price_filters():
+def test_page_has_search_sort_and_store_filters():
     html = main._deals_html({"checked_at": time.time(), "deals": [
         _deal("Samsung Galaxy A56"), _deal("LG 43 inch Smart TV", "tvs", 9000, 12000)]}, "https://x.test")
-    for bit in ('id="q"', 'id="sort"', 'id="off"', 'id="min"', 'id="max"', 'id="sub"', 'data-brand="samsung"',
+    for bit in ('id="q"', 'id="sort"', 'id="store"', 'id="sub"', 'data-brand="samsung"',
                 'data-price="9000"', 'data-save="3000"', "توفّر 3,000 ج.م"):
         assert bit in html, bit
     empty = main._deals_html({"checked_at": None, "deals": []}, "https://x.test")

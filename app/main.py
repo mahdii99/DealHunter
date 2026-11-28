@@ -1735,30 +1735,6 @@ def _chips(name: str, label: str, options: list[tuple[str, str]]) -> str:
             f'<button type="button" data-v="" aria-pressed="true">الكل</button>{buttons}</div>')
 
 
-def _price_meter(d: dict, now: float | None = None) -> str:
-    """Where today's price sits between the lowest and highest price of this product, as a bar a shopper reads at a
-    glance ("أرخص 599 ... أغلى 949", a dot at today's price), on every deal card. The highest is the dearest price we
-    saw on its page in 30 days, or the store's own "before" price when we haven't seen it dearer."""
-    from html import escape as e
-    now = now or time.time()
-    seen = [(t, p) for t, p in d.get("hist") or [] if p and now - t <= 30 * 86400 + 86400]
-    prices = [p for _, p in seen]
-    price, was = d["price"], d.get("was") or 0
-    lo, hi = min(prices + [price]), max(prices + [was, price])
-    if hi - lo < 1:
-        return ""
-    at = round((price - lo) / (hi - lo) * 100)
-    days = round((now - seen[0][0]) / 86400) if seen else 0
-    store_top = was >= hi and was > max(prices or [0]) + 1  # the dear end is the store's number, not one we saw
-    top = f"قبل: {hi:,.0f}" if store_top else f"أغلى: {hi:,.0f}"
-    about = f"سعره في آخر {days} يوم" if days >= 2 else "سعره النهارده وقبل الخصم"
-    pin = "start" if at < 18 else "end" if at > 82 else "mid"
-    return (f'<span class="meter" role="img" aria-label="{e(about)}: من {_money(lo)} لـ {_money(hi)}، والنهارده '
-            f'{_money(price)}">{f"<span class=mcap>{e(about)}</span>" if days >= 2 else ""}'
-            f'<span class="bar"><i style="inset-inline-start:{at}%" class="{pin}"><em>النهارده</em></i></span>'
-            f'<span class="ends"><span>أرخص: {lo:,.0f}</span><span>{e(top)}</span></span></span>')
-
-
 def _deals_html(got: dict, site: str) -> str:
     from html import escape as e
     from urllib.parse import quote
@@ -1779,18 +1755,22 @@ def _deals_html(got: dict, site: str) -> str:
                "onerror=\"if(this.dataset.alt){this.src=this.dataset.alt;this.dataset.alt=''}else{this.remove()}\">"
                if str(d.get("image") or "").startswith("https://") else "")
         q = deals.search_text(d, f, cats[d["category"]])
+        good = bool(d.get("real") or d["kind"] == "drop")
+        # the price history opens on a tap (a sheet with the chart, /api/history): nothing on the card to decode
+        hist = (f'<button type="button" class="hbtn" data-u="{e(d["url"])}" data-p="{d["price"]:.0f}" '
+                f'data-o="{d["was"]:.0f}">📈 تاريخ السعر</button>' if len(d.get("hist") or []) >= 2 else "")
         cards.append(
-            f'<a class="deal" data-i="{i}" data-store="{e(dom)}" data-cat="{e(d["category"])}" '
-            f'data-brand="{e(f["brand"])}" data-bn="{e(f["brand_name"])}" data-kind="{e(f["kind"])}" '
-            f'data-kn="{e(f["kind_name"])}" data-price="{d["price"]:.0f}" data-pct="{d["pct"]}" data-save="{save:.0f}" '
-            f'data-q="{e(q)}" href="/go?src=deals&amp;u={quote(d["url"], safe="")}" '
+            f'<div class="deal" data-i="{i}" data-store="{e(dom)}" data-cat="{e(d["category"])}" '
+            f'data-brand="{e(f["brand"])}" data-bn="{e(f["brand_name"])}" data-price="{d["price"]:.0f}" '
+            f'data-pct="{d["pct"]}" data-save="{save:.0f}" data-q="{e(q)}">'
+            f'<a class="dl" href="/go?src=deals&amp;u={quote(d["url"], safe="")}" '
             f'target="_blank" rel="noopener nofollow sponsored"><span class="pic">{img}'
             f'<b class="pct">-{d["pct"]}%</b><span class="ok">✓ السعر متأكد منه</span></span>'
             f'<span class="t" dir="auto">{e(d["title"])}</span>'
             f'<span class="p">{_money(d["price"])}</span><s>{_money(d["was"])}</s>'
-            f'{f"<span class=save>توفّر {_money(save)}</span>" if save >= 1 else ""}{checked}'
-            f'<span class="why{" real" if d.get("real") or d["kind"] == "drop" else ""}">{e(why)}</span>'
-            f'{_price_meter(d)}<span class="st">{e(stores[dom])}</span></a>')
+            f'{f"<span class=save>توفّر {_money(save)}</span>" if save >= 1 else ""}'
+            f'<span class="why{" real" if good else ""}">{"✓ " if good else ""}{e(why)}</span>{checked}'
+            f'<span class="st">{e(stores[dom])}</span></a>{hist}</div>')
     when = got.get("checked_at")
     body = (f'<div class="grid" id="grid">{"".join(cards)}</div>'
             '<div class="empty" id="none" hidden>مفيش عروض بالفلاتر دي. <button type="button" class="reset">امسح '
@@ -1799,22 +1779,22 @@ def _deals_html(got: dict, site: str) -> str:
             'أو <a href="/">دوّر على اللي انت عايزه</a>.</p>')
     tools = ""
     if cards:
+        store_opts = "".join(f'<option value="{e(k)}">{e(v)}</option>'
+                             for k, v in sorted(stores.items(), key=lambda x: x[1]))
         tools = ('<div class="tools" id="dealsUI"><label class="search"><span aria-hidden="true">🔍</span>'
                  '<input type="search" id="q" placeholder="دوّر في العروض: سامسونج، غسالة، برفان…" '
                  'aria-label="دوّر في العروض" autocomplete="off" enterkeyhint="search"></label>' +
-                 _chips("store", "المتجر", sorted(stores.items(), key=lambda x: x[1])) +
                  _chips("cat", "القسم", sorted(cats.items(), key=lambda x: x[1])) +
                  '<div id="sub"></div><div class="more">'
-                 '<label>رتّب<select id="sort"><option value="">الأحسن الأول</option>'
-                 '<option value="pct">أكبر خصم</option><option value="save">أكبر توفير بالجنيه</option>'
-                 '<option value="low">الأرخص الأول</option><option value="high">الأغلى الأول</option></select></label>'
-                 '<label>الخصم<select id="off"><option value="">أي خصم</option><option value="20">20% وأكتر</option>'
-                 '<option value="30">30% وأكتر</option><option value="50">50% وأكتر</option></select></label>'
-                 '<label>السعر<input id="min" type="number" inputmode="numeric" min="0" placeholder="من"></label>'
-                 '<label><input id="max" type="number" inputmode="numeric" min="0" placeholder="لحد" '
-                 'aria-label="السعر لحد"></label></div>'
-                 '<p class="count" aria-live="polite"><span id="count"></span> '
-                 '<button type="button" class="reset" hidden>امسح الفلاتر</button></p></div>')
+                 '<select id="sort" aria-label="رتّب"><option value="">الأحسن الأول</option>'
+                 '<option value="pct">أكبر خصم</option><option value="low">الأرخص الأول</option>'
+                 '<option value="high">الأغلى الأول</option></select>'
+                 + (f'<select id="store" aria-label="المتجر"><option value="">كل المتاجر</option>{store_opts}</select>'
+                    if len(stores) > 1 else '<select id="store" hidden></select>') +
+                 '<span class="count" aria-live="polite"><span id="count"></span> '
+                 '<button type="button" class="reset" hidden>امسح</button></span></div></div>'
+                 '<dialog id="hs" aria-labelledby="hst"><div class="hsh"><b id="hst">تاريخ السعر</b>'
+                 '<button type="button" class="x" aria-label="اقفل">✕</button></div><div id="hsb"></div></dialog>')
     stamp = (f'<p class="when">فتحنا صفحة كل عرض في المتجر وتأكدنا من سعره وإنه متوفر <span data-ts="{when:.0f}"></span>. '
              'الأسعار بتتغير، فبص على السعر في صفحة المتجر قبل ما تطلب.</p>' if when else "")
     return (_shell("deals", site).replace("{TITLE}", "أحسن العروض النهارده في مصر: موبايلات وأجهزة بخصم حقيقي | Easy Found")
@@ -1883,13 +1863,13 @@ h1{font-size:24px;margin:10px 0 2px}.lead,.when{color:var(--muted);margin:0 0 12
 .chips{display:flex;gap:6px;overflow-x:auto;padding:2px 0 8px;scrollbar-width:none}.chips button{flex:none;height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--border);background:var(--card);color:var(--text);font:inherit;font-size:14px;cursor:pointer}
 .chips button[aria-pressed=true]{background:var(--soft);border-color:var(--accent);color:var(--ink);font-weight:600}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:4px}
-.deal{display:flex;flex-direction:column;gap:2px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:8px;color:inherit;text-decoration:none;min-width:0}
+.deal{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:8px;color:inherit;min-width:0}
 .deal:hover{border-color:var(--accent)}.pic{position:relative;display:block;aspect-ratio:1;background:#fff;border-radius:10px;overflow:hidden;margin-bottom:6px}
 .pic img{width:100%;height:100%;object-fit:contain}.pct{position:absolute;top:6px;inset-inline-start:6px;background:var(--deal-bg);color:#fff;font-size:13px;padding:1px 8px;border-radius:8px}
 .ok{position:absolute;bottom:6px;inset-inline-start:6px;background:var(--ok);color:#fff;font-size:11.5px;padding:1px 8px;border-radius:8px}
 .t{font-weight:600;font-size:14px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .p{font-size:17px;font-weight:700}.deal s{font-size:13px;color:var(--muted)}
-.why{font-size:12.5px;color:var(--muted)}.why.real{color:var(--deal);font-weight:600}.st{font-size:12.5px;color:var(--ink)}
+.st{font-size:12.5px;color:var(--ink)}
 .cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
 .coupon{display:flex;flex-direction:column;gap:8px;background:var(--card);border:1px dashed var(--accent);border-radius:14px;padding:14px}
 .ch{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--muted)}.ch b{color:var(--text);font-size:16px}
@@ -1912,21 +1892,34 @@ h2{font-size:18px;margin:18px 0 8px}.plist{list-style:none;margin:0;padding:0;di
 @media (min-width:640px){.oa{flex:0 0 auto;flex-direction:column;width:170px}.oa .go,.follow{flex:none}}
 .chk{font-size:12px;color:var(--ok)}.save{font-size:13px;font-weight:700;color:var(--ok)}
 @media (prefers-color-scheme:dark){.chk,.save{color:#34D399}}
-.meter{display:block;margin:6px 0 2px}.mcap{display:block;font-size:11.5px;color:var(--muted)}
-.bar{position:relative;display:block;height:6px;margin:18px 4px 4px;border-radius:3px;background:linear-gradient(to left,#16A34A,#F59E0B)}
-.bar i{position:absolute;top:50%;width:12px;height:12px;margin-inline-start:-6px;margin-top:-6px;border-radius:50%;background:var(--card);border:3px solid var(--text)}
-.bar em{position:absolute;bottom:13px;font:600 11px/1 "IBM Plex Sans Arabic",system-ui,sans-serif;font-style:normal;white-space:nowrap;color:var(--text)}
-.bar i.start em{inset-inline-start:-4px}.bar i.mid em{inset-inline-start:50%;transform:translateX(50%)}.bar i.end em{inset-inline-end:-4px}
-.ends{display:flex;justify-content:space-between;gap:4px;font-size:11px;color:var(--muted);white-space:nowrap}
 .tools{display:flex;flex-direction:column;gap:2px;margin-bottom:6px}
 .search{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:0 12px;margin-bottom:8px}
 .search:focus-within{border-color:var(--accent)}.search input{flex:1;min-width:0;height:44px;border:0;background:none;color:var(--text);font:inherit;font-size:16px;outline:none}
-#sub .chips{padding-inline-start:10px;border-inline-start:3px solid var(--soft)}.chips .lbl{flex:none;align-self:center;font-size:13px;color:var(--muted);font-weight:600}
-.chips small{opacity:.7;margin-inline-start:4px}
-.more{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px;color:var(--muted)}.more label{display:flex;align-items:center;gap:6px}
-.more select,.more input{height:34px;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--text);font:inherit;font-size:14px;padding:0 8px}
-.more input{width:92px}.count{margin:6px 0 0;font-size:13px;color:var(--muted)}
+#sub .chips button{height:30px;font-size:13px;padding:0 12px}.chips .lbl{flex:none;align-self:center;font-size:13px;color:var(--muted)}
+.more{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.more select{height:34px;border:1px solid var(--border);border-radius:999px;background:var(--card);color:var(--text);font:inherit;font-size:14px;padding:0 10px}
+.count{margin-inline-start:auto;font-size:13px;color:var(--muted)}
 .reset{border:0;background:none;color:var(--accent);font:inherit;font-weight:600;cursor:pointer;padding:0}
+.deal .dl{display:flex;flex-direction:column;gap:2px;color:inherit;text-decoration:none;flex:1}
+.why{align-self:flex-start;font-size:12px;color:var(--muted);background:var(--bg);border-radius:6px;padding:1px 6px;margin:2px 0}
+.why.real{color:var(--ok);background:var(--soft);font-weight:600}
+@media (prefers-color-scheme:dark){.why.real{color:#34D399}}
+.hbtn{margin-top:6px;border:1px solid var(--border);background:none;color:var(--ink);border-radius:8px;padding:5px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.hbtn:hover{border-color:var(--accent)}
+#hs{border:0;border-radius:18px;padding:16px;width:min(520px,calc(100% - 24px));background:var(--card);color:var(--text)}
+#hs::backdrop{background:rgba(0,0,0,.45)}
+@media (max-width:560px){#hs{margin:auto 0 0;width:100%;max-width:100%;border-radius:18px 18px 0 0}}
+.hsh{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.hsh b{font-size:16px}
+.x{border:0;background:var(--bg);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:15px;cursor:pointer}
+.hname{font-size:13px;color:var(--muted);margin:0 0 10px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.verdict{display:flex;gap:10px;align-items:center;border-radius:12px;padding:10px 12px;margin-bottom:12px;background:var(--bg)}
+.verdict b{font-size:15px}.verdict span{font-size:13px;color:var(--muted)}.verdict i{font-style:normal;font-size:22px}
+.verdict.low{background:var(--soft)}.verdict.low b{color:var(--ok)}.verdict.high b{color:var(--deal)}
+@media (prefers-color-scheme:dark){.verdict.low b{color:#34D399}}
+#hs .pc{max-width:440px;margin:0 auto}
+.hstats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px}
+.hstats div{background:var(--bg);border-radius:10px;padding:8px;text-align:center}.hstats small{display:block;font-size:12px;color:var(--muted)}
+.hstats b{font-size:14px}.hnote{font-size:12px;color:var(--muted);margin:10px 0 0}
 </style>{CHART_STYLE}</head><body><main>
 <header><a href="/"><img src="/logo.svg?v=2" width="32" height="32" alt="">Easy Found</a><nav class="tabs">{TABS}</nav></header>
 <h1>{H1}</h1><p class="lead">{LEAD}</p>
@@ -1945,48 +1938,69 @@ row.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-pressed'
 document.querySelectorAll('.deal,.coupon').forEach(function(c){c.hidden=Object.keys(picked).some(function(k){return picked[k]&&c.dataset[k]!==picked[k];});});});});
 (function(){var ui=document.getElementById('dealsUI');if(!ui)return;
 var grid=document.getElementById('grid'),cards=[].slice.call(grid.children),sub=document.getElementById('sub'),
-qi=document.getElementById('q'),sortI=document.getElementById('sort'),offI=document.getElementById('off'),
-minI=document.getElementById('min'),maxI=document.getElementById('max'),countEl=document.getElementById('count'),
-resets=document.querySelectorAll('.reset'),none=document.getElementById('none');
-var st={q:'',store:'',cat:'',kind:'',brand:'',off:'',min:'',max:'',sort:''};
-function fold(t){return (t||'').toLowerCase().replace(/[\u064B-\u065F\u0670\u0640]/g,'').replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي')
+qi=document.getElementById('q'),sortI=document.getElementById('sort'),storeI=document.getElementById('store'),
+countEl=document.getElementById('count'),resets=document.querySelectorAll('.reset'),none=document.getElementById('none');
+var st={q:'',cat:'',brand:'',store:'',sort:''};
+function fold(t){return (t||'').toLowerCase().replace(/[ً-ٰٟـ]/g,'').replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي')
 .replace(/[٠-٩]/g,function(d){return '٠١٢٣٤٥٦٧٨٩'.indexOf(d);}).replace(/[’`]/g,"'");}
 function words(){return fold(st.q).split(/[\\s،,]+/).filter(Boolean);}
 function hasWord(c,w){var q=c.dataset.q;if(q.indexOf(w)>=0)return true;
 var bare=w.replace(/^(وال|بال|لل|ال|و)/,'');return bare.length>1&&bare!==w&&q.indexOf(bare)>=0;}
-function ok(c,skip){var d=c.dataset,p=+d.price;
+function ok(c,skip){var d=c.dataset;
 if(st.store&&d.store!==st.store)return false;if(st.cat&&d.cat!==st.cat)return false;
-if(skip!=='kind'&&st.kind&&d.kind!==st.kind)return false;if(skip!=='brand'&&st.brand&&d.brand!==st.brand)return false;
-if(st.off&&+d.pct<+st.off)return false;if(st.min&&p<+st.min)return false;if(st.max&&p>+st.max)return false;
+if(skip!=='brand'&&st.brand&&d.brand!==st.brand)return false;
 return words().every(function(w){return hasWord(c,w);});}
-function chipRow(name,label,key,nameKey){
-var n={},names={};cards.forEach(function(c){if(!ok(c,name))return;var k=c.dataset[key];if(!k)return;n[k]=(n[k]||0)+1;names[k]=c.dataset[nameKey];});
-var keys=Object.keys(n).sort(function(a,b){return n[b]-n[a];}).slice(0,20);
-if(st[name]&&keys.indexOf(st[name])<0)keys.unshift(st[name]);
-if(keys.length<2&&!st[name])return '';
-function b(v,t,c){var on=st[name]===v;return '<button type="button" data-v="'+v.replace(/"/g,'&quot;')+'" aria-pressed="'+on+'">'+t.replace(/</g,'&lt;')+(c?'<small>('+c.toLocaleString('ar-EG')+')</small>':'')+'</button>';}
-return '<div class="chips" data-f="'+name+'" role="group" aria-label="'+label+'"><span class="lbl">'+label+'</span>'+b('','الكل')+
-keys.map(function(k){return b(k,names[k]||k,n[k]||0);}).join('')+'</div>';}
+function brands(){
+var n={},names={};cards.forEach(function(c){if(!ok(c,'brand'))return;var k=c.dataset.brand;if(!k)return;n[k]=(n[k]||0)+1;names[k]=c.dataset.bn;});
+var keys=Object.keys(n).filter(function(k){return n[k]>=2||k===st.brand;}).sort(function(a,b){return n[b]-n[a];}).slice(0,12);
+if(keys.length<2&&!st.brand)return '';
+function b(v,t){return '<button type="button" data-v="'+v.replace(/"/g,'&quot;')+'" aria-pressed="'+(st.brand===v)+'">'+t.replace(/</g,'&lt;')+'</button>';}
+return '<div class="chips" data-f="brand" role="group" aria-label="الماركة"><span class="lbl">الماركة:</span>'+b('','الكل')+
+keys.map(function(k){return b(k,names[k]||k);}).join('')+'</div>';}
 function render(){
 var shown=0;cards.forEach(function(c){var y=ok(c);c.hidden=!y;if(y)shown++;});
-var by={pct:function(a,b){return b.dataset.pct-a.dataset.pct;},save:function(a,b){return b.dataset.save-a.dataset.save;},
+var by={pct:function(a,b){return b.dataset.pct-a.dataset.pct;},
 low:function(a,b){return a.dataset.price-b.dataset.price;},high:function(a,b){return b.dataset.price-a.dataset.price;}}[st.sort]
 ||function(a,b){return a.dataset.i-b.dataset.i;};
 cards.slice().sort(by).forEach(function(c){grid.appendChild(c);});
-sub.innerHTML=(st.cat||st.q||st.store)?chipRow('kind','النوع','kind','kn')+chipRow('brand','الماركة','brand','bn'):'';
+sub.innerHTML=st.cat?brands():'';
 var any=Object.keys(st).some(function(k){return st[k];});
-countEl.textContent=shown.toLocaleString('ar-EG')+(shown===1?' عرض':' عرض')+(any?' من '+cards.length.toLocaleString('ar-EG'):'');
+countEl.textContent=shown.toLocaleString('ar-EG')+' عرض';
 resets.forEach(function(r){r.hidden=!any;});none.hidden=shown>0;grid.hidden=shown===0;
 ui.querySelectorAll('.chips').forEach(function(row){var f=row.dataset.f;row.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-pressed',x.dataset.v===st[f]?'true':'false');});});
 try{var u=new URLSearchParams();Object.keys(st).forEach(function(k){if(st[k])u.set(k,st[k]);});
 history.replaceState(null,'',location.pathname+(u.toString()?'?'+u:''));}catch(e){}}
 ui.addEventListener('click',function(e){var b=e.target.closest('.chips button');if(!b)return;var f=b.closest('.chips').dataset.f;
-st[f]=b.dataset.v;if(f==='cat'||f==='store'){st.kind='';st.brand='';}render();});
-var t;qi.addEventListener('input',function(){clearTimeout(t);t=setTimeout(function(){st.q=qi.value.trim();st.kind='';st.brand='';render();},150);});
-[[sortI,'sort'],[offI,'off'],[minI,'min'],[maxI,'max']].forEach(function(p){p[0].addEventListener(p[0].tagName==='SELECT'?'change':'input',function(){st[p[1]]=p[0].value.trim();render();});});
-resets.forEach(function(r){r.addEventListener('click',function(){Object.keys(st).forEach(function(k){st[k]='';});qi.value=sortI.value=offI.value=minI.value=maxI.value='';render();});});
+st[f]=b.dataset.v;if(f==='cat')st.brand='';render();});
+var t;qi.addEventListener('input',function(){clearTimeout(t);t=setTimeout(function(){st.q=qi.value.trim();render();},150);});
+[[sortI,'sort'],[storeI,'store']].forEach(function(p){p[0].addEventListener('change',function(){st[p[1]]=p[0].value;if(p[1]==='store')st.brand='';render();});});
+resets.forEach(function(r){r.addEventListener('click',function(){Object.keys(st).forEach(function(k){st[k]='';});qi.value=sortI.value=storeI.value='';render();});});
 try{var u=new URLSearchParams(location.search);Object.keys(st).forEach(function(k){if(u.get(k))st[k]=u.get(k).slice(0,80);});}catch(e){}
-qi.value=st.q;sortI.value=st.sort;offI.value=st.off;minI.value=st.min;maxI.value=st.max;render();})();
+qi.value=st.q;sortI.value=st.sort;storeI.value=st.store;render();
+var dlg=document.getElementById('hs'),hb=document.getElementById('hsb');
+function money(n){return Math.round(n).toLocaleString('en-US')+' ج.م';}
+function day(t){var d=new Date(t*1000);return d.getDate()+'/'+(d.getMonth()+1);}
+dlg.querySelector('.x').addEventListener('click',function(){dlg.close();});
+dlg.addEventListener('click',function(e){if(e.target===dlg)dlg.close();});
+grid.addEventListener('click',function(e){var b=e.target.closest('.hbtn');if(!b)return;e.preventDefault();
+var card=b.closest('.deal'),name=card.querySelector('.t').textContent,price=+b.dataset.p;
+hb.innerHTML='<p class="hname" dir="auto"></p><p class="hnote">لحظة…</p>';hb.querySelector('.hname').textContent=name;
+if(dlg.showModal)dlg.showModal();else dlg.setAttribute('open','');
+fetch('/api/history?url='+encodeURIComponent(b.dataset.u)+'&price='+price+'&old='+b.dataset.o).then(function(r){return r.json();}).then(function(h){
+var now=Date.now()/1000,pts=(h.points||[]).filter(function(p){return p.price&&now-p.seen_at<=90*86400;});
+var ps=pts.map(function(p){return p.price;}).concat([price]),lo=Math.min.apply(null,ps),hi=Math.max.apply(null,ps);
+var loAt=pts.filter(function(p){return p.price===lo;}).pop(),since=pts.length?Math.max(1,Math.round((now-pts[0].seen_at)/86400)):0;
+var v=h.verdict||{},kind={real:'low',usual:'mid',higher:'high',fake:'high'}[v.kind]||'mid';
+var head={low:['🟢','السعر النهارده منخفض'],mid:['⚪','ده سعره العادي'],high:['🟠','كان أرخص من كده']}[kind];
+if(!v.kind)head=['⏳','لسه بنتابع سعره'];
+var txt=v.text||('بنسجّل سعره من '+since+' يوم. محتاجين أسبوع على الأقل عشان نقولك ده سعر كويس ولا لأ.');
+hb.innerHTML='<p class="hname" dir="auto"></p><div class="verdict '+kind+'"><i>'+head[0]+'</i><div><b>'+head[1]+'</b><br><span></span></div></div>'
++(h.svg||'')+'<div class="hstats"><div><small>أرخص سعر</small><b>'+money(lo)+'</b>'+(loAt?'<small>'+day(loAt.seen_at)+'</small>':'')+'</div>'
++'<div><small>النهارده</small><b>'+money(price)+'</b></div><div><small>أغلى سعر</small><b>'+money(hi)+'</b></div></div>'
++'<p class="hnote">من صفحة المنتج في المتجر نفسه، آخر '+Math.min(since,90)+' يوم.</p>';
+hb.querySelector('.hname').textContent=name;hb.querySelector('.verdict span').textContent=txt;
+}).catch(function(){hb.querySelector('.hnote').textContent='معرفناش نجيب تاريخ السعر دلوقتي، جرّب تاني.';});});
+})();
 document.addEventListener('click',function(e){var b=e.target.closest('.code');if(!b)return;var s=b.querySelector('small');
 (navigator.clipboard?navigator.clipboard.writeText(b.dataset.code):Promise.reject()).then(function(){s.textContent='اتنسخ ✓';},function(){s.textContent='انسخه بإيدك';});});
 </script></body></html>"""
