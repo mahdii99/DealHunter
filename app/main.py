@@ -1495,8 +1495,15 @@ async def deals_page(request: Request):
 async def products_page(request: Request):
     """Every product page with checked offers, by section (people and search engines find the product pages here)."""
     got = await _db(pages.listed, default=[]) or []
-    return Response(await asyncio.to_thread(_products_html, got, _site(request)), media_type="text/html; charset=utf-8",
+    site = _site(request)
+    key = (tuple((p["slug"], p.get("checked_at")) for p in got), site)
+    if _PRODUCTS_PAGE.get("key") != key:  # the pages change twice a day: made once per change, off the loop
+        _PRODUCTS_PAGE.update(key=key, html=await asyncio.to_thread(_products_html, got, site))
+    return Response(_PRODUCTS_PAGE["html"], media_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=600"})
+
+
+_PRODUCTS_PAGE: dict = {}
 
 
 @app.get("/p/{slug}")
@@ -1585,23 +1592,109 @@ def _product_html(page: dict, site: str, hist: dict | None = None) -> str:
             .replace("{BODY}", body))
 
 
+PRODUCTS_STYLE = """<style>
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:10px}
+.prod{display:flex;flex-direction:column;gap:2px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:8px;color:inherit;text-decoration:none;min-width:0}
+.prod:hover{border-color:var(--accent)}.prod .pic{display:grid;place-items:center;font-size:44px}
+.prod .from{font-size:12px;color:var(--muted);margin-top:4px}.prod .p{line-height:1.3}.prod .was{display:block;font-size:12.5px;font-weight:400;color:var(--muted)}
+.prod .st{font-size:12.5px;color:var(--muted)}.prod .st b{color:var(--ink);font-weight:600}
+.prod .cmp{margin-top:auto;padding-top:6px;font-size:13px;font-weight:600;color:var(--accent)}
+.psec h2 small{font-size:13px;color:var(--muted);font-weight:400;margin-inline-start:6px}
+.ptools{display:flex;flex-direction:column;gap:2px;margin-bottom:4px}.ptools .more{margin-top:2px}
+</style>"""
+
+_CATEGORY_ICON = {"phones": "📱", "tvs": "📺", "washers": "🧺", "fridges": "🧊", "laptops": "💻", "acs": "❄️",
+                  "tablets": "📱", "headphones": "🎧", "smartwatches": "⌚"}
+
+
 def _products_html(rows: list[dict], site: str) -> str:
+    """The product pages as a shop shelf: picture, cheapest checked price, in how many stores, by section, with a
+    search box and section chips; each card opens the product's page (every store's price and its history)."""
     from html import escape as e
-    by: dict[str, list[str]] = {}
-    for p in sorted(rows, key=lambda p: p["name"].lower()):
-        offers = pages.fresh_offers(p)
-        by.setdefault(p["category"], []).append(
-            f'<li><a href="/p/{e(p["slug"])}"><span dir="auto">{e(p["name"])}</span>'
-            f'<b>من {_money(min(o["price"] for o in offers))}</b></a></li>')
+    from urllib.parse import quote
+    by: dict[str, list[tuple]] = {}
+    for p in pages.distinct(rows):
+        offers = sorted(pages.fresh_offers(p), key=lambda o: o["price"])
+        best = offers[0]
+        doms = {coupons.domain_of(o["url"]) for o in offers}
+        bdom = coupons.domain_of(best["url"])
+        bname = coupons.store_name(bdom) if bdom in coupons.STORE_NAMES else best["store"]
+        pic = next((o["image"] for o in offers if str(o.get("image") or "").startswith("https://")), "")
+        img = (f'<img src="{e(pic)}" alt="{e(p["name"])}" loading="lazy" decoding="async" referrerpolicy="no-referrer" '
+               f'data-alt="/img?u={quote(pic, safe="")}" '
+               "onerror=\"if(this.dataset.alt){this.src=this.dataset.alt;this.dataset.alt=''}else{this.remove()}\">"
+               if pic else f'<span aria-hidden="true">{_CATEGORY_ICON.get(p["category"], "🛒")}</span>')
+        was = best.get("old_price") or 0
+        pct = round((was - best["price"]) / was * 100) if was > best["price"] else 0
+        badge = f'<b class="pct">-{pct}%</b>' if 5 <= pct <= 90 else ""
+        where = (f'في <b>{e(bname)}</b>' + (f' · قارن {len(doms)} متاجر' if len(doms) > 1 else ""))
+        checked = max(o.get("checked_at") or 0 for o in offers)
+        q = " ".join([p["name"], p.get("brand") or "", pages.category_name(p["category"]), bname]).lower()
+        by.setdefault(p["category"], []).append((-len(doms), best["price"], (
+            f'<a class="prod" href="/p/{e(p["slug"])}" data-q="{e(q)}" data-price="{best["price"]:.0f}" '
+            f'data-n="{len(doms)}"><span class="pic">{img}{badge}</span>'
+            f'<span class="t" dir="auto">{e(p["name"])}</span>'
+            f'<span class="from">أرخص سعر</span>'
+            f'<span class="p">{_money(best["price"])}{f"<span class=was>بدل <s>{_money(was)}</s></span>" if pct >= 5 else ""}</span>'
+            f'<span class="st">{where}</span>'
+            f'{f"<span class=chk data-ago={checked:.0f}></span>" if checked else ""}'
+            f'<span class="cmp">قارن الأسعار وتاريخ السعر ←</span></a>')))
     order = {c: i for i, c in enumerate(pages.CATEGORY_ORDER)}
-    body = "".join(f'<h2>{e(pages.category_name(c))}</h2><ul class="plist">{"".join(items)}</ul>'
-                   for c, items in sorted(by.items(), key=lambda x: (order.get(x[0], 99), x[0]))) or (
-        '<p class="empty">لسه بنجهز صفحات المنتجات. <a href="/">دوّر على اللي انت عايزه</a>.</p>')
-    return (_shell("p", site).replace("{TITLE}", "أسعار الموبايلات والأجهزة في مصر النهارده | Easy Found")
+    cats = sorted(by, key=lambda c: (order.get(c, 99), c))
+    sections = "".join(
+        f'<section class="psec" data-cat="{e(c)}"><h2>{e(pages.category_name(c))}<small>{len(by[c])} منتج</small></h2>'
+        f'<div class="pgrid">{"".join(x[2] for x in sorted(by[c], key=lambda x: (x[0], x[1])))}</div></section>'
+        for c in cats)
+    if not sections:
+        body = '<p class="empty">لسه بنجهز صفحات المنتجات. <a href="/">دوّر على اللي انت عايزه</a>.</p>'
+    else:
+        chips = "".join(f'<button type="button" data-v="{e(c)}" aria-pressed="false">{e(pages.category_name(c))}</button>'
+                        for c in cats)
+        tools = ('<div class="ptools" id="prodUI"><label class="search"><span aria-hidden="true">🔍</span>'
+                 '<input type="search" id="pq" placeholder="دوّر على موبايل أو جهاز: سامسونج، A56، شاشة…" '
+                 'aria-label="دوّر في الأسعار" autocomplete="off" enterkeyhint="search"></label>'
+                 + (f'<div class="pchips chips" role="group" aria-label="القسم"><button type="button" data-v="" '
+                    f'aria-pressed="true">الكل</button>{chips}</div>' if len(cats) > 1 else "")
+                 + '<div class="more"><label>رتّب<select id="psort"><option value="">الأكتر في المتاجر</option>'
+                 '<option value="low">الأرخص الأول</option><option value="high">الأغلى الأول</option></select></label>'
+                 '</div></div>')
+        body = (tools + sections +
+                '<div class="empty" id="pnone" hidden>مفيش منتج بالاسم ده هنا. '
+                '<a id="pask" href="/">دوّر عليه في كل المتاجر</a>.</div>'
+                '<p class="when">فتحنا صفحة كل متجر وقرينا السعر منها. دوس على أي منتج تشوف سعره في كل متجر، '
+                'وتاريخ سعره، وتقدر تتابعه ونقولك لما ينزل.</p>' + PRODUCTS_JS)
+    return (_shell("p", site, PRODUCTS_STYLE)
+            .replace("{TITLE}", "أسعار الموبايلات والأجهزة في مصر النهارده | Easy Found")
             .replace("{DESC}", "أسعار موبايلات وشاشات وغسالات ولابتوبات في أمازون وجوميا وغيرهم، اتأكدنا من كل سعر في "
                                "صفحة المتجر.")
-            .replace("{H1}", "أسعار النهارده").replace("{LEAD}", "كل منتج وأرخص سعر ليه اتأكدنا منه في صفحة المتجر.")
+            .replace("{H1}", "أسعار النهارده")
+            .replace("{LEAD}", "أرخص سعر لكل منتج في المتاجر الكبيرة، اتأكدنا منه في صفحة المتجر. "
+                               "دوس على المنتج تقارن الأسعار وتشوف سعره اتغير إزاي.")
             .replace("{BODY}", body))
+
+
+# the /p list's search box, section chips and sort: all on the visitor's phone, the page itself is made twice a day
+PRODUCTS_JS = """<script>(function(){var ui=document.getElementById('prodUI');if(!ui)return;
+var qi=document.getElementById('pq'),so=document.getElementById('psort'),none=document.getElementById('pnone'),
+ask=document.getElementById('pask'),secs=[].slice.call(document.querySelectorAll('.psec')),cat='';
+secs.forEach(function(s){[].slice.call(s.querySelectorAll('.prod')).forEach(function(c,i){c.dataset.i=i;});});
+function fold(t){return (t||'').toLowerCase().replace(/[\\u064B-\\u065F\\u0670\\u0640]/g,'').replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي')
+.replace(/[٠-٩]/g,function(d){return '٠١٢٣٤٥٦٧٨٩'.indexOf(d);});}
+var AR={'سامسونج':'samsung','جالاكسي':'galaxy','شاومي':'xiaomi','ريدمي':'redmi','اوبو':'oppo','ريلمي':'realme',
+'انفينكس':'infinix','هونر':'honor','ايفون':'iphone','ابل':'apple','فيفو':'vivo','تكنو':'tecno','نوكيا':'nokia','ال جي':'lg',
+'موبايل':'موبايلات','تليفون':'موبايلات','شاشه':'شاشات','تليفزيون':'شاشات','غساله':'غسالات','تلاجه':'تلاجات','لابتوب':'لابتوب'};
+function render(){var q=fold(qi.value.trim());Object.keys(AR).forEach(function(k){q=q.split(k).join(AR[k]);});
+var ws=q.split(/[\\s،,]+/).filter(Boolean),shown=0,sort=so.value;
+secs.forEach(function(s){var g=s.querySelector('.pgrid'),cs=[].slice.call(g.children),n=0;
+var on=!cat||s.dataset.cat===cat;cs.forEach(function(c){var d=fold(c.dataset.q);
+var y=on&&ws.every(function(w){return d.indexOf(w)>=0;});c.hidden=!y;if(y)n++;});
+cs.sort(sort==='low'?function(a,b){return a.dataset.price-b.dataset.price;}:sort==='high'?function(a,b){return b.dataset.price-a.dataset.price;}
+:function(a,b){return a.dataset.i-b.dataset.i;}).forEach(function(c){g.appendChild(c);});s.hidden=!n;shown+=n;});
+none.hidden=shown>0;ask.href='/'+(qi.value.trim()?'?q='+encodeURIComponent(qi.value.trim()):'');}
+ui.addEventListener('click',function(e){var b=e.target.closest('.pchips button');if(!b)return;cat=b.dataset.v;
+ui.querySelectorAll('.pchips button').forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false');});render();});
+var t;qi.addEventListener('input',function(){clearTimeout(t);t=setTimeout(render,120);});so.addEventListener('change',render);})();
+</script>"""
 
 
 # "تابع السعر" on a product page: the same follow as on a search result (POST /api/watches); a visitor signs in with
