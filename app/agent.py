@@ -15,7 +15,9 @@ import contextvars
 import json
 import logging
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from urllib.parse import quote_plus, unquote, urljoin, urlparse
 
@@ -888,7 +890,8 @@ async def _llm_read_page(url: str, html: str, query: str, spread: int = 0, focus
     """`query` says what the shopper wants; `focus` (default: the query) holds the words used to find the part
     of a long page that shows the product."""
     words = [w for w in re.split(r"\W+", focus or query) if len(w) > 2]
-    data = await llm.ask_json(PAGE_READ_PROMPT.format(query=query, text=_page_text(html, words, base_url=url)),
+    text = await asyncio.to_thread(_page_text, html, words, PAGE_CHARS, url)  # CPU work: off the event loop
+    data = await llm.ask_json(PAGE_READ_PROMPT.format(query=query, text=text),
                               prefer="bulk", spread=spread, step="read_page")
     if data.get("page") == "article":
         raise NotAStore("article page (not a store)")
@@ -972,6 +975,16 @@ def _mark_choices(html: str) -> tuple[str, str]:
     return marked, ("CHOICES ON THE PAGE: " + " | ".join(seen))[:1500] if seen else ""
 
 
+def _main_price_text(url: str, html: str, title: str, wanted: str) -> tuple[str, list]:
+    """The top of the page as text for a main-price read, and the store's own stock data per option."""
+    words = [w for w in re.split(r"\W+", title) if len(w) > 2]
+    marked, choices = _mark_choices(html) if wanted else (html, "")
+    text = _page_text(marked, words, MAIN_PRICE_CHARS, base_url=url, top=True)
+    if choices:
+        text += "\n" + choices
+    return text, extract_mod.variant_stock(html)
+
+
 async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wanted: str = "") -> Product | None:
     """A product page whose own product data doesn't settle the price (e.g. Amazon): the LLM reads only the main
     product's price. None when it isn't the followed product, the price depends on a choice (size, color) the page leaves
@@ -979,12 +992,7 @@ async def _read_main_price(url: str, html: str, title: str, spread: int = 0, wan
     `wanted`: the option the shopper wants (e.g. "مقاس 46"). The page is read for it too: `option_ok` is False when
     the page doesn't offer it or marks it unavailable (price 0 then: never shown), True when it says it's in stock,
     None when the page doesn't say; the price is that option's price when the page writes one."""
-    words = [w for w in re.split(r"\W+", title) if len(w) > 2]
-    marked, choices = _mark_choices(html) if wanted else (html, "")
-    text = _page_text(marked, words, MAIN_PRICE_CHARS, base_url=url, top=True)
-    if choices:
-        text += "\n" + choices
-    variants = extract_mod.variant_stock(html)
+    text, variants = await asyncio.to_thread(_main_price_text, url, html, title, wanted)  # CPU work: off the loop
     if variants and all(not ok for _, ok, _ in variants):  # every option sold out: the product is
         return Product(store=trust.store_name(url), title=title or url, price=0.0, url=url, trusted=trust.is_known(url),
                        in_stock=False, option=wanted or None, option_ok=False if wanted else None)
@@ -1148,6 +1156,7 @@ def _by_model(url: str, html: str, title: str) -> Product | None:
 
 
 _BACKGROUND: set[asyncio.Task] = set()
+_SIDE_WORK = ThreadPoolExecutor(max_workers=2, thread_name_prefix="side")
 
 
 def _in_thread(fn, *args) -> None:
@@ -1155,7 +1164,8 @@ def _in_thread(fn, *args) -> None:
     try:
         asyncio.get_running_loop().run_in_executor(None, fn, *args)
     except RuntimeError:
-        pass
+        if threading.current_thread() is not threading.main_thread():  # page reading in a worker thread
+            _SIDE_WORK.submit(fn, *args)
 
 
 def _later(coro) -> None:
@@ -1209,6 +1219,7 @@ HOST_SLOW_SECONDS = 1800    # ... for this long, then it's tried again
 BOT_FIRST_SECONDS = 24 * 3600  # a site that refused the browser-like request but let our crawler name in: name first
 UNREADABLE_AFTER = 2        # searches in a row where neither we nor the reader service opened a site's pages
 UNREADABLE_SECONDS = 3 * 3600  # ... then its pages aren't picked for this long (their slots go to other stores)
+MAX_PAGE_CHARS = 3_000_000  # a store page longer than this is cut (Amazon's biggest product pages are ~2 MB)
 HOST_PARALLEL = 2           # pages of one site opened at the same time (all sites together: any number)
 _HOSTS: dict[str, dict] = {}
 _HOST_SEMS: dict[tuple[int, str], asyncio.Semaphore] = {}
@@ -1229,6 +1240,10 @@ def _host_sem(url: str) -> asyncio.Semaphore:
             _HOST_SEMS.clear()
         _HOST_SEMS[key] = asyncio.Semaphore(HOST_PARALLEL)
     return _HOST_SEMS[key]
+
+
+def _search_page_cards(html: str, url: str) -> list[Product]:
+    return shopify.parse_suggest(html, url, trust.store_name(url)) or parse_amazon_cards(html, trust.store_name(url), url)
 
 
 def _is_robot_check(html: str) -> bool:
@@ -1275,21 +1290,28 @@ async def _fetch_page(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: st
             raise
     host["timeouts"] = 0
     r.raise_for_status()
-    if _is_robot_check(r.text):
+    # reading a page is CPU work: in a worker thread, so the server keeps answering (Render's health check gives
+    # 5 s; 20 pages parsed on the event loop of a free instance's slow CPU went past that, live 2026-11-28)
+    return await asyncio.to_thread(_parse_page, url, r)
+
+
+def _parse_page(url: str, r: httpx.Response) -> tuple[list[Product], str]:
+    html = r.text[:MAX_PAGE_CHARS]  # a huge page costs memory and time and holds no more products
+    if _is_robot_check(html):
         raise RobotCheck()
     try:  # keep the latest copy of each store page so parsing problems can be checked later
         WEB_DEBUG.mkdir(parents=True, exist_ok=True)
-        (WEB_DEBUG / f"{trust.domain(url)}.html").write_text(r.text, encoding="utf-8")
+        (WEB_DEBUG / f"{trust.domain(url)}.html").write_text(html, encoding="utf-8")
     except OSError:
         pass
-    products = _cheapest_variant(extract_products(r.text, trust.store_name(url), str(r.url)))[:MAX_PER_PAGE]
+    products = _cheapest_variant(extract_products(html, trust.store_name(url), str(r.url)))[:MAX_PER_PAGE]
     for p in products:
         p.store = trust.store_name(p.url or url)
         p.trusted = trust.is_known(p.url or url)
-    score, signals = trust.page_signals(r.text, str(r.url), bool(products))
+    score, signals = trust.page_signals(html, str(r.url), bool(products))
     for p in products:
         p.trust_score, p.trust_signals = (100, ["متجر مشهور"]) if p.trusted else (score, signals)
-    return products, r.text
+    return products, html
 
 
 async def _get_page(client: httpx.AsyncClient, url: str, host: dict) -> httpx.Response:
@@ -1401,8 +1423,7 @@ async def _store_search(queries: list[str]) -> tuple[list[Product], dict[str, st
             continue
         products, html = res
         if not products:
-            products = (shopify.parse_suggest(html, url, trust.store_name(url))
-                        or parse_amazon_cards(html, trust.store_name(url), url))[:MAX_PER_PAGE]
+            products = (await asyncio.to_thread(_search_page_cards, html, url))[:MAX_PER_PAGE]
             products = [p for p in products if p.in_stock is not False]
         for p in products:
             if p.url and p.url not in seen:
@@ -1479,56 +1500,58 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
 
         products, seen, unread, failed = [], set(), [], []
         unopened: set[str] = set()  # sites neither we nor the reader service could open this time
-        for url, res in zip(urls, pages):
-            if isinstance(res, Exception):
-                code = getattr(getattr(res, "response", None), "status_code", None)
-                errors[trust.domain(url)] = f"{code}" if code else type(res).__name__
-                failed.append(url)
-                continue
-            page_products, html = res
-            if not page_products and (cur := extract_mod.foreign_currency(html)):
-                errors[trust.domain(url)] = f"prices in {cur}"  # another country's store: not worth an LLM read
-                continue
-            if not page_products and _is_article(html):
-                errors[trust.domain(url)] = "article page (not a store)"  # news / blog: nothing to buy, no LLM read
-                continue
-            if not page_products and _page_id(url) and (main := extract_mod.main_product(html)):
-                # a clear product page (one product named, one price right by its name): no LLM read. Its price is
-                # still checked on the page before it's shown, like any other
-                page_products = [Product(store=trust.store_name(url), title=main[0], price=main[1], url=url,
-                                         image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
-                                         in_stock=False if extract_mod._page_says_sold_out(
-                                             html, extract_mod._visible_text(html), main[0]) else None)]
-            if not page_products and _page_id(url) and (got := recipes.read(url, html)) \
-                    and (name := extract_mod.page_title(html)):
-                # a product page of a store whose layout the LLM already learned (app/recipes.py): its recipe reads
-                # the main product's price, no LLM call (the price is checked again before it's shown)
-                page_products = [Product(store=trust.store_name(url), title=name, price=got[0], url=url,
-                                         image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
-                                         in_stock=got[1])]
-            if not page_products and _page_id(url) and (box := buybox.read(html, url)):
-                # a product page whose buy box (its <h1> and the one price beside it) is clear: no LLM read. The
-                # price is checked again on the live page before it's shown. The store learns from it too
-                _in_thread(recipes.after_clear_read, url, html, box[1])
-                page_products = [Product(store=trust.store_name(url), title=box[0], price=box[1], url=url,
-                                         image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
-                                         in_stock=box[2])]
-            if not page_products and (listed := _listed_products(html, url, f"{want} {focus}")):
-                # a listing page whose product cards show their own name, link and price: read with no LLM call
-                # (each offer's price is still checked on its own page before it's shown)
-                page_products = listed
-            if page_products:
-                _count_read(False)
-            if not page_products:
-                # Little visible text = a JavaScript-only page; a reader service renders it better.
-                if len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", html, flags=re.S))) < 1500:
+        def triage() -> None:  # CPU work on every page: run in a worker thread, the server keeps answering
+            for url, res in zip(urls, pages):
+                if isinstance(res, Exception):
+                    code = getattr(getattr(res, "response", None), "status_code", None)
+                    errors[trust.domain(url)] = f"{code}" if code else type(res).__name__
                     failed.append(url)
-                else:
-                    unread.append((url, html))
-            for p in page_products:
-                if (p.url, p.title) not in seen:
-                    seen.add((p.url, p.title))
-                    products.append(p)
+                    continue
+                page_products, html = res
+                if not page_products and (cur := extract_mod.foreign_currency(html)):
+                    errors[trust.domain(url)] = f"prices in {cur}"  # another country's store: not worth an LLM read
+                    continue
+                if not page_products and _is_article(html):
+                    errors[trust.domain(url)] = "article page (not a store)"  # news / blog: nothing to buy, no LLM read
+                    continue
+                if not page_products and _page_id(url) and (main := extract_mod.main_product(html)):
+                    # a clear product page (one product named, one price right by its name): no LLM read. Its price is
+                    # still checked on the page before it's shown, like any other
+                    page_products = [Product(store=trust.store_name(url), title=main[0], price=main[1], url=url,
+                                             image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
+                                             in_stock=False if extract_mod._page_says_sold_out(
+                                                 html, extract_mod._visible_text(html), main[0]) else None)]
+                if not page_products and _page_id(url) and (got := recipes.read(url, html)) \
+                        and (name := extract_mod.page_title(html)):
+                    # a product page of a store whose layout the LLM already learned (app/recipes.py): its recipe reads
+                    # the main product's price, no LLM call (the price is checked again before it's shown)
+                    page_products = [Product(store=trust.store_name(url), title=name, price=got[0], url=url,
+                                             image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
+                                             in_stock=got[1])]
+                if not page_products and _page_id(url) and (box := buybox.read(html, url)):
+                    # a product page whose buy box (its <h1> and the one price beside it) is clear: no LLM read. The
+                    # price is checked again on the live page before it's shown. The store learns from it too
+                    _in_thread(recipes.after_clear_read, url, html, box[1])
+                    page_products = [Product(store=trust.store_name(url), title=box[0], price=box[1], url=url,
+                                             image=extract_mod.page_image(html, url), trusted=trust.is_known(url),
+                                             in_stock=box[2])]
+                if not page_products and (listed := _listed_products(html, url, f"{want} {focus}")):
+                    # a listing page whose product cards show their own name, link and price: read with no LLM call
+                    # (each offer's price is still checked on its own page before it's shown)
+                    page_products = listed
+                if page_products:
+                    _count_read(False)
+                if not page_products:
+                    # Little visible text = a JavaScript-only page; a reader service renders it better.
+                    if len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", html, flags=re.S))) < 1500:
+                        failed.append(url)
+                    else:
+                        unread.append((url, html))
+                for p in page_products:
+                    if (p.url, p.title) not in seen:
+                        seen.add((p.url, p.title))
+                        products.append(p)
+        await asyncio.to_thread(triage)
 
         TIMES["pages"] = round(time.monotonic() - t - TIMES["search"], 1)
         if unread or failed:
@@ -1598,24 +1621,27 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
         # with no LLM call (live 2026-11-26: nearly every page the LLM still read was such a copy, of noon, Jumia,
         # 2B, Raya...). Its price is checked on the live page before it's shown, like any other
         unclear = []
-        for u, text in later:
-            got, why = extract_mod.read_text_copy(text, hit_titles.get(u, "")) if _page_id(u) else (None, "")
-            if not got:
-                if not extract_mod.text_prices_anywhere(text):
-                    # no price written with the currency anywhere in the copy: nothing an LLM read could give a price
-                    # from (and a bare number is a model or a size as often as a price)
-                    errors.setdefault(trust.domain(u), "text copy shows no price")
+
+        def read_copies() -> None:  # CPU work: in a worker thread
+            for u, text in later:
+                got, why = extract_mod.read_text_copy(text, hit_titles.get(u, "")) if _page_id(u) else (None, "")
+                if not got:
+                    if not extract_mod.text_prices_anywhere(text):
+                        # no price written with the currency anywhere in the copy: nothing an LLM read could give a price
+                        # from (and a bare number is a model or a size as often as a price)
+                        errors.setdefault(trust.domain(u), "text copy shows no price")
+                        continue
+                    text_why[u] = why
+                    unclear.append((u, text))
                     continue
-                text_why[u] = why
-                unclear.append((u, text))
-                continue
-            _count_read(False)
-            p = Product(store=trust.store_name(u), title=got[0], price=got[1], url=u, trusted=trust.is_known(u),
-                        in_stock=got[2])
-            p.trust_score, p.trust_signals = (100, ["متجر مشهور"]) if p.trusted else trust.page_signals(text, u, False)
-            if (p.url, p.title) not in seen:
-                seen.add((p.url, p.title))
-                products.append(p)
+                _count_read(False)
+                p = Product(store=trust.store_name(u), title=got[0], price=got[1], url=u, trusted=trust.is_known(u),
+                            in_stock=got[2])
+                p.trust_score, p.trust_signals = (100, ["متجر مشهور"]) if p.trusted else trust.page_signals(text, u, False)
+                if (p.url, p.title) not in seen:
+                    seen.add((p.url, p.title))
+                    products.append(p)
+        await asyncio.to_thread(read_copies)
         if len(unclear) < len(later):
             log.info("web: %d text copies of product pages read with no LLM call", len(later) - len(unclear))
         later = worth_reading(unclear, max(0, MAX_LLM_READS - len(first)))
@@ -2394,58 +2420,64 @@ async def _verify_stock(picks: list[Product], options: str = "", patient: bool =
         pages = await _within(PATIENT_DEADLINE if patient else QUICK_DEADLINE if quick else VERIFY_DEADLINE,
                               [_fetch_page(client, sem, p.url) for p in todo])
         retry = []
-        for p, res in zip(todo, pages):
-            if isinstance(res, Exception):
-                retry.append(p)
-                continue
-            products, html = res
-            pid = _page_id(p.url)
-            by_link = [q for q in products if _page_id(q.url) == pid]
-            same = by_link or (products if len(products) == 1 else [])
-            if not p.image:  # offers read from text (no picture there): the product page's own picture
-                p.image = next((q.image for q in same if q.image), None) or extract_mod.page_image(html, p.url)
-            if same:
-                _count_read(False)
-                q = min(same, key=_paid)
-                if q.in_stock is False:
+        def check_pages() -> None:  # CPU work on every page: in a worker thread, the server keeps answering
+            for p, res in zip(todo, pages):
+                if isinstance(res, Exception):
+                    retry.append(p)
+                    continue
+                products, html = res
+                pid = _page_id(p.url)
+                by_link = [q for q in products if _page_id(q.url) == pid]
+                same = by_link or (products if len(products) == 1 else [])
+                if not p.image:  # offers read from text (no picture there): the product page's own picture
+                    p.image = next((q.image for q in same if q.image), None) or extract_mod.page_image(html, p.url)
+                if same:
+                    _count_read(False)
+                    q = min(same, key=_paid)
+                    if q.in_stock is False:
+                        sold.add(id(p))
+                        continue
+                    if by_link and abs(q.price - p.price) >= 1 and _price_moved(html, p.price, q.price):
+                        log.info("agent: %s price now %g (was %g)", p.store, q.price, p.price)
+                        p.price, p.old_price, p.coupon_price = q.price, q.old_price, q.coupon_price
+                        p.discount_pct = _discount(p)
+                    p.in_stock = True if q.in_stock is None else q.in_stock
+                    # the page's own data says this price for this product (a single product on the page must
+                    # also show it: it may be the page's main item or something else)
+                    p.verified = abs(q.price - p.price) < 1 and (bool(by_link) or shows(_shown_numbers(html), p.price))
+                    if options and p.verified and q.in_stock is True and _size_option_shown(options, q.title, html):
+                        # the shopper's option is a size (256 GB, 55 inch, 10 kg) that this page's own product is: its
+                        # name says so and the page has no choices of its own, so its in-stock price is that option's
+                        p.option, p.option_ok = options, True
+                    elif options:  # the page's data is for the product, not the shopper's size/color: the LLM reads it
+                        p.verified = False
+                    if not p.verified:
+                        to_read.append((p, html))
+                    continue
+                if extract_mod._page_says_sold_out(html, extract_mod._visible_text(html), p.title):
                     sold.add(id(p))
                     continue
-                if by_link and abs(q.price - p.price) >= 1 and _price_moved(html, p.price, q.price):
-                    log.info("agent: %s price now %g (was %g)", p.store, q.price, p.price)
-                    p.price, p.old_price, p.coupon_price = q.price, q.old_price, q.coupon_price
-                    p.discount_pct = _discount(p)
-                p.in_stock = True if q.in_stock is None else q.in_stock
-                # the page's own data says this price for this product (a single product on the page must
-                # also show it: it may be the page's main item or something else)
-                p.verified = abs(q.price - p.price) < 1 and (bool(by_link) or shows(_shown_numbers(html), p.price))
-                if options and p.verified and q.in_stock is True and _size_option_shown(options, q.title, html):
-                    # the shopper's option is a size (256 GB, 55 inch, 10 kg) that this page's own product is: its
-                    # name says so and the page has no choices of its own, so its in-stock price is that option's
-                    p.option, p.option_ok = options, True
-                elif options:  # the page's data is for the product, not the shopper's size/color: the LLM reads it
-                    p.verified = False
-                if not p.verified:
-                    to_read.append((p, html))
-                continue
-            if extract_mod._page_says_sold_out(html, extract_mod._visible_text(html), p.title):
-                sold.add(id(p))
-                continue
-            to_read.append((p, html))
+                to_read.append((p, html))
+        await asyncio.to_thread(check_pages)
         if retry:  # the reader service opens the page now (where robots.txt allows): live, not a stored copy
             texts, _ = await fetchers.read_pages(client, [p.url for p in retry],
                                                  deadline=QUICK_DEADLINE if quick else VERIFY_READER_DEADLINE)
-            for p in retry:
-                if (text := texts.get(p.url)) is None:
-                    continue
-                if extract_mod._page_says_sold_out(text, text, p.title):
-                    sold.add(id(p))
-                else:
-                    to_read.append((p, text))
+
+            def check_copies() -> None:
+                for p in retry:
+                    if (text := texts.get(p.url)) is None:
+                        continue
+                    if extract_mod._page_says_sold_out(text, text, p.title):
+                        sold.add(id(p))
+                    else:
+                        to_read.append((p, text))
+            await asyncio.to_thread(check_copies)
     if not use_llm:  # (today's deals list) no LLM call at all: its free daily quota is kept for shoppers' searches
-        _check_without_llm(to_read, sold, options)
+        await asyncio.to_thread(_check_without_llm, to_read, sold, options)
         to_read = []
     else:  # a clear page needs no LLM read: only the pages that aren't clear go to the LLM
-        to_read = [(p, page) for p, page in to_read if not _settled_without_llm(p, page, sold, options)]
+        to_read = await asyncio.to_thread(
+            lambda: [(p, page) for p, page in to_read if not _settled_without_llm(p, page, sold, options)])
     # a number somewhere on the page isn't enough (related items, other sellers, sizes): the LLM reads the price of
     # the page's own product, and only that price is shown
     if to_read and llm.available():

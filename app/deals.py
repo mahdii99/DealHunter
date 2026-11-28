@@ -10,6 +10,7 @@ Prices on the page are never older than their check: every deal was opened on it
 search result, agent.checked_only) when the list was made, and the page shows when that was. The list is made
 after each price list run (.github/workflows/scrape-prices.yml) and stops being shown after MAX_AGE_HOURS.
 """
+import asyncio
 import json
 import logging
 import re
@@ -86,7 +87,7 @@ def _accessories_apart(rows: list[dict]) -> list[dict]:
 
 async def build() -> dict:
     """Opens the best candidates on their store pages and keeps those still at (or under) that price."""
-    found = candidates()[:CHECK]
+    found = (await asyncio.to_thread(candidates))[:CHECK]  # the database: off the event loop
     picks = [Product(store=d["store"], title=d["title"], price=d["price"], url=d["url"], image=d["image"] or None,
                      old_price=d.get("old_price"), trusted=True, trust_score=100) for d in found]
     by_url = {d["url"]: d for d in found}
@@ -112,7 +113,7 @@ async def build() -> dict:
     deals.sort(key=lambda d: (d["kind"] != "drop", -d["pct"]))
     payload = {"checked_at": time.time(), "deals": deals, "candidates": len(found), "sold_out": gone,
                "unchecked": len(unchecked)}
-    db.save_search(db.cache_key(KEY, market.current().code), market.current().code, payload)
+    await asyncio.to_thread(db.save_search, db.cache_key(KEY, market.current().code), market.current().code, payload)
     log.info("deals: %d of %d candidates checked on their page (%d sold out)", len(deals), len(found), gone)
     return payload
 

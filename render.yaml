@@ -4,7 +4,7 @@ services:
     name: dealhunter
     runtime: docker
     plan: free
-    healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: DAILY_LIMIT
         value: "5"
