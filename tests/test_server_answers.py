@@ -57,3 +57,27 @@ def test_huge_pages_are_cut():
                 lambda req: httpx.Response(200, text="b" * (fetchers.MAX_TEXT_CHARS + 5)))) as c:
             return await fetchers._jina(c, "https://x.example/p/1")
     assert len(asyncio.run(go())) == fetchers.MAX_TEXT_CHARS
+
+
+def test_page_text_stays_fast_on_broken_pages():
+    from app import extract, utils
+    n = 200_000
+    broken = ["<" * n, "<div " * (n // 5), "<script>" * (n // 8), "](https://a.b/" + "c" * n, "[" * n, "![" * (n // 2),
+              '<a href="x">' * (n // 12), "<h1>" * (n // 4)]
+    for page in broken:
+        t = time.monotonic()
+        agent._page_text(page, ["Toshiba"], 3000, "https://www.amazon.eg/dp/x")
+        extract._visible_text(page)
+        extract.read_text_copy(page, "Toshiba")
+        extract.page_title(page)
+        list(utils.script_bodies(page))
+        assert time.monotonic() - t < 2, page[:20]
+
+
+def test_linear_helpers_match_the_old_patterns():
+    from app import utils
+    html = '<p>a</p><SCRIPT type="x">var s = "<b>";</script><style>b{}</style><h1 class="t">Name <b>X</b></h1><script>open'
+    assert utils.drop_blocks(html) == "<p>a</p>  <h1 class=\"t\">Name <b>X</b></h1> "
+    assert utils.strip_tags("<p>a</p><b>b</b>") == " a  b "
+    assert utils.first_block(html, "h1").group(1) == "Name <b>X</b>"
+    assert list(utils.script_bodies(html)) == ['var s = "<b>";', "open"]

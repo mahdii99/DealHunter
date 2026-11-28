@@ -379,8 +379,11 @@ def test_old_loose_price_alerts_are_removed_once(monkeypatch):
     accounts.notify("g:1", "price_drop", "السعر نزل: Puma", "نزل لـ 1,885")
     accounts.notify("g:1", "welcome", "أهلا", "")
     accounts._db.run("UPDATE notifications SET created_at = ?", (accounts.LOOSE_ALERTS_BEFORE - 3600,))
-    with TestClient(main.app):  # the site starting up removes them
-        pass
+    with TestClient(main.app):  # the site starting up removes them (in the background: the start never waits)
+        for _ in range(50):
+            if [n["kind"] for n in accounts.list_notifications("g:1")] == ["welcome"]:
+                break
+            time.sleep(0.1)
     assert [n["kind"] for n in accounts.list_notifications("g:1")] == ["welcome"]
     monkeypatch.setattr(time, "time", lambda: accounts.LOOSE_ALERTS_BEFORE + 60)
     accounts.notify("g:1", "price_drop", "السعر نزل: X", "")  # a new alert stays

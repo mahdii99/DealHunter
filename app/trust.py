@@ -7,6 +7,7 @@ import re
 from urllib.parse import unquote, urlparse
 
 from . import market
+from .utils import drop_blocks, strip_tags
 
 KNOWN_STORES = {
     "amazon.eg": "Amazon.eg", "noon.com": "noon", "jumia.com.eg": "Jumia", "btech.com": "B.TECH",
@@ -129,9 +130,9 @@ def page_signals(html: str, url: str, has_product_data: bool) -> tuple[int, list
     """Trust score 0-100 for the shop that owns this page, with the reasons."""
     if is_known(url):
         return 100, ["متجر مشهور"]
-    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.S | re.I)
-    links = " ".join(re.findall(r"href=[\"']([^\"']+)", text))
-    text = re.sub(r"<[^>]+>", " ", text) + " " + links
+    text = drop_blocks(html)
+    links = " ".join(re.findall(r"href=[\"']([^\"'<>]{1,2000})", text))
+    text = strip_tags(text) + " " + links
     score, found = 0, []
     if url.startswith("https://"):
         score += 5

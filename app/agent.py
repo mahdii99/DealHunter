@@ -37,7 +37,7 @@ from .stores import ALL_STORES
 from .stores import shopify
 from .stores.amazon import parse_amazon_cards
 from .stores.base import DEBUG_DIR, HEADERS
-from .utils import normalize
+from .utils import drop_blocks, first_block, normalize, strip_tags
 
 log = logging.getLogger("uvicorn.error")
 MAX_CANDIDATES = 50  # cheapest first; the judge reads every line, so more = more tokens per search
@@ -852,11 +852,12 @@ _PRICE_NUM = re.compile(r"\d[\d,.]{2,}")
 def _page_text(html: str, focus: list[str], limit: int = PAGE_CHARS, base_url: str = "", top: bool = False) -> str:
     """Readable page text with links kept, cut to the window that mentions the product most (search words and
     prices), so the LLM reads less text without losing the products."""
-    html = re.sub(r"<(script|style|noscript|svg|head)\b.*?</\1>", " ", html, flags=re.S | re.I)
-    html = re.sub(r"<a\b[^>]*href=[\"']([^\"'#?]+)[^\"']*[\"'][^>]*>(.*?)</a>", r" \2 [link: \1] ", html, flags=re.S | re.I)
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)  # markdown images (reader services): no names or prices
-    text = re.sub(r"\]\((https?://[^)\s?#]+)[^)]*\)", r"](\1)", text)  # tracking parameters on markdown links
+    html = drop_blocks(html, ("script", "style", "noscript", "svg", "head"))
+    html = re.sub(r"<a\b[^<>]*href=[\"']([^\"'#?<>]+)[^\"'<>]*[\"'][^<>]*>(.{0,3000}?)</a>", r" \2 [link: \1] ", html,
+                  flags=re.S | re.I)
+    text = strip_tags(html)
+    text = extract_mod._MD_IMAGE.sub(" ", text)  # markdown images (reader services): no names or prices
+    text = re.sub(r"\]\((https?://[^)\s?#]++)[^)\s]*+\)", r"](\1)", text)  # tracking parameters on markdown links
     if base_url and (site := urlparse(base_url).netloc):  # this site's own links as paths (urljoin restores them)
         text = re.sub(r"https?://" + re.escape(site) + r"(?=/)", "", text)
     text = re.sub(r"\[link: (?:javascript:|mailto:|tel:)[^\]]*\]", " ", text)
@@ -953,7 +954,7 @@ MAIN_PRICE_CHARS = 6000  # page text for a main-price read: the top of the page,
 
 
 _CHOICE_OFF = re.compile(r"disabled|unavailable|out[-_ ]?of[-_ ]?stock|sold[-_ ]?out|\boos\b|not[-_ ]?available", re.I)
-_CHOICE_TAG = re.compile(r"<(option|button|li|a|span|div|label)\b([^>]*)>([^<>]{1,40})</\1>", re.I)
+_CHOICE_TAG = re.compile(r"<(option|button|li|a|span|div|label)\b([^<>]*)>([^<>]{1,40})</\1>", re.I)
 
 
 def _mark_choices(html: str) -> tuple[str, str]:
@@ -1180,7 +1181,7 @@ class NotAStore(Exception):
 
 
 _ARTICLE_TYPE = re.compile(r'"@type"\s*:\s*"(?:NewsArticle|BlogPosting|Article|ReportageNewsArticle|AnalysisNewsArticle)"'
-                           r"|<meta[^>]+property=[\"']og:type[\"'][^>]+content=[\"']article", re.I)
+                           r"|<meta[^<>]+property=[\"']og:type[\"'][^<>]+content=[\"']article", re.I)
 _BUY = re.compile(r"add.to.(?:cart|bag|basket)|buy now|[أا]ضف (?:إلى|الى|لل)|اشتري? الآن|"
                   r"\"@type\"\s*:\s*\"(?:Product|Offer)\"", re.I)
 
@@ -1543,7 +1544,7 @@ async def _web_find(web_queries: list[str], seed: list[dict] | None = None,
                     _count_read(False)
                 if not page_products:
                     # Little visible text = a JavaScript-only page; a reader service renders it better.
-                    if len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", html, flags=re.S))) < 1500:
+                    if len(re.sub(r"\s+", "", strip_tags(drop_blocks(html, ("script",)), ""))) < 1500:
                         failed.append(url)
                     else:
                         unread.append((url, html))
@@ -2595,8 +2596,8 @@ def _size_option_shown(options: str, title: str, page: str) -> bool:
     if extract_mod.variant_stock(page):
         return False
     # the page's name for its product shows the size too (not only our listing's title)
-    h1 = re.search(r"<h1\b[^>]*>(.*?)</h1>", page, re.S | re.I)
-    name = " ".join(unescape(re.sub(r"<[^>]+>", " ", h1.group(1))).split()) if h1 else ""
+    h1 = first_block(page, "h1")
+    name = " ".join(unescape(strip_tags(h1.group(1))).split()) if h1 else ""
     if not name or not all(shows_size(name, n, u) for n, u in sizes):
         return False
     for words in features:  # "4K", a color: both our listing's name and the page's own name say it

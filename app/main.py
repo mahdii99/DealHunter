@@ -1,4 +1,5 @@
 import asyncio
+import faulthandler
 import calendar
 import hashlib
 import hmac
@@ -51,6 +52,7 @@ if DEMO:  # offline demo: stores read saved sample pages instead of the internet
         _s.search = _fake
 
 LOOP_LAG_WARN = 1.0  # seconds the event loop may be late before it's logged
+LOOP_DUMP_AFTER = 4  # seconds the event loop may be held before every thread's stack is written to the log
 
 
 async def _watch_event_loop() -> None:
@@ -59,6 +61,9 @@ async def _watch_event_loop() -> None:
     loop = asyncio.get_running_loop()
     while True:
         t = loop.time()
+        # if the loop doesn't come back here in time, every thread's stack goes to the log (from a C thread: it
+        # works even while one call holds the interpreter), so whatever froze the server is named
+        faulthandler.dump_traceback_later(LOOP_DUMP_AFTER, exit=False)
         await asyncio.sleep(1)
         if (late := loop.time() - t - 1) > LOOP_LAG_WARN:
             log.warning("event loop held for %.1fs (requests waited)", late)
@@ -79,6 +84,7 @@ async def _lifespan(app):
     watch = asyncio.create_task(_watch_event_loop())
     yield
     watch.cancel()
+    faulthandler.cancel_dump_traceback_later()
     await asyncio.to_thread(agent.llm.flush_usage)  # today's LLM counts, so a restart doesn't forget them
     await asyncio.to_thread(websearch.flush_usage)  # and this month's web searches
 
@@ -1892,7 +1898,7 @@ few dozen pages per store per day).</li><li>It never signs in, never adds to car
 
 
 def _page_title(html: str) -> str:
-    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+    m = re.search(r"<title[^<>]*>(.*?)</title>", html, re.S | re.I)
     return " ".join(m.group(1).split())[:60] if m else "-"
 
 
