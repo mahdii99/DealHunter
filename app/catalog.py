@@ -54,7 +54,7 @@ CATEGORIES: dict[str, dict] = {
     "phones": {
         "ar": "موبايلات", "pages": 8,
         "stores": {
-            "btech.com": "https://btech.com/en/c/mobiles-tablets?p={n}",
+            "btech.com": ["https://btech.com/en/c/mobiles-tablets", "https://btech.com/en/c/smartphones", "https://btech.com/en/c/mobile-phones"],
             "kimostore.net": "https://kimostore.net/collections/mobile-phone/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/mobile-phones/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=smartphone&i=electronics&language=en_AE&page={n}",
@@ -63,7 +63,7 @@ CATEGORIES: dict[str, dict] = {
     "tvs": {
         "ar": "شاشات", "pages": 6,
         "stores": {
-            "btech.com": "https://btech.com/en/c/tvs-projectors?p={n}",
+            "btech.com": ["https://btech.com/en/c/tvs-projectors", "https://btech.com/en/c/televisions", "https://btech.com/en/c/smart-tvs"],
             "cairosales.com": "https://cairosales.com/en/tvs-screens/",
             "kimostore.net": "https://kimostore.net/collections/televisions/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/televisions/?page={n}",
@@ -92,7 +92,7 @@ CATEGORIES: dict[str, dict] = {
     "laptops": {
         "ar": "لابتوبات", "pages": 6,
         "stores": {
-            "btech.com": "https://btech.com/en/c/laptop-pc?p={n}",
+            "btech.com": ["https://btech.com/en/c/laptop-pc", "https://btech.com/en/c/laptops", "https://btech.com/en/c/monitors"],
             "compumarts.com": "https://www.compumarts.com/collections/laptop/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/laptops/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=laptop&i=computers&language=en_AE&page={n}",
@@ -102,6 +102,7 @@ CATEGORIES: dict[str, dict] = {
     "tablets": {"ar": "تابلت", "pages": 4, "stores": {
         "amazon.eg": "https://www.amazon.eg/s?k=tablet&i=electronics&language=en_AE&page={n}"}},
     "headphones": {"ar": "سماعات", "pages": 4, "stores": {
+            "btech.com": "https://btech.com/en/c/earbuds",
             "kimostore.net": "https://kimostore.net/collections/earphone-headphone/products.json?limit=50&page={n}",
             "cairosales.com": "https://cairosales.com/en/home-theaters-speakers/headphones/",
         "amazon.eg": "https://www.amazon.eg/s?k=wireless+earbuds+headphones&i=electronics&language=en_AE&page={n}"}},
@@ -145,7 +146,7 @@ CATEGORIES: dict[str, dict] = {
     "home": {
         "ar": "البيت والمطبخ", "pages": 3, "broad": True,
         "stores": {
-            "btech.com": "https://btech.com/en/c/small-home-appliances?p={n}",
+            "btech.com": ["https://btech.com/en/c/small-home-appliances", "https://btech.com/en/c/hair-care", "https://btech.com/en/c/water-heaters"],
             "kimostore.net": "https://kimostore.net/collections/home-appliances/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/home-office/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=kitchen&rh=p_8%3A30-&language=en_AE&page={n}",
@@ -221,6 +222,7 @@ CATEGORIES: dict[str, dict] = {
     "gaming": {
         "ar": "ألعاب فيديو", "pages": 3, "broad": True,
         "stores": {
+            "btech.com": ["https://btech.com/en/c/playstation", "https://btech.com/en/c/consoles"],
             "jumia.com.eg": "https://www.jumia.com.eg/video-games/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=videogames&rh=p_8%3A30-&language=en_AE&page={n}",
         },
@@ -233,15 +235,15 @@ CATEGORIES: dict[str, dict] = {
         },
     },
     "appliances": {
-        "ar": "أجهزة منزلية كبيرة", "pages": 4, "broad": True,
+        "ar": "أجهزة منزلية كبيرة", "pages": 1, "broad": True,
         "stores": {
-            "btech.com": "https://btech.com/en/c/large-home-appliances?p={n}",
+            "btech.com": ["https://btech.com/en/c/large-home-appliances", "https://btech.com/en/c/air-conditioners", "https://btech.com/en/c/washing-machines-dryers", "https://btech.com/en/c/water-coolers-and-filters"],
         },
     },
     "flash": {
         "ar": "عروض لفترة محدودة", "pages": 5, "broad": True,
         "stores": {
-        "btech.com": "https://btech.com/en/collection/black-friday-offers?p={n}",
+        "btech.com": ["https://btech.com/en/collection/black-friday-offers", "https://btech.com/en/collection/flash-sale-tvs"],
             "jumia.com.eg": "https://www.jumia.com.eg/flash-sales/?page={n}",
         },
     },
@@ -317,32 +319,42 @@ async def scrape(stores: list[str] | None = None, categories: list[str] | None =
         for cat, conf in CATEGORIES.items():
             if (categories and cat not in categories) or d not in conf["stores"]:
                 continue
-            t, got, err, seen = time.monotonic(), 0, None, set()
-            for n in range(1, (pages or conf["pages"]) + 1):
-                if n > 1:
-                    if "{n}" not in conf["stores"][d]:  # a page read whole (its later pages aren't open to crawlers)
-                        break
+            t, got, errs, seen = time.monotonic(), 0, [], set()
+            addrs = conf["stores"][d]  # one address, or a few pages of the same kind (a store without page numbers)
+            for i, addr in enumerate([addrs] if isinstance(addrs, str) else addrs):
+                err = blocked = None
+                if i:
                     await asyncio.sleep(PAUSE)
-                url = conf["stores"][d].format(n=n)
-                try:
-                    products = await _page(client, url)
-                except Blocked as e:
-                    err = str(e)
+                for n in range(1, (pages or conf["pages"]) + 1):
+                    if n > 1:
+                        if "{n}" not in addr:  # a page read whole (its later pages aren't open to crawlers)
+                            break
+                        await asyncio.sleep(PAUSE)
+                    url = addr.format(n=n)
+                    try:
+                        products = await _page(client, url)
+                    except Blocked as e:
+                        err = blocked = str(e)
+                        break
+                    except NothingRead as e:
+                        if n == 1:  # past the last page is normal; an empty first page is worth a look
+                            err = str(e)
+                        break
+                    except Exception as e:  # a slow page: the next run tries again
+                        err = f"{type(e).__name__}: {e}"[:200]
+                        break
+                    new = [p for p in products if p.url not in seen]
+                    if not new:  # past the last page (some stores show page 1 again)
+                        break
+                    seen.update(p.url for p in new)
+                    rows = [{"url": p.url, "store": p.store, "title": p.title, "price": p.price,
+                             "old_price": p.old_price, "image": p.image, "in_stock": True} for p in new]
+                    got += await asyncio.to_thread(db.save_catalog, rows, mk, cat)
+                if err:
+                    errs.append(err)
+                if blocked:  # the store refused us: none of its other pages this run
                     break
-                except NothingRead as e:
-                    if n == 1:  # past the last page is normal; an empty first page is worth a look
-                        err = str(e)
-                    break
-                except Exception as e:  # a slow page: the next run tries again
-                    err = f"{type(e).__name__}: {e}"[:200]
-                    break
-                new = [p for p in products if p.url not in seen]
-                if not new:  # past the last page (some stores show page 1 again)
-                    break
-                seen.update(p.url for p in new)
-                rows = [{"url": p.url, "store": p.store, "title": p.title, "price": p.price,
-                         "old_price": p.old_price, "image": p.image, "in_stock": True} for p in new]
-                got += await asyncio.to_thread(db.save_catalog, rows, mk, cat)
+            err = "; ".join(errs)
             report[f"{d} {cat}"] = {"products": got, "seconds": round(time.monotonic() - t, 1),
                                     **({"error": err} if err else {})}
             log.info("catalog: %s %s: %d products%s", d, cat, got, f" ({err})" if err else "")
