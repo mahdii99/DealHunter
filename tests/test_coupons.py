@@ -106,6 +106,6 @@ def test_deals_page_has_store_and_category_filters_and_a_verified_badge(monkeypa
          "price": 9000, "was": 12000, "pct": 25, "kind": "store", "category": "tvs"}]}
     monkeypatch.setattr(deals, "current", lambda: payload)
     page = TestClient(main.app).get("/deals").text
-    assert 'data-f="store"' in page and 'data-v="amazon.eg"' in page and 'data-v="jumia.com.eg"' in page
+    assert 'id="store"' in page and 'value="amazon.eg"' in page and 'value="jumia.com.eg"' in page
     assert 'data-f="cat"' in page and "-25%" in page and "السعر متأكد منه" in page
     assert 'href="/coupons"' in page
