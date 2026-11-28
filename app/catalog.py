@@ -54,8 +54,7 @@ CATEGORIES: dict[str, dict] = {
     "phones": {
         "ar": "موبايلات", "pages": 8,
         "stores": {
-            "btech.com": "https://btech.com/en/c/mobiles-tablets",
-            "2b.com.eg": "https://2b.com.eg/en/mobile-and-tablet/mobiles.html",
+            "btech.com": "https://btech.com/en/c/mobiles-tablets?p={n}",
             "kimostore.net": "https://kimostore.net/collections/mobile-phone/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/mobile-phones/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=smartphone&i=electronics&language=en_AE&page={n}",
@@ -64,7 +63,7 @@ CATEGORIES: dict[str, dict] = {
     "tvs": {
         "ar": "شاشات", "pages": 6,
         "stores": {
-            "btech.com": "https://btech.com/en/c/tvs-projectors",
+            "btech.com": "https://btech.com/en/c/tvs-projectors?p={n}",
             "cairosales.com": "https://cairosales.com/en/tvs-screens/",
             "kimostore.net": "https://kimostore.net/collections/televisions/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/televisions/?page={n}",
@@ -93,8 +92,7 @@ CATEGORIES: dict[str, dict] = {
     "laptops": {
         "ar": "لابتوبات", "pages": 6,
         "stores": {
-            "btech.com": "https://btech.com/en/c/laptop-pc",
-            "2b.com.eg": "https://2b.com.eg/en/computers/laptops.html",
+            "btech.com": "https://btech.com/en/c/laptop-pc?p={n}",
             "compumarts.com": "https://www.compumarts.com/collections/laptop/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/laptops/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?k=laptop&i=computers&language=en_AE&page={n}",
@@ -123,14 +121,18 @@ CATEGORIES: dict[str, dict] = {
     # search finds them in our own list first. "mixed": very different prices in one kind (a lipstick and a palette),
     # so a cheap one is not set apart as an accessory on the deals page.
     "perfumes": {"ar": "برفانات", "pages": 5, "mixed": True, "stores": {
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/fragrance-deals/products.json?limit=50&page={n}",
         "jumia.com.eg": "https://www.jumia.com.eg/fragrances-allgenders/?page={n}",
         "amazon.eg": "https://www.amazon.eg/s?k=perfume&i=beauty&language=en_AE&page={n}"}},
     "makeup": {"ar": "ميكب", "pages": 5, "mixed": True, "stores": {
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/makeup-deals/products.json?limit=50&page={n}",
         "jumia.com.eg": "https://www.jumia.com.eg/womens-make-up/?page={n}",
         "amazon.eg": "https://www.amazon.eg/s?k=makeup&i=beauty&language=en_AE&page={n}"}},
     "skincare": {"ar": "عناية بالبشرة", "pages": 4, "mixed": True, "stores": {
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/skincare-deals/products.json?limit=50&page={n}",
         "amazon.eg": "https://www.amazon.eg/s?k=skin+care&i=beauty&language=en_AE&page={n}"}},
     "haircare": {"ar": "عناية بالشعر", "pages": 3, "mixed": True, "stores": {
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/hair-deals/products.json?limit=50&page={n}",
         "jumia.com.eg": "https://www.jumia.com.eg/hair-conditioner-d/?page={n}",
         "amazon.eg": "https://www.amazon.eg/s?k=shampoo&i=beauty&language=en_AE&page={n}"}},
     "hair_tools": {"ar": "أجهزة الشعر", "pages": 3, "mixed": True, "stores": {
@@ -143,7 +145,7 @@ CATEGORIES: dict[str, dict] = {
     "home": {
         "ar": "البيت والمطبخ", "pages": 3, "broad": True,
         "stores": {
-            "btech.com": "https://btech.com/en/c/small-home-appliances",
+            "btech.com": "https://btech.com/en/c/small-home-appliances?p={n}",
             "kimostore.net": "https://kimostore.net/collections/home-appliances/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/home-office/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=kitchen&rh=p_8%3A30-&language=en_AE&page={n}",
@@ -152,6 +154,8 @@ CATEGORIES: dict[str, dict] = {
     "beauty": {
         "ar": "جمال وعناية", "pages": 3, "broad": True,
         "stores": {
+        "bloompharmacy.com": "https://www.bloompharmacy.com/collections/on-sale/products.json?limit=50&page={n}",
+        "sourcebeauty.com": "https://sourcebeauty.com/collections/body-care-deals/products.json?limit=50&page={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/health-beauty/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=beauty&rh=p_8%3A30-&language=en_AE&page={n}",
         },
@@ -176,7 +180,6 @@ CATEGORIES: dict[str, dict] = {
         "ar": "كمبيوتر وإكسسواراته", "pages": 3, "broad": True,
         "stores": {
             "compumarts.com": "https://www.compumarts.com/collections/online-offers/products.json?limit=50&page={n}",
-            "2b.com.eg": "https://2b.com.eg/en/offers/intel-offer-product.html",
             "jumia.com.eg": "https://www.jumia.com.eg/computing/?page={n}",
             "amazon.eg": "https://www.amazon.eg/s?i=computers&rh=p_8%3A30-&language=en_AE&page={n}",
         },
@@ -230,14 +233,15 @@ CATEGORIES: dict[str, dict] = {
         },
     },
     "appliances": {
-        "ar": "أجهزة منزلية كبيرة", "pages": 1, "broad": True,
+        "ar": "أجهزة منزلية كبيرة", "pages": 4, "broad": True,
         "stores": {
-            "btech.com": "https://btech.com/en/c/large-home-appliances",
+            "btech.com": "https://btech.com/en/c/large-home-appliances?p={n}",
         },
     },
     "flash": {
         "ar": "عروض لفترة محدودة", "pages": 5, "broad": True,
         "stores": {
+        "btech.com": "https://btech.com/en/collection/black-friday-offers?p={n}",
             "jumia.com.eg": "https://www.jumia.com.eg/flash-sales/?page={n}",
         },
     },

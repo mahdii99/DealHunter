@@ -313,7 +313,7 @@ def test_a_page_read_whole_is_not_asked_for_again(monkeypatch):
 
     async def page(client, url):
         asked.append(url)
-        return [Product(store="2B", title="Galaxy A37", price=36349, url=f"https://2b.com.eg/en/a{len(asked)}.html")]
+        return [Product(store="Cairo Sales", title="Samsung TV", price=19999, url=f"https://cairosales.com/en/a{len(asked)}.html")]
     monkeypatch.setattr(catalog, "_page", page)
-    asyncio.run(catalog.scrape(["2b.com.eg"], ["phones"]))
-    assert asked == ["https://2b.com.eg/en/mobile-and-tablet/mobiles.html"]
+    asyncio.run(catalog.scrape(["cairosales.com"], ["tvs"]))
+    assert asked == ["https://cairosales.com/en/tvs-screens/"]

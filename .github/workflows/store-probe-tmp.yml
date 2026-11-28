@@ -2,7 +2,7 @@ name: store probe (temporary)
 on:
   push:
     branches: [feature/more-store-deals]
-    paths: [.github/workflows/store-probe-tmp.yml]
+    paths: [.github/workflows/store-probe-tmp.yml, app/catalog.py, scripts/try_stores_tmp.py]
 jobs:
   probe:
     runs-on: ubuntu-latest
@@ -11,13 +11,4 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: pip install -q -r requirements.txt
-      - run: >
-          python -m scripts.store_probe
-          "https://btech.com/en/c/mobiles-tablets?page=3" "https://btech.com/en/c/mobiles-tablets?p=3" "https://btech.com/en/c/mobiles-tablets?currentPage=3"
-          "https://btech.com/en/collection/black-friday-offers?page=2" https://btech.com/collection/flash-sale-tvs https://btech.com/en/c/large-home-appliances
-          https://www.carrefouregypt.com/mafegy/en/ https://www.carrefouregypt.com/robots.txt
-          https://sourcebeauty.com/ https://sourcebeauty.com/collections/all/products.json
-          https://www.bloompharmacy.com/ https://www.bloompharmacy.com/collections/all/products.json
-          https://www.elezabypharmacy.com/ https://www.faces.com.eg/ https://www.kikomilano.com.eg/ https://beautyfair-eg.com/
-          https://www.thebodyshop.eg/ https://www.yvesrocher-egypt.com/ https://www.seventeenpharmacy.com/ https://www.chemistry-eg.com/
-          https://www.jumia.com.eg/health-beauty/?page=2
+      - run: python -m scripts.try_stores_tmp btech.com,sourcebeauty.com,bloompharmacy.com 3
