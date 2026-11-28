@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import calendar
 import hashlib
 import hmac
@@ -64,11 +65,12 @@ async def _watch_event_loop() -> None:
             log.warning("event loop held for %.1fs (requests waited)", late)
 
 
-@asynccontextmanager
-async def _lifespan(app):
+async def _load_saved_state() -> None:
     try:  # models / search services a provider said were used up before this restart stay skipped
         await asyncio.to_thread(agent.llm.load_reported)
         await asyncio.to_thread(websearch.load_out)
+        today = agent.llm.quota_day()
+        await asyncio.to_thread(agent.llm._load_day_now, today)
     except Exception:
         log.exception("loading the providers' used-up limits failed")
     try:  # a database that's down must not stop the site from starting
@@ -76,6 +78,15 @@ async def _lifespan(app):
             log.info("removed %d old price-drop alerts", n)
     except Exception:
         log.exception("removing old price-drop alerts failed")
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    # what the database remembers is loaded in the background: a slow or busy database must never hold the start
+    # (Render restarts a server that doesn't answer its health check within a minute)
+    # more worker threads than the default 5 (1 CPU): threads waiting on the database must not hold up page reading
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=24, thread_name_prefix="work"))
+    _later(_load_saved_state())
     watch = asyncio.create_task(_watch_event_loop())
     yield
     watch.cancel()
